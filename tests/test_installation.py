@@ -56,7 +56,7 @@ def alter_owned_code(home):
 
 def test_capture_code_and_wheel_assets_are_byte_identical():
     manage.assert_capture()
-    wheel=next((ROOT/'.build/dist').glob('agent_tooling-*.whl'))
+    wheel=ROOT/'.build/dist'/f'agent_tooling-{manage.VERSION}-py3-none-any.whl'
     with zipfile.ZipFile(wheel) as z:
         for name,digest in manage.RELEASE['gate_files'].items():assert manage.sha(z.read(name))==digest
         assert z.read('agent_tooling_assets/prompts.toml')==(ROOT/'prompts.toml').read_bytes()
