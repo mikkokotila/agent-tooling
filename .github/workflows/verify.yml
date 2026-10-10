@@ -1,0 +1,27 @@
+name: Verify captured baseline
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.2'
+      - name: Offline build and regression verification
+        run: make verify PYTHON=python
+      - name: Verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification
+          path: |
+            .build/verification.xml
+            .build/verified.json
+            .build/dist/*.whl
