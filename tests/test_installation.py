@@ -68,7 +68,13 @@ def test_install_preserves_operational_assets_and_state(installed):
     assert result['code_unchanged'] and result['runtime_unchanged'] and not result['service_restarted']
     assert service.stops==service.starts==0
     for name,data in before.items():
-        if name!='.local/share/caller-pr-gates/release.json':assert (home/name).read_bytes()==data,name
+        if name not in {'.local/share/caller-pr-gates/release.json','.codex/AGENTS.md','.claude/CLAUDE.md'}:
+            assert (home/name).read_bytes()==data,name
+    for name in ['.codex/AGENTS.md','.claude/CLAUDE.md']:
+        text=(home/name).read_text()
+        assert 'Copilot quota exhaustion, unavailability' in text
+        assert 'Every actual Copilot review comment or change request' in text
+        assert text.startswith('Personal prefix.') and text.endswith('Personal suffix.\n')
     assert json.loads((home/'.local/share/caller-pr-gates/release.json').read_text())['version']==manage.RELEASE['runtime_version']
 
 def test_repeated_install_is_a_true_noop(installed):
