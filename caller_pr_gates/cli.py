@@ -190,6 +190,39 @@ async def inspect(store, sid=None, url=None):
     return result
 
 
+def _nonrequired_quota_merge_allowed(store, sid, target, argv, rows, approval):
+    if not isinstance(approval, str) or not approval.strip() or len(rows) != 1:
+        return False
+    row = rows[0]
+    head = row.get('head_sha')
+    if argv != ['pr', 'merge', target, '--merge', '--match-head-commit', head]:
+        return False
+    from .workflow import owned_pr
+    from .external import current_hold, publication_ready
+    from .policy import _latest_checks, _outcome
+    repo, num, issue = reference(target)
+    if issue: return False
+    owned_pr(store, sid, repo, num)
+    snapshot = (store.snapshot(repo, num) or {}).get('snapshot') or {}
+    gates = row['gates']
+    held = current_hold(store, sid, snapshot, gates)
+    if any(g.get('status')!='PASS' for g in gates if g.get('gate')!='CI_FAILED'):
+        return False
+    if {g.get('gate') for g in gates}!={'PR_NOT_DRAFT','CI_FAILED','CI_PENDING','REVIEW_HANDLED','REVIEW_CONCLUDED','MERGE_CONFLICT','BRANCH_UP_TO_DATE','ISSUE_CLOSURE'}:
+        return False
+    required = snapshot.get('expected_checks')
+    if (not held or snapshot.get('head_sha') != head or not isinstance(required, list) or not required
+            or not publication_ready(store, sid, repo, num)
+            or any(check.get('name') in required for check in _latest_checks(snapshot.get('checks') or [])
+                   if _outcome(check) == 'failed')):
+        return False
+    store.audit('operator_nonrequired_quota_merge', {'session_id': sid, 'target': target,
+        'head_sha': head, 'approval_evidence': approval, 'failure_evidence_url': held['evidence_url'],
+        'failure_fingerprint': held['fingerprint'], 'ci_failure_preserved': True,
+        'normal_github_merge': True, 'gates': gates})
+    return True
+
+
 def gateway(args, store):
     sid = session_id(args)
     argv = args.arguments
@@ -281,7 +314,8 @@ def gateway(args, store):
         target = target_info[0]
         gates = asyncio.run(inspect(store, sid, target))
         if any(g['status'] != 'PASS' for row in gates for g in row['gates']):
-            raise ValueError('PR_GATE FAIL: merge/close requires every separate PR gate to pass')
+            if not _nonrequired_quota_merge_allowed(store,sid,target,argv,gates,getattr(args,'nonrequired_quota_approval',None)):
+                raise ValueError('PR_GATE FAIL: merge/close requires every separate PR gate to pass')
         if argv[1] == 'merge':
             expected_head = gates[0]['head_sha']
             supplied = options.get('--match-head-commit')
@@ -375,7 +409,7 @@ def main():
     p = owned('post-review'); p.add_argument('url'); p.add_argument('--kind', choices=['prd','slice'], default='prd'); p.add_argument('--slice-id')
     p = sub.add_parser('review-read'); p.add_argument('--followup', required=True)
     p = owned('status'); p.add_argument('--fresh', action='store_true'); p.add_argument('--pr')
-    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())

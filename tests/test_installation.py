@@ -265,3 +265,29 @@ def test_reviewed_live_baseline_is_exact_and_rollback_retains_it(installed,monke
     assert path.read_bytes()==before
     path.write_bytes(before+b'# Additional unreviewed edit\n')
     with pytest.raises(RuntimeError,match='changed locally'):manage.deploy(home,service)
+
+
+def test_stale_installer_refuses_downgrade_before_writes(installed,monkeypatch):
+    home,service=installed;manage.deploy(home,service);before=original_bytes(home)
+    monkeypatch.setattr(manage,'VERSION','0.0.1')
+    with pytest.raises(RuntimeError,match='Stale installer'):manage.deploy(home,service)
+    assert original_bytes(home)==before and service.stops==0
+
+
+def test_actual_capture_installer_cannot_replace_new_release(installed):
+    home,service=installed;manage.deploy(home,service);before=original_bytes(home)
+    namespace={'__file__':str(manage.ROOT/'tools/manage.py'),'__name__':'captured_installer'}
+    exec(compile((ROOT/'tests/fixtures/captured-installer-v0.1.0.py').read_text(),'captured_installer','exec'),namespace)
+    namespace['runtime_matches']=lambda p:True
+    namespace['native_smoke']=lambda *a:None
+    with pytest.raises(RuntimeError,match='changed locally'):namespace['deploy'](home,service)
+    assert original_bytes(home)==before and service.stops==0
+
+
+def test_coordination_receipts_survive_upgrade_and_rollback(installed):
+    from caller_pr_gates.quota import Coordinator
+    home,service=installed;state=home/'.local/state/caller-pr-gates';co=Coordinator(state)
+    permit=co.admit('account','core');co.throttle(permit,{'http_status':403,'message':'API rate limit exceeded'})
+    with co.db() as db:before=[dict(r) for r in db.execute('SELECT * FROM cooldowns')]
+    manage.deploy(home,service);manage.rollback(home,service)
+    with co.db() as db:assert [dict(r) for r in db.execute('SELECT * FROM cooldowns')]==before

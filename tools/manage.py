@@ -292,12 +292,16 @@ def deploy(home=None, service=None, verified_fingerprint=None):
                 if previous.get('was_running'): service.start()
             pending.unlink()
         pointer=base/'current.json';current=json.loads(pointer.read_text()) if pointer.exists() else None
+        if current:
+            before_version=current.get('version','')
+            if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',before_version) and tuple(map(int,VERSION.split('.')))<tuple(map(int,before_version.split('.'))):
+                raise RuntimeError('Stale installer cannot downgrade an installed release; use make rollback')
         assets=desired_assets(home,current)
         asset_before={name:(Path(name).read_bytes() if Path(name).exists() else None) for name in assets}
         package=live/'caller_pr_gates'
         incoming={p.name:p.read_bytes() for p in (ROOT/'caller_pr_gates').iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
         originals={p.name:p.read_bytes() for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}} if package.exists() else {}
-        expected=(current or {}).get('gate_hashes',{Path(n).name:v for n,v in RELEASE['gate_files'].items()})
+        expected=(current or {}).get('runtime_inventory',(current or {}).get('gate_hashes',{Path(n).name:v for n,v in RELEASE['gate_files'].items()}))
         actual_hashes={n:sha(v) for n,v in originals.items()}
         if originals and actual_hashes != expected:
             # Only a committed, reviewed complete baseline may cross the drift guard.
@@ -374,8 +378,8 @@ def deploy(home=None, service=None, verified_fingerprint=None):
             if not service.running(): raise RuntimeError('Monitor is not running after installation')
             if not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'): raise RuntimeError('Post-install runtime differs')
             native_smoke(home/'.local/share/caller-pr-stop-gate/bin/python',home)
-            pointer_value={'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
-                'gate_hashes':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
+            pointer_value={'schema':2,'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
+                'runtime_inventory':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
             dump(pointer,pointer_value);journal['committed']=True;dump(deployment/'journal.json',journal)
             pending.unlink()
             return {'status':'installed','version':VERSION,'commit':commit,'deployment':str(deployment),'code_unchanged':not code_changed,
@@ -402,7 +406,7 @@ def rollback(home=None,service=None):
             if (sha(Path(name).read_bytes()) if Path(name).exists() else None)!=row['after']: raise RuntimeError('Local edit blocks rollback: '+name)
         package=home/'.local/share/caller-pr-gates/caller_pr_gates'
         hashes={p.name:sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
-        if hashes!=current['gate_hashes']: raise RuntimeError('Local source edit blocks rollback')
+        if hashes!=current.get('runtime_inventory',current.get('gate_hashes')): raise RuntimeError('Local source edit blocks rollback')
         if any(row['live'].endswith('/caller-pr-stop-gate') for row in journal['exchanges']) and not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'):
             raise RuntimeError('Local dependency edit blocks rollback')
         was_running=service.running()

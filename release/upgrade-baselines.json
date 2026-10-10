@@ -24,5 +24,34 @@
       "external.py": "574ce453fe31a8db8d51b9803206e7e4ce96aa9f0e17fe7ae8b4120d68a6cebe",
       "closure.py": "92e0747001cc1c88b97d4446b5121b09a2437754421e1f63a44b95837ba60621"
     }
+  },
+  {
+    "previous_commit": "327e39752c3ae5850b6d501e51270398f4da5873",
+    "previous_version": "0.1.2",
+    "runtime_version": "1.7.2",
+    "reason": "Retain reviewed concurrent explicit-human non-required quota merge path; require every other gate to pass.",
+    "gate_hashes": {
+      "store.py": "fda95c07f0d6e6b644377f4e658dc8a20f1a546826111d0f70dfb0c8d192cd5a",
+      "monitor.py": "550b7c0e3dd3777f057e955100a05cae6574a83f3507654b1987847b0e28b9b6",
+      "transport.py": "6235dd80744f6cf31e1935fd650ad53af22ca91d8c096375e6c5515e7c4e521b",
+      "handoff.py": "d80a33c7ee4167707d9d9b1f20b7858f8672041d823cc08449257707f8c64b84",
+      "supervisor.py": "08229b2ee9442127ff39ba700ba10ddc51a235fa8c25c6e7133d0f2c2f2420b0",
+      "quota.py": "b971af45574818715e3aa9835216c797720c075d8379c5d140e0000542b9eede",
+      "policy.py": "a8b59de964f31b8c7cb81688ffc42f6dad5e9389b1c987ca6e73c99532109eb5",
+      "hook.py": "7cf1909ee2b2daf9630f49cb7163bf8fd31af89f48a58b2afb035da42988aeb1",
+      "__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
+      "prompts.py": "da0ffa8a0ec106f80ed33004e843eb5a20f00db423593b067271db35c02cf622",
+      "ghrelay.py": "31aa8a107e9024493b712957c61f04f4f4158d1c8a086e470051f76981a319c7",
+      "troubleshooting.py": "a48af58188b4c51f280ec9c6068bd66e36b4d5525a7d85dc2cf10d74e5144ac9",
+      "cli.py": "3a927577d3dc8769bf713de7368db23f4851da273a94d7277a2268f1e547e038",
+      "turns.py": "350ccf2be5403dbe401b6f83e5bb8c820e270b66ea54fec1d45feb62730780a0",
+      "prompt-defaults.json": "b30902688108ffb02a23296e49a3c8a5c366f0d9306d7ac252bd9ac487832eda",
+      "errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
+      "workflow.py": "9d3ebfc60b122c3f1480171b1620bcce54687bc1f61cc08da7f199e930c33e13",
+      "progress.py": "9689b7cc3df95078f5e4a070df11c651194a9a7e558ba51da98925da3e3d058c",
+      "github.py": "a3c2b72ea8e48668ce1e9165c2775d8bcbb6182aff6d746976f28f7e9daaa3d9",
+      "external.py": "4f65962293b6c94b99b8e447363f61d16ad3ac084defd221e4897fee2a34f8f7",
+      "closure.py": "8a2f205dea2a829a6b904983b9fd553ddd78a345ddf2e516c5c5e853046b2e5b"
+    }
   }
 ]
