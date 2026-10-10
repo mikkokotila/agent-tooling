@@ -81,6 +81,12 @@ def test_every_extracted_runtime_expression_preserves_original_text(catalogue, c
     for entry in corpus:
         expected = eval(compile('(' + entry['original'] + '\n)', '<original prompt>', 'eval'), environment)
         actual = eval(compile(entry['replacement'], '<new prompt call>', 'eval'), environment)
+        if entry['key'] in {'pr_rules','external_account_blocked'}:
+            # Preserve immutable extraction history, while explicitly testing
+            # the authorized service-availability policy update below.
+            assert actual != expected
+            assert 'non-blocking' in actual
+            continue
         assert actual == expected, (entry['key'], entry['module'], entry['line'])
 
 
@@ -221,12 +227,17 @@ def global_targets(tmp_path):
     return result
 
 
-def test_initial_global_mirrors_remain_byte_identical(catalogue, tmp_path):
+def test_policy_update_mirrors_both_clients_and_is_idempotent(catalogue, tmp_path):
     targets = global_targets(tmp_path)
     before = [p.read_bytes() for p in targets]
     result = prompts.sync_instruction_files(targets)
-    assert not result['error'] and result['changed'] == 0
-    assert [p.read_bytes() for p in targets] == before
+    assert not result['error'] and result['changed'] == 2
+    assert [p.read_bytes() for p in targets] != before
+    for target in targets:
+        assert 'Copilot quota exhaustion, unavailability' in target.read_text()
+        assert 'Every actual Copilot review comment or change request' in target.read_text()
+        assert 'Report the blocker once and yield.' not in target.read_text()
+    assert prompts.sync_instruction_files(targets)['changed']==0
 
 
 def test_global_edits_mirror_both_clients_and_preserve_personal_text(catalogue, tmp_path):

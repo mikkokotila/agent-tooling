@@ -51,7 +51,10 @@ def evidence_digest(snapshot, dispositions, previous=None):
                        hashlib.sha256(str(c.get('body', '')).encode()).hexdigest())
                       for c in snapshot.get('comments', []) if c.get('url') not in exempt and c.get('body'))
     failures = []
+    from .copilot import is_service_check
     for check in snapshot.get('checks', []):
+        if is_service_check(check):
+            continue
         state = str(check.get('status', '')).lower()
         conclusion = str(check.get('conclusion', '')).lower()
         if state in {'failure', 'error', 'failed'} or conclusion in {'failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale'}:

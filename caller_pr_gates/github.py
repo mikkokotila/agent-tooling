@@ -393,24 +393,30 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
         for run in selected_runs.values()])
     checks: list[dict] = []
     attempts_by_check: dict[str, int] = {}
+    services_by_check: dict[str, dict] = {}
+    from .copilot import service_identity
     for (key, run), jobs in zip(selected_runs.items(), jobs_by_run):
         attempt = int(run.get("run_attempt") or 1)
-        checks.append(_check(run, "workflow", key=key, attempt=attempt))
+        service = service_identity(run)
+        checks.append(dict(_check(run, "workflow", key=key, attempt=attempt), **service))
         for job in jobs:
             if job.get("head_sha") and job["head_sha"] != head:
                 raise EvidenceError("Workflow job belongs to a different head")
-            checks.append(_check(job, "job", key=f"job:{key}:{job.get('name')}", attempt=attempt))
+            checks.append(dict(_check(job, "job", key=f"job:{key}:{job.get('name')}", attempt=attempt), **service))
             match = re.search(r"/check-runs/(\d+)$", str(job.get("check_run_url") or ""))
             if match:
                 attempts_by_check[match[1]] = attempt
+                if service:
+                    services_by_check[match[1]] = service
     for item in checkruns:
         if item.get("head_sha") != head:
             raise EvidenceError("Check run belongs to a different head")
         app = _mapping(item.get("app"), "check-run application")
         if not app.get("id"):
             raise EvidenceError("Missing check-run application identity")
-        checks.append(_check(item, "check", key=f"check:{app.get('id')}:{item.get('name')}",
-                             attempt=attempts_by_check.get(str(item["id"]), 1)))
+        service = services_by_check.get(str(item['id']), {}) if app.get('id') == 15368 and app.get('slug') == 'github-actions' else {}
+        checks.append(dict(_check(item, "check", key=f"check:{app.get('id')}:{item.get('name')}",
+                             attempt=attempts_by_check.get(str(item["id"]), 1)), **service))
     checks.extend(_check(item, "status") for item in statuses)
     after = _mapping(await client.get(path), "final pull request read")
     after_head = _mapping(after.get("head"), "final pull request head").get("sha")
