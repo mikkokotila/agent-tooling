@@ -2,7 +2,7 @@
 
 Run `make install` from this checkout after updating it. It builds a standard wheel, runs the isolated regression and deployment suite, and activates only after verification. Dependencies and test tools come from captured local wheels; no package-index access is needed. GitHub CI runs this same verification on macOS arm64 with Python 3.13.2.
 
-Verification is bound to the SHA-256 inventory of the entire source checkout. A source/dependency/test/config change invalidates the cached result. An unchanged successful verification is reused. A new unexpected failure blocks installation; known defects are recorded as strict expected failures, never hidden passing checks.
+Verification is bound to the SHA-256 inventory of the entire source checkout. A source/dependency/test/config change invalidates the cached result. An unchanged successful verification is reused. Any failing required check blocks installation. The three captured quota regressions now pass; current releases have no expected failures. The immutable capture records their historical failure.
 
 Installation requires a committed, clean checkout, so recorded Git provenance identifies the deployed source. Commit/publish repository edits before installing; local live prompt edits remain separately protected.
 
@@ -26,4 +26,14 @@ Managed global instruction sections mirror this same selected catalogue. Already
 
 The baseline is specific to macOS arm64 and Python 3.13. The captured Codex trust records apply only to the exact captured home and unchanged callback definitions. A different home/new command requires normal Codex hook review; copying a historical hash cannot grant trust to a new command. The installer does not bypass that mechanism.
 
-Application authentication, GitHub permissions and external runner/account availability remain host/account responsibilities. They are not packaged into the release. The existing runtime gate's version remains 1.7.0; the repository/release version is 0.1.0.
+Application authentication, GitHub permissions and external runner/account availability remain host/account responsibilities. They are not packaged into the release. Release 0.1.3 installs runtime 1.7.3; these versions and the exact source commit are recorded separately. Native callback commands and trust records stay unchanged; the CLI launcher and managed background worker use Python safe-path mode to prevent a repository cwd from shadowing the installed module.
+
+
+## Reviewed concurrent maintenance
+
+Unrecorded live source edits normally abort installation before service changes. One complete observed 1.7.1 hash inventory is recorded in `release/upgrade-baselines.json`, with its exact prior installed version/commit. The retained validation-evidence and cancelled-readiness changes were reviewed into source before this baseline was accepted. Any additional difference still fails. Activation compares the exact files again; rollback restores the actual prior files, including that maintenance. It never repairs provenance by editing the current pointer or live database.
+
+Issue #3 was installed in order: stable identity (0.1.1 / 1.7.1), coordinated cooldown (0.1.2 / 1.7.2), then collection profiles (0.1.3 / 1.7.3). Coordination and narrow preflight tables are additive; older compatible processes can retain existing PR state. Installation preserves that database and every current receipt.
+
+
+Deployment pointer schema 2 records `runtime_inventory` instead of the legacy `gate_hashes` field. The original v0.1.0 installer therefore falls back to its captured inventory and refuses a newer runtime. Current installers also reject version downgrade before activation; intentional rollback uses `make rollback`. Tests execute the actual v0.1.0 installer against the new pointer and verify refusal with no writes.

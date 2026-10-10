@@ -73,9 +73,9 @@ def current_phase(store, row):
     snapshot = cached.get('snapshot') or {}
     dispositions = store.dispositions(row['repository'], row['number'])
     gates = evaluate_pr(snapshot, dispositions)
-    return progress.evaluate_progress(row, store.validation_runs(row['plan_id']),
+    return progress.evaluate_progress(row, store.validation_evidence(row['plan_id']),
         progress.fingerprint(row['cwd'], row['plan']), snapshot, gates,
-        progress.working_state(row['cwd']))
+        progress.working_state(row['cwd']),store.preflight(row['repository'],row['number']))
 
 
 def save_plan(store, sid, repository, number, cwd, payload):
@@ -179,14 +179,14 @@ def launch_check(store, sid, repository, number, cwd, check_id):
         raise ValueError(f"PR_PROGRESS {phase['phase']}: {phase.get('next_action')}")
     if check_id not in {c['id'] for c in row['plan']['checks']}:
         raise ValueError('Check is absent from the declared plan')
-    if any(r['check_id'] == check_id and r['input_digest'] == digest and r['status'] in {'running','pass','fail'} for r in store.validation_runs(row['plan_id'])):
+    if any(r['check_id'] == check_id and r['input_digest'] == digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
         raise ValueError('This check is already running or completed for these inputs')
     logs = store.state_dir / 'validation-logs'
     logs.mkdir(mode=0o700, exist_ok=True)
     log = logs / (str(uuid.uuid4()) + '.log')
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                CALLER_PR_GATES_STATE_DIR=str(store.state_dir))
-    args = [sys.executable, '-m', 'caller_pr_gates.cli', 'validate', '--worker', '--session', sid,
+    args = [sys.executable, '-P', '-m', 'caller_pr_gates.cli', 'validate', '--worker', '--session', sid,
             '--pr', f'https://github.com/{repository}/pull/{number}', '--cwd', cwd, '--check', check_id]
     with log.open('w') as output:
         log.chmod(0o600)

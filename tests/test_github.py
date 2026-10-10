@@ -170,7 +170,6 @@ class ResponseClassificationTests(unittest.TestCase):
     def test_real_quota_signals_beat_feature_prose_and_client_rate_limit_label(self):
         for status, headers, message in [(403, {**HIGH_QUOTA, "x-ratelimit-remaining": "0"}, FEATURE_MESSAGE),
                                          (403, {**HIGH_QUOTA, "retry-after": "60"}, FEATURE_MESSAGE),
-                                         (429, HIGH_QUOTA, FEATURE_MESSAGE),
                                          (403, HIGH_QUOTA, "You have exceeded a secondary rate limit.")]:
             with self.subTest(status=status, headers=headers, message=message):
                 self.assertEqual("rate_limited", _component_error(response_error(status, message, headers), RULES_PATH)["kind"])

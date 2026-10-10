@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.build'
 CAPTURE = json.loads((ROOT / 'capture/operational-baseline.json').read_text())
 VERSION = (ROOT / 'VERSION').read_text().strip()
+RELEASE = json.loads((ROOT/'release/runtime-manifest.json').read_text())
 EXCLUDED = {'.git', '.build', '.venv', 'dist', '__pycache__', '.pytest_cache'}
 
 def sha(data): return hashlib.sha256(data).hexdigest()
@@ -46,9 +47,12 @@ def run(argv, **kwargs):
 
 def assert_capture():
     if tomllib.loads((ROOT/'pyproject.toml').read_text())['project']['version']!=VERSION: raise RuntimeError('VERSION and project metadata disagree')
-    for name, expected in CAPTURE['gate_files'].items():
+    if RELEASE['version'] != VERSION: raise RuntimeError('Release manifest version disagrees')
+    actual={str(p.relative_to(ROOT)) for p in (ROOT/'caller_pr_gates').iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
+    if actual != set(RELEASE['gate_files']): raise RuntimeError('Release runtime inventory differs')
+    for name, expected in RELEASE['gate_files'].items():
         if sha((ROOT / name).read_bytes()) != expected:
-            raise RuntimeError('v0.1.0 must preserve captured runtime: ' + name)
+            raise RuntimeError('Runtime differs from committed release manifest: ' + name)
     for group in [CAPTURE['runtime_wheels'], json.loads((ROOT / 'wheels/tools/manifest.json').read_text())]:
         for row in group:
             path = ROOT / row['file'] if row['file'].startswith('wheels/') else ROOT / 'wheels/tools' / row['file']
@@ -88,10 +92,10 @@ def verify():
         run([python, '-m', 'pytest', '-q', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env)
     xml = ET.parse(BUILD / 'verification.xml')
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
-    if len(expected) != len(CAPTURE['known_defects']): raise RuntimeError('Known defect inventory changed')
+    if len(expected) != len(RELEASE['known_defects']): raise RuntimeError('Known defect inventory changed')
     if fingerprint() != revision: raise RuntimeError('Checkout changed during verification; publish and verify the new revision')
     value = {'source_fingerprint':revision, 'verified_at':time.time(), 'version':VERSION,
-             'known_expected_failures':CAPTURE['known_defects'], 'testcases':len(list(xml.iter('testcase')))}
+             'known_expected_failures':RELEASE['known_defects'], 'testcases':len(list(xml.iter('testcase')))}
     dump(report, value); return value
 
 def exchange(first, second):
@@ -288,13 +292,26 @@ def deploy(home=None, service=None, verified_fingerprint=None):
                 if previous.get('was_running'): service.start()
             pending.unlink()
         pointer=base/'current.json';current=json.loads(pointer.read_text()) if pointer.exists() else None
+        if current:
+            before_version=current.get('version','')
+            if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',before_version) and tuple(map(int,VERSION.split('.')))<tuple(map(int,before_version.split('.'))):
+                raise RuntimeError('Stale installer cannot downgrade an installed release; use make rollback')
         assets=desired_assets(home,current)
         asset_before={name:(Path(name).read_bytes() if Path(name).exists() else None) for name in assets}
         package=live/'caller_pr_gates'
         incoming={p.name:p.read_bytes() for p in (ROOT/'caller_pr_gates').iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
         originals={p.name:p.read_bytes() for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}} if package.exists() else {}
-        expected=(current or {}).get('gate_hashes',{Path(n).name:v for n,v in CAPTURE['gate_files'].items()})
-        if originals and {n:sha(v) for n,v in originals.items()} != expected: raise RuntimeError('Installed gate code changed locally; reconcile before installation')
+        expected=(current or {}).get('runtime_inventory',(current or {}).get('gate_hashes',{Path(n).name:v for n,v in RELEASE['gate_files'].items()}))
+        actual_hashes={n:sha(v) for n,v in originals.items()}
+        if originals and actual_hashes != expected:
+            # Only a committed, reviewed complete baseline may cross the drift guard.
+            accepted=json.loads((ROOT/'release/upgrade-baselines.json').read_text())
+            live_release=json.loads((live/'release.json').read_text())
+            if not current or not any(
+                current.get('commit')==b['previous_commit'] and current.get('version')==b['previous_version']
+                and live_release.get('version')==b['runtime_version'] and actual_hashes==b['gate_hashes']
+                for b in accepted):
+                raise RuntimeError('Installed gate code changed locally; reconcile before installation')
         code_changed=incoming != originals
         runtime_changed=not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python')
         revision=fingerprint()
@@ -306,7 +323,8 @@ def deploy(home=None, service=None, verified_fingerprint=None):
         asset_before[str(release_path)]=release_path.read_bytes() if release_path.exists() else None
         release=json.loads(release_path.read_text()) if release_path.exists() else {'version':CAPTURE['captured_gate_version']}
         release['source']=str(ROOT)
-        release['agent_tooling']={'version':VERSION,'commit':commit,'source_fingerprint':revision,'captured_gate_version':CAPTURE['captured_gate_version'], 'known_defects':CAPTURE['known_defects']}
+        release['version']=RELEASE['runtime_version']
+        release['agent_tooling']={'version':VERSION,'commit':commit,'source_fingerprint':revision,'captured_gate_version':CAPTURE['captured_gate_version'], 'known_defects':RELEASE['known_defects']}
         assets[str(release_path)]=(json.dumps(release,indent=2)+'\n').encode()
         changes={name:data for name,data in assets.items() if not Path(name).exists() or Path(name).read_bytes()!=data}
         if not changes and not code_changed and not runtime_changed and service.running():
@@ -360,8 +378,8 @@ def deploy(home=None, service=None, verified_fingerprint=None):
             if not service.running(): raise RuntimeError('Monitor is not running after installation')
             if not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'): raise RuntimeError('Post-install runtime differs')
             native_smoke(home/'.local/share/caller-pr-stop-gate/bin/python',home)
-            pointer_value={'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
-                'gate_hashes':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
+            pointer_value={'schema':2,'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
+                'runtime_inventory':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
             dump(pointer,pointer_value);journal['committed']=True;dump(deployment/'journal.json',journal)
             pending.unlink()
             return {'status':'installed','version':VERSION,'commit':commit,'deployment':str(deployment),'code_unchanged':not code_changed,
@@ -388,7 +406,7 @@ def rollback(home=None,service=None):
             if (sha(Path(name).read_bytes()) if Path(name).exists() else None)!=row['after']: raise RuntimeError('Local edit blocks rollback: '+name)
         package=home/'.local/share/caller-pr-gates/caller_pr_gates'
         hashes={p.name:sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
-        if hashes!=current['gate_hashes']: raise RuntimeError('Local source edit blocks rollback')
+        if hashes!=current.get('runtime_inventory',current.get('gate_hashes')): raise RuntimeError('Local source edit blocks rollback')
         if any(row['live'].endswith('/caller-pr-stop-gate') for row in journal['exchanges']) and not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'):
             raise RuntimeError('Local dependency edit blocks rollback')
         was_running=service.running()

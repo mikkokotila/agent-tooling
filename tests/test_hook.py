@@ -97,7 +97,7 @@ class OwnershipRegression(unittest.TestCase):
     def test_explicit_successful_edit_and_git_push_establish_ownership_with_evidence(self):
         for event in [self.event(tool='Edit', tool_input={'file_path': '/repo/src.py'}), self.event(command='git -C /repo push origin HEAD')]:
             store = Memory()
-            with patch.object(hook, '_git_context', return_value=('/repo', 'o/r', 'fix')), patch.object(hook.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'found': True, 'pull_number': 77}))):
+            with patch.object(hook, '_git_context', return_value=('/repo', 'o/r', 'fix')), patch.object(hook, 'discover_current_pr', return_value={'found':True,'pull_number':77}):
                 hook.discover(event, store)
             self.assertEqual([row['number'] for row in store.registered], [77])
             evidence = [args[1] for args in store.events if args[0] == 'ownership_evidence'][0]
@@ -108,7 +108,7 @@ class OwnershipRegression(unittest.TestCase):
     def test_nested_read_directory_does_not_get_owned_with_a_write_elsewhere(self):
         event = self.event(tool='functions.exec', tool_input={'code': 'await tools.exec_command({cmd:"cat src.py",workdir:"/read-repo"}); await tools.exec_command({cmd:"git commit -m Fix",workdir:"/write-repo"});'})
         store = Memory()
-        with patch.object(hook, '_git_context', return_value=('/write-repo', 'o/r', 'fix')) as context, patch.object(hook.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'found': True, 'pull_number': 77}))):
+        with patch.object(hook, '_git_context', return_value=('/write-repo', 'o/r', 'fix')) as context, patch.object(hook, 'discover_current_pr', return_value={'found':True,'pull_number':77}):
             hook.discover(event, store)
         context.assert_called_once_with('/write-repo')
 
@@ -116,7 +116,7 @@ class OwnershipRegression(unittest.TestCase):
         store = Memory()
         store.registered = [dict(repository='o/r', number=77, session_id='read-session')]
         event = self.event(tool='Edit', tool_input={'file_path': '/repo/src.py'}, turn_id='new-write-turn')
-        with patch.object(hook, '_git_context', return_value=('/repo', 'o/r', 'fix')), patch.object(hook.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'found': True, 'pull_number': 77}))):
+        with patch.object(hook, '_git_context', return_value=('/repo', 'o/r', 'fix')), patch.object(hook, 'discover_current_pr', return_value={'found':True,'pull_number':77}):
             hook.discover(event, store)
         self.assertEqual(len(store.registered), 1)
         evidence = [args[1] for args in store.events if args[0] == 'ownership_evidence'][0]

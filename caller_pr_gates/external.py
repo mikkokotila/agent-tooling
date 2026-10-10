@@ -48,17 +48,13 @@ def current_hold(store, sid: str, snapshot: dict, gates: list[dict]) -> dict | N
 
 
 async def _job_proof(repository: str, run: str, job: str) -> dict:
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     import httpx
     client = GitHubClient()
     metadata = await client.get(f'/repos/{repository}/actions/jobs/{job}')
     workflow = await client.get(f'/repos/{repository}/actions/runs/{run}')
-    # httpx removes Authorization when a signed log URL redirects off GitHub.
-    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as transport:
-        response = await transport.get(f'https://api.github.com/repos/{repository}/actions/jobs/{job}/logs',
-            headers={'Authorization': f'Bearer {client.token}', 'Accept': 'application/vnd.github+json'})
-        response.raise_for_status()
-    return {'job': metadata, 'workflow': workflow, 'log': response.text}
+    log = await client.logs(f'/repos/{repository}/actions/jobs/{job}/logs')
+    return {'job': metadata, 'workflow': workflow, 'log': log}
 
 
 async def hold_verified_failure(store, sid: str, snapshot: dict, gates: list[dict], *,

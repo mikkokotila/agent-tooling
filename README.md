@@ -1,20 +1,18 @@
 # Agent tooling
 
-Version 0.1.0 captures the operational Caller PR gate 1.7.0 for Codex and Claude. Runtime Python files and all 58 prompt sections are preserved byte-for-byte. The known GitHub quota fingerprint defect is intentionally retained.
-
-This repository owns source, prompts, dependency snapshots, client wiring and reproducible installation. Mutable PR state, tokens, personal settings, chats and logs remain outside Git.
-
-From the local checkout:
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.3 installs runtime 1.7.3. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
 ```sh
 git pull --ff-only
 make install
 ```
 
-`make install` verifies the candidate offline, preserves local edits/settings/state, activates changed components transactionally, verifies actual native callbacks, and records the exact Git commit. Repeating it on the same checkout reuses content-bound verification and makes no deployment changes. Updating Git alone never changes the live hooks.
+Installation verifies the committed candidate offline and activates it transactionally. Updating Git alone never changes live hooks. `make verify`, `make build`, `make status` and `make rollback` are also available. Rollback keeps current PR state.
 
-Other commands: `make verify` (isolated regression/install tests), `make build` (wheel), `make status` (installed provenance), and `make rollback` (previous code/config deployment while keeping current PR state).
+The checker retains separate CI, review, conflict, current target ancestry and linked-issue gates. It publishes before local validation, tracks exact owner chats and polls one open PR every five minutes or several every ten minutes. Unchanged errors never restart chats.
 
-v0.1.0 supports the captured macOS arm64 / Python 3.13 environment. On the current machine, all operational assets already match: the first installation only changes release provenance. It preserves the existing runtime, callback definitions/trust, monitor process, prompt text and global instruction contents.
+Issue #3 adds stable quota blocker identity, durable shared request cooldown and freshness-bound collection sharing. Validation launch and execution each read live ancestry without reloading the whole CI/review inventory. Completion and merge still require full current evidence. Source, all 58 prompts, captured dependency wheels and client wiring are versioned here; tokens, personal settings and mutable task state remain local.
 
-The source code and prompt catalogue are byte-identical to the captured gate 1.7.0. Repository release version 0.1.0 and the captured gate's historical version 1.7.0 are recorded separately. See [the complete operational inventory](docs/operations.md), [installation behavior](docs/installation.md), and [known defects](docs/known-defects.md).
+Edit the annotated live `~/.local/share/caller-pr-gates/prompts.toml` to influence both clients immediately, or version repository edits and install them. Valid local edits are preserved; conflicting edits require reconciliation.
+
+See [installation and rollback](docs/installation.md), [request coordination and budgets](docs/github-coordination.md), [operational inventory](docs/operations.md) and [defect history](docs/known-defects.md).

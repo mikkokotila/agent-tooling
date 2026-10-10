@@ -9,24 +9,7 @@ import time
 from .policy import _latest_checks, _outcome
 
 
-def _error_identity(value, component=""):
-    if isinstance(value, dict):
-        return {"component": component, **{key: value.get(key) for key in
-                ("kind", "path", "http_status", "message")}}
-    text = str(value)
-    status = re.search(r"\b(?:GitHub|HTTP)\s+(\d{3})\b", text, re.I)
-    message = text
-    if "body=" in text:
-        body = text.split("body=", 1)[1]
-        try:
-            parsed = json.loads(body)
-            message = str(parsed.get("message", body)) if isinstance(parsed, dict) else body
-        except (TypeError, ValueError):
-            message = body
-    # Quota headers are request telemetry, never a changed repair obligation.
-    message = re.sub(r"(?:rate-limit|rate_limit_headers)\s*:\s*\{[^}]*\}", "", message, flags=re.I)
-    return {"component": component, "http_status": int(status.group(1)) if status else None,
-            "message": " ".join(message.split())}
+from .errors import error_identity as _error_identity
 
 
 def branch_identity(snapshot, gates, previous=None):

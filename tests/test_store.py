@@ -438,7 +438,9 @@ class ValidationLedgerTests(unittest.TestCase):
         self.store.finish_validation(run["run_id"], 0, "source-1")
         second = self.save(evidence_digest="remote-new-failure")
         self.assertNotEqual(first["plan_id"], second["plan_id"])
-        self.assertEqual(self.store.begin_validation(second["plan_id"], "unit", "source-1")["status"], "running")
+        self.assertEqual(self.store.validation_evidence(second["plan_id"])[0]["status"], "pass")
+        with self.assertRaisesRegex(ValueError, "already completed"):
+            self.store.begin_validation(second["plan_id"], "unit", "source-1")
 
     def test_declared_input_and_environment_requirements_survive_generations(self):
         original = self.plan()

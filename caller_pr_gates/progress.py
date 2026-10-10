@@ -400,7 +400,7 @@ def validation_decision(plan: dict, runs: list[dict], current_digest: str, check
 
 def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                       snapshot: dict | None = None, review_gates: list[dict] | None = None,
-                      local_state: dict | None = None) -> dict:
+                      local_state: dict | None = None, preflight: dict | None = None) -> dict:
     """Order validation, publication and proven review conclusions.
 
     A run may pass only after its managed process actually exited successfully
@@ -450,12 +450,20 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
         return result('PUBLISH_REQUIRED', 'Inspect, commit and push the current work before local checks')
     if not local_state['clean']:
         return result('PUBLISH_REQUIRED', 'Commit and push current work now; local checks must not delay publication')
-    if not fresh_remote():
+    # A full collection proves the same ancestry and more. It supersedes an
+    # older preflight; a newer failed preflight must still invalidate old proof.
+    preflight_boundary=(preflight or {}).get('attempted_at',(preflight or {}).get('collected_at'))
+    full_stamp=(snapshot or {}).get('collected_at')
+    full_newer=(isinstance(full_stamp,(int,float)) and isinstance(preflight_boundary,(int,float))
+        and not isinstance(full_stamp,bool) and not isinstance(preflight_boundary,bool) and full_stamp>=preflight_boundary)
+    validation_evidence=snapshot if preflight is None or full_newer else preflight
+    stamp=(validation_evidence or {}).get('collected_at')
+    if not isinstance(stamp,(int,float)) or isinstance(stamp,bool) or not 0<=time.time()-stamp<=REMOTE_EVIDENCE_TTL:
         return result('REMOTE_READ_REQUIRED', 'Verify the remote PR head before running local checks')
-    if snapshot.get('head_sha') != head:
+    if validation_evidence.get('head_sha') != head:
         return result('PUBLISH_REQUIRED', 'Push the current commit now; local checks must not delay publication')
     from .policy import branch_freshness_gate
-    freshness = branch_freshness_gate(snapshot)
+    freshness = branch_freshness_gate(validation_evidence)
     if freshness['status'] == 'FAIL':
         return result('SYNC_BASE_REQUIRED', '; '.join(freshness['details']))
     if freshness['status'] != 'PASS':
@@ -495,6 +503,8 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
         return result("VALIDATE_REQUIRED", "Run the distinct missing necessary validations", pending=missing, passed=passed, running=sorted(active))
     if active:
         return result("VALIDATE_RUNNING", "Managed checks are running; work on the next authorized PR and let the monitor check remote state", running=sorted(active), pending=[], passed=passed)
+    if not fresh_remote() or (preflight is not None and (not full_newer and snapshot.get("collected_at",0)<(preflight.get("collected_at") or 0))):
+        return result("WAIT_REMOTE", "Local preflight proves only head and ancestry; collect full fresh CI/review/closure evidence for completion")
     if snapshot.get("head_sha_after") != head:
         return result("WAIT_REMOTE", "The remote head changed or is unverifiable; collect fresh current-head evidence")
     if not isinstance(review_gates, list):

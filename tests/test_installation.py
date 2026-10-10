@@ -56,9 +56,9 @@ def alter_owned_code(home):
 
 def test_capture_code_and_wheel_assets_are_byte_identical():
     manage.assert_capture()
-    wheel=next((ROOT/'.build/dist').glob('agent_tooling-*.whl'))
+    wheel=ROOT/'.build/dist'/f'agent_tooling-{manage.VERSION}-py3-none-any.whl'
     with zipfile.ZipFile(wheel) as z:
-        for name,digest in manage.CAPTURE['gate_files'].items():assert manage.sha(z.read(name))==digest
+        for name,digest in manage.RELEASE['gate_files'].items():assert manage.sha(z.read(name))==digest
         assert z.read('agent_tooling_assets/prompts.toml')==(ROOT/'prompts.toml').read_bytes()
         for p in (ROOT/'config').iterdir():assert z.read('agent_tooling_assets/config/'+p.name)==p.read_bytes()
 
@@ -69,7 +69,7 @@ def test_install_preserves_operational_assets_and_state(installed):
     assert service.stops==service.starts==0
     for name,data in before.items():
         if name!='.local/share/caller-pr-gates/release.json':assert (home/name).read_bytes()==data,name
-    assert json.loads((home/'.local/share/caller-pr-gates/release.json').read_text())['version']=='1.7.0'
+    assert json.loads((home/'.local/share/caller-pr-gates/release.json').read_text())['version']==manage.RELEASE['runtime_version']
 
 def test_repeated_install_is_a_true_noop(installed):
     home,service=installed;manage.deploy(home,service);before=original_bytes(home)
@@ -244,3 +244,50 @@ def test_source_race_before_activation_is_rejected(installed,monkeypatch):
     with pytest.raises(RuntimeError,match='before activation'):
         manage.deploy(home,service,verified_fingerprint='verified')
     assert original_bytes(home)==before and service.stops==0
+
+
+def test_reviewed_live_baseline_is_exact_and_rollback_retains_it(installed,monkeypatch):
+    home,service=installed
+    package=home/'.local/share/caller-pr-gates/caller_pr_gates'
+    path=package/'workflow.py';path.write_bytes(path.read_bytes()+b'\n# Concurrent reviewed maintenance\n')
+    base=home/'.local/share/agent-tooling';base.mkdir(parents=True)
+    pointer={'version':'0.1.1','commit':'reviewed','gate_hashes':{'wrong':'hash'}}
+    manage.dump(base/'current.json',pointer)
+    row={'previous_version':'0.1.1','previous_commit':'reviewed','runtime_version':'1.7.0',
+         'gate_hashes':{p.name:manage.sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}}
+    original=Path.read_text
+    def read(p,*a,**k):
+        if p==manage.ROOT/'release/upgrade-baselines.json':return json.dumps([row])
+        return original(p,*a,**k)
+    monkeypatch.setattr(Path,'read_text',read)
+    before=path.read_bytes()
+    manage.deploy(home,service);manage.rollback(home,service)
+    assert path.read_bytes()==before
+    path.write_bytes(before+b'# Additional unreviewed edit\n')
+    with pytest.raises(RuntimeError,match='changed locally'):manage.deploy(home,service)
+
+
+def test_stale_installer_refuses_downgrade_before_writes(installed,monkeypatch):
+    home,service=installed;manage.deploy(home,service);before=original_bytes(home)
+    monkeypatch.setattr(manage,'VERSION','0.0.1')
+    with pytest.raises(RuntimeError,match='Stale installer'):manage.deploy(home,service)
+    assert original_bytes(home)==before and service.stops==0
+
+
+def test_actual_capture_installer_cannot_replace_new_release(installed):
+    home,service=installed;manage.deploy(home,service);before=original_bytes(home)
+    namespace={'__file__':str(manage.ROOT/'tools/manage.py'),'__name__':'captured_installer'}
+    exec(compile((ROOT/'tests/fixtures/captured-installer-v0.1.0.py').read_text(),'captured_installer','exec'),namespace)
+    namespace['runtime_matches']=lambda p:True
+    namespace['native_smoke']=lambda *a:None
+    with pytest.raises(RuntimeError,match='changed locally'):namespace['deploy'](home,service)
+    assert original_bytes(home)==before and service.stops==0
+
+
+def test_coordination_receipts_survive_upgrade_and_rollback(installed):
+    from caller_pr_gates.quota import Coordinator
+    home,service=installed;state=home/'.local/state/caller-pr-gates';co=Coordinator(state)
+    permit=co.admit('account','core');co.throttle(permit,{'http_status':403,'message':'API rate limit exceeded'})
+    with co.db() as db:before=[dict(r) for r in db.execute('SELECT * FROM cooldowns')]
+    manage.deploy(home,service);manage.rollback(home,service)
+    with co.db() as db:assert [dict(r) for r in db.execute('SELECT * FROM cooldowns')]==before

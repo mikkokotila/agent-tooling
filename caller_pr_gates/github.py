@@ -14,73 +14,7 @@ class EvidenceError(RuntimeError):
     """GitHub did not provide complete evidence; completion must fail closed."""
 
 
-def _component_error(error: Exception, path: str) -> dict:
-    """Classify the response evidence, not the client's generic 403 label."""
-    text = str(error)
-    status: int | None = None
-    body = text
-    headers: dict[str, str] = {}
-    current: BaseException | None = error
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
-        response = getattr(current, "response", None)
-        if response is not None:
-            status = getattr(response, "status_code", None)
-            body = getattr(response, "text", text)
-            response_headers = getattr(response, "headers", {})
-            headers = {name: str(response_headers[name]) for name in (
-                "x-ratelimit-resource", "x-ratelimit-limit", "x-ratelimit-remaining",
-                "x-ratelimit-used", "x-ratelimit-reset", "retry-after")
-                if name in response_headers}
-            break
-        current = current.__cause__ or current.__context__
-    if status is None:
-        match = re.match(r"GitHub\s+(\d{3})(?:\s+rate-limit)?\s*:\s*(.*)", text, re.DOTALL)
-        if match:
-            status = int(match[1])
-            body = match[2]
-            if " body=" in body:
-                raw_headers, body = body.split(" body=", 1)
-                try:
-                    parsed_headers = ast.literal_eval(raw_headers)
-                    if isinstance(parsed_headers, dict):
-                        headers = {str(key).lower(): str(value) for key, value in parsed_headers.items()
-                                   if str(key).lower().startswith("x-ratelimit-") or str(key).lower() == "retry-after"}
-                except (ValueError, SyntaxError):
-                    pass
-    message = body
-    try:
-        payload = json.loads(body)
-        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
-            message = payload["message"]
-    except (ValueError, TypeError):
-        pass
-    lowered = str(message).lower()
-    if (status == 429 or headers.get("x-ratelimit-remaining") == "0"
-            or "retry-after" in headers or "rate limit" in lowered
-            or "secondary rate" in lowered):
-        kind = "rate_limited"
-    elif (status == 403 and "/rules/branches/" in path
-          and "upgrade to github" in lowered
-          and "make this repository public" in lowered
-          and "enable this feature" in lowered):
-        kind = "feature_unavailable"
-    elif status in {401, 403}:
-        kind = "permission_denied"
-    elif status == 404:
-        kind = "not_found_or_permission"
-    elif status is not None and 500 <= status <= 599:
-        kind = "transient"
-    elif isinstance(error, (TimeoutError, ConnectionError)) or any(
-            word in type(error).__name__.lower() for word in ("timeout", "connect", "transport")):
-        kind = "transient"
-    elif isinstance(error, EvidenceError):
-        kind = "invalid_evidence"
-    else:
-        kind = "api_error"
-    return {"kind": kind, "http_status": status, "message": message,
-            "path": path, "response_body": body, "rate_limit_headers": headers}
+from .errors import diagnostic as _component_error
 
 
 ISSUE_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {
@@ -321,8 +255,11 @@ def _check(raw: dict, kind: str, *, key: str | None = None, attempt: int = 1) ->
 
 
 async def collect_pr(repository: str, number: int, token_user: str | None = None) -> dict:
-    from github_interface.client import GitHubClient
-    return await collect_with_client(GitHubClient(token_user), repository, number)
+    from .transport import GitHubClient
+    client=GitHubClient(token_user)
+    from .collections import Collections
+    return await Collections(client.coordinator,client.account).run('full-pr',f'{repository}/pull/{number}',
+        lambda: collect_with_client(_BatchClient(client),repository,number))
 
 
 async def _branch_evidence(client, prefix, base_ref, head):
@@ -392,15 +329,23 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     if not isinstance(base_name, str) or not base_name:
         raise EvidenceError("Missing base branch")
     from .closure import collect as collect_closure
+    initial_branch = await _branch_evidence(client, prefix, base_name, head)
+    immutable_key=None;cached_files=None
+    if isinstance(client,_BatchClient) and not initial_branch.get('branch_error'):
+        immutable_key=json.dumps(['files',repository,number,head,base_name,initial_branch.get('base_sha'),raw.get('changed_files')])
+        cached_files=client.collections.immutable(immutable_key)
+    async def files_read():
+        return cached_files if cached_files is not None else await _rest_pages(client,f'{path}/files')
+    async def branch_read():return initial_branch
     threads, reviews, issues, commits, files, checkruns, statuses, workflows, rule_evidence, branch_evidence, closure_evidence = await asyncio.gather(
         _threads(client, variables), _reviews(client, variables),
         _rest_pages(client, f"{prefix}/issues/{number}/comments"), _commits(client, variables),
-        _rest_pages(client, f"{path}/files"),
+        files_read(),
         _rest_pages(client, f"{prefix}/commits/{head}/check-runs", {"filter": "all"}, "check_runs"),
         _rest_pages(client, f"{prefix}/commits/{head}/statuses"),
         _rest_pages(client, f"{prefix}/actions/runs", {"head_sha": head}, "workflow_runs"),
         _rules_evidence(client, f"{prefix}/rules/branches/{quote(base_name, safe='')}"),
-        _branch_evidence(client, prefix, base_name, head), collect_closure(client, repository, number))
+        branch_read(), collect_closure(client, repository, number))
     if not isinstance(raw.get("changed_files"), int) or len(files) != raw["changed_files"]:
         raise EvidenceError("Changed-file enumeration is incomplete (GitHub caps it at 3000)")
     if not isinstance(raw.get("commits"), int) or len(commits) != raw["commits"]:
@@ -479,10 +424,12 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     branch_error = branch_evidence.pop('branch_error', None)
     branch_evidence['base_ref_after'] = (after.get('base') or {}).get('ref')
     closure_error = closure_evidence.pop('closure_error', None)
+    if immutable_key and not branch_error and head==after_head and branch_evidence.get('base_sha')==branch_evidence.get('base_sha_after') and base_name==branch_evidence.get('base_ref_after'):
+        client.collections.remember(immutable_key,files)
     return {"repository": repository, "number": number, "url": raw.get("html_url"),
         "state": raw["state"], "merged": raw["merged"], "draft": raw["draft"],
         "mergeable": after.get('mergeable'),
-        "head_sha": head, "head_sha_after": after_head, "author_login": author,
+        "head_sha": head, "head_sha_after": after_head, "head_ref": (raw.get("head") or {}).get("ref"), "head_repository": ((raw.get("head") or {}).get("repo") or {}).get("full_name"), "author_login": author,
         "actor_login": actor_login, "collected_at": time.time(), "checks": checks,
         "expected_checks": sorted(set(expected)) if rule_error is None or rules_absent_on_plan else None,
         "known_expected_checks": sorted(set(expected)),
@@ -501,8 +448,11 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
 
 
 async def collect_issue(repository: str, number: int, token_user: str | None = None) -> dict:
-    from github_interface.client import GitHubClient
-    return await collect_issue_with_client(GitHubClient(token_user), repository, number)
+    from .transport import GitHubClient
+    client=GitHubClient(token_user)
+    from .collections import Collections
+    return await Collections(client.coordinator,client.account).run('issue',f'{repository}/issues/{number}',
+        lambda: collect_issue_with_client(client,repository,number))
 
 
 async def collect_issue_with_client(client: Any, repository: str, number: int) -> dict:
@@ -534,3 +484,111 @@ async def collect_issue_with_client(client: Any, repository: str, number: int) -
             "title": raw.get("title") or "", "body": raw.get("body") or "",
             "created_at": raw.get("created_at"), "updated_at": raw["updated_at"],
             "document_edited_at": metadata.get("lastEditedAt"), "commit_shas": [], "changed_files": []}
+
+# These first pages share one authenticated GraphQL response. Each existing
+# enumerator still validates and fetches all additional pages independently.
+BATCH_QUERY = '''query($owner:String!, $repo:String!, $number:Int!) {
+ viewer { login }
+ repository(owner:$owner,name:$repo) { defaultBranchRef { name }
+  pullRequest(number:$number) {
+   headRefOid baseRefName state merged baseRef { branchProtectionRule { requiredStatusCheckContexts } }
+   closingIssuesReferences(first:100) { nodes { number url state repository { nameWithOwner } } pageInfo { hasNextPage endCursor } }
+   reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) { nodes {
+    id databaseId fullDatabaseId body url createdAt updatedAt author { login }
+   } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } }
+   reviews(first:100) { nodes { id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login } } pageInfo { hasNextPage endCursor } }
+   commits(first:100) { nodes { commit { oid committedDate } } pageInfo { hasNextPage endCursor } }
+  }
+ }
+}'''
+
+class _BatchClient:
+    def __init__(self,client):
+        from .collections import Collections
+        self.client=client;self.seed_task=None;self.variables=None
+        self.collections=Collections(client.coordinator,client.account)
+
+    async def seed(self,variables=None):
+        if variables:self.variables={k:v for k,v in variables.items() if k in {'owner','repo','number'}}
+        if not self.seed_task:
+            # /user and SUMMARY run together; only SUMMARY supplies variables.
+            while self.variables is None:await asyncio.sleep(0)
+            if not self.seed_task:self.seed_task=asyncio.create_task(self.client.graphql(BATCH_QUERY,self.variables))
+        return await self.seed_task
+
+    async def get(self,path,**kwargs):
+        if path=='/user':return _mapping((await self.seed()).get('viewer'),'authenticated viewer')
+        return await self.client.get(path,**kwargs)
+
+    async def graphql(self,query,variables):
+        from .closure import QUERY
+        if query==SUMMARY_QUERY or query in {THREAD_QUERY,REVIEWS_QUERY,COMMITS_QUERY,QUERY} and variables.get('cursor') is None:
+            return json.loads(json.dumps(await self.seed(variables)))
+        return await self.client.graphql(query,variables)
+
+
+async def collect_validation_with_client(client,repository,number):
+    """Only fresh lifecycle/head/target ancestry. Cannot satisfy completion."""
+    prefix=f'/repos/{repository}';path=f'{prefix}/pulls/{number}'
+    raw=_mapping(await client.get(path),'validation PR')
+    head=_mapping(raw.get('head'),'PR head').get('sha')
+    base=_mapping(raw.get('base'),'PR base').get('ref')
+    if not re.fullmatch(r'[a-fA-F0-9]{40}',str(head)) or not base or type(raw.get('merged')) is not bool or raw.get('state') not in {'open','closed'}:
+        raise EvidenceError('Missing validation lifecycle/head/target evidence')
+    receipt=await _branch_evidence(client,prefix,base,head)
+    after=_mapping(await client.get(path),'final validation PR')
+    if any(raw.get(k)!=after.get(k) for k in ('state','merged','draft','updated_at')):
+        raise EvidenceError('PR lifecycle changed during validation preflight')
+    if (after.get('head') or {}).get('sha')!=head:raise EvidenceError('PR head changed during validation preflight')
+    receipt=await _branch_final_read(client,prefix,receipt)
+    error=receipt.pop('branch_error',None)
+    return dict(repository=repository,number=number,profile='validation',state=raw['state'],merged=raw['merged'],
+        head_sha=head,head_sha_after=(after.get('head') or {}).get('sha'),base_ref_after=(after.get('base') or {}).get('ref'),
+        collected_at=time.time(),component_errors={'branch_freshness':error} if error else {},**receipt)
+
+
+async def collect_validation(repository,number,token_user=None):
+    from .transport import GitHubClient
+    from .collections import Collections
+    client=GitHubClient(token_user)
+    return await Collections(client.coordinator,client.account).run('validation',f'{repository}/pull/{number}',
+        lambda:collect_validation_with_client(client,repository,number))
+
+
+async def collect_review_with_client(client,repository,number):
+    """Current actors, complete review/reply inventory and commit chronology."""
+    owner,repo=repository.split('/');variables={'owner':owner,'repo':repo,'number':number}
+    path=f'/repos/{repository}/pulls/{number}'
+    raw,actor=await asyncio.gather(client.get(path),client.get('/user'))
+    raw=_mapping(raw,'review PR');head=_mapping(raw.get('head'),'review head').get('sha')
+    if not re.fullmatch(r'[a-fA-F0-9]{40}',str(head)):raise EvidenceError('Missing current review head')
+    threads,reviews,issues,commits=await asyncio.gather(_threads(client,variables),_reviews(client,variables),
+        _rest_pages(client,f'/repos/{repository}/issues/{number}/comments'),_commits(client,variables))
+    if len(commits)!=raw.get('commits'):raise EvidenceError('Review commit chronology incomplete')
+    comments=[]
+    for thread in threads:
+        batch=[_comment(c,'inline',thread) for c in thread['comments']]
+        for i,c in enumerate(batch):c['replies']=[dict(r) for r in batch[i+1:]]
+        comments.extend(batch)
+    for review in reviews:
+        if review.get('state')!='PENDING' and (str(review.get('body') or '').strip() or review.get('state')=='CHANGES_REQUESTED'):
+            comments.append(_comment({**review,'body':review.get('body') or 'Review requests changes.'},'review'))
+    issue_comments=[_comment(c,'issue') for c in issues];comments.extend(issue_comments)
+    for c in comments:
+        if c['kind']!='inline':c['replies']=[dict(r) for r in issue_comments if r['id']!=c['id'] and str(r.get('created_at') or '')>str(c['updated_at'])]
+    after=_mapping(await client.get(path),'final review PR')
+    if any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base')) or (after.get('head') or {}).get('sha')!=head:
+        raise EvidenceError('PR changed during review collection')
+    actor_login=_mapping(actor,'authenticated actor').get('login');author=_mapping(raw.get('user'),'PR author').get('login')
+    if not actor_login or not author or type(raw.get('merged')) is not bool or raw.get('state') not in {'open','closed'}:raise EvidenceError('Incomplete review actors/lifecycle')
+    return dict(repository=repository,number=number,profile='review',state=raw['state'],merged=raw['merged'],
+        head_sha=head,head_sha_after=head,actor_login=actor_login,author_login=author,comments=comments,
+        commit_shas=[c['oid'] for c in commits],commit_dates={c['oid']:c['committedDate'] for c in commits},collected_at=time.time())
+
+
+async def collect_review(repository,number,token_user=None):
+    from .transport import GitHubClient
+    from .collections import Collections
+    client=GitHubClient(token_user)
+    return await Collections(client.coordinator,client.account).run('review',f'{repository}/pull/{number}',
+        lambda:collect_review_with_client(client,repository,number))

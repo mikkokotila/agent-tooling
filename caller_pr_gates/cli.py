@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from .store import Store
+from .ghrelay import run as github_run
 
 REF = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(pull|issues)/(\d+)')
 DOC = re.compile(r'\b(?:PRD|product requirements document|slice(?:\s+\d+)?)\b', re.I)
@@ -100,6 +101,44 @@ def _api_reply_allowed(repo, number, issue, endpoint, method, fields, input_file
     return len(replies) == 1 and re.fullmatch(r'[1-9][0-9]*', replies[0]) is not None
 
 
+def _cancelled_readiness_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
+    """Retry only this owned PR's cancelled readiness gate; never a review."""
+    match = re.fullmatch(re.escape(f'repos/{repo}/actions/') + r'(jobs|runs)/([1-9][0-9]*)/rerun', endpoint)
+    if issue or not match or method != 'POST' or argv != ['api', endpoint, '--method', 'POST']:
+        return False
+    from .workflow import owned_pr
+    from .github import collect_pr
+    from .policy import branch_freshness_gate
+    owned_pr(store, sid, repo, number)
+    snapshot = asyncio.run(collect_pr(repo, number))
+    head = snapshot.get('head_sha')
+    if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
+            or snapshot.get('head_sha_after') != head or branch_freshness_gate(snapshot)['status'] != 'PASS'):
+        raise ValueError('Readiness retry requires fresh open-PR head and target ancestry')
+    def read(path):
+        result = github_run(['gh', 'api', path], runner=subprocess.run, text=True, capture_output=True, check=True, timeout=30)
+        return json.loads(result.stdout)
+    item = read(endpoint.removesuffix('/rerun'))
+    if (item.get('name') != 'pr_merge_readiness' or item.get('status') != 'completed'
+            or item.get('conclusion') != 'cancelled' or item.get('head_sha') != head):
+        return False
+    run = read(f'repos/{repo}/actions/runs/{item["run_id"]}') if match[1] == 'jobs' else item
+    if (run.get('path') != '.github/workflows/pr_merge_readiness.yml' or run.get('head_sha') != head
+            or run.get('status') != 'completed' or run.get('conclusion') != 'cancelled'
+            or run.get('run_attempt') != item.get('run_attempt')
+            or not any(pr.get('url') == f'https://api.github.com/repos/{repo}/pulls/{number}'
+                       for pr in run.get('pull_requests', []))):
+        return False
+    after = read(f'repos/{repo}/pulls/{number}')
+    base = read(f'repos/{repo}/branches/{snapshot["base_ref"]}')
+    if (after.get('state') != 'open' or after.get('merged') is not False
+            or (after.get('head') or {}).get('sha') != head
+            or (after.get('base') or {}).get('ref') != snapshot['base_ref']
+            or (base.get('commit') or {}).get('sha') != snapshot['base_sha']):
+        raise ValueError('PR head or target branch changed before readiness retry')
+    return True
+
+
 def _gateway_ownership(store, args, sid, repository, number, origin, operation):
     target = f'https://github.com/{repository}/pull/{number}'
     store.register(sid, args.client, repository, number, args.cwd)
@@ -143,8 +182,45 @@ async def inspect(store, sid=None, url=None):
             result.append({'repository': row['repository'], 'number': row['number'], 'head_sha': snap['head_sha'], 'gates': gates,
                            'scope': store.pr_scope(sid, row['repository'], row['number']) if sid else None})
         except Exception as exc:
-            result.append({'repository': row['repository'], 'number': row['number'], 'gates': [{'gate': 'GITHUB_DATA', 'status': 'UNKNOWN', 'details': [str(exc)[:900]], 'evidence': {}}]})
+            from .errors import diagnostic
+            error=diagnostic(exc,f"/repos/{row['repository']}/pulls/{row['number']}")
+            gates=[{'gate':'GITHUB_DATA','status':'UNKNOWN','details':[error['message'][:900]],'evidence':{'error':error}}]
+            store.set_snapshot(row['repository'],row['number'],{'repository':row['repository'],'number':row['number'],'component_errors':{'collection':error}},gates)
+            result.append({'repository':row['repository'],'number':row['number'],'gates':gates})
     return result
+
+
+def _nonrequired_quota_merge_allowed(store, sid, target, argv, rows, approval):
+    if not isinstance(approval, str) or not approval.strip() or len(rows) != 1:
+        return False
+    row = rows[0]
+    head = row.get('head_sha')
+    if argv != ['pr', 'merge', target, '--merge', '--match-head-commit', head]:
+        return False
+    from .workflow import owned_pr
+    from .external import current_hold, publication_ready
+    from .policy import _latest_checks, _outcome
+    repo, num, issue = reference(target)
+    if issue: return False
+    owned_pr(store, sid, repo, num)
+    snapshot = (store.snapshot(repo, num) or {}).get('snapshot') or {}
+    gates = row['gates']
+    held = current_hold(store, sid, snapshot, gates)
+    if any(g.get('status')!='PASS' for g in gates if g.get('gate')!='CI_FAILED'):
+        return False
+    if {g.get('gate') for g in gates}!={'PR_NOT_DRAFT','CI_FAILED','CI_PENDING','REVIEW_HANDLED','REVIEW_CONCLUDED','MERGE_CONFLICT','BRANCH_UP_TO_DATE','ISSUE_CLOSURE'}:
+        return False
+    required = snapshot.get('expected_checks')
+    if (not held or snapshot.get('head_sha') != head or not isinstance(required, list) or not required
+            or not publication_ready(store, sid, repo, num)
+            or any(check.get('name') in required for check in _latest_checks(snapshot.get('checks') or [])
+                   if _outcome(check) == 'failed')):
+        return False
+    store.audit('operator_nonrequired_quota_merge', {'session_id': sid, 'target': target,
+        'head_sha': head, 'approval_evidence': approval, 'failure_evidence_url': held['evidence_url'],
+        'failure_fingerprint': held['fingerprint'], 'ci_failure_preserved': True,
+        'normal_github_merge': True, 'gates': gates})
+    return True
 
 
 def gateway(args, store):
@@ -171,6 +247,8 @@ def gateway(args, store):
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
+            allowed_readiness_rerun = _cancelled_readiness_rerun_allowed(
+                store, sid, repo, num, issue, endpoint, method, argv)
             allowed_runner_registration = (
                 repo == 'Vaquum/Origo'
                 and issue
@@ -203,7 +281,7 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config):
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_readiness_rerun):
                 raise ValueError('API gateway permits review replies and owned Origo runner registration only; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
@@ -236,7 +314,8 @@ def gateway(args, store):
         target = target_info[0]
         gates = asyncio.run(inspect(store, sid, target))
         if any(g['status'] != 'PASS' for row in gates for g in row['gates']):
-            raise ValueError('PR_GATE FAIL: merge/close requires every separate PR gate to pass')
+            if not _nonrequired_quota_merge_allowed(store,sid,target,argv,gates,getattr(args,'nonrequired_quota_approval',None)):
+                raise ValueError('PR_GATE FAIL: merge/close requires every separate PR gate to pass')
         if argv[1] == 'merge':
             expected_head = gates[0]['head_sha']
             supplied = options.get('--match-head-commit')
@@ -244,7 +323,7 @@ def gateway(args, store):
             if not supplied: argv += ['--match-head-commit', expected_head]
     if creation:
         # Posting without a registered scope is allowed only for ordinary engineering PRs/issues.
-        result = subprocess.run(['gh', *argv], cwd=args.cwd, text=True, capture_output=True, timeout=90)
+        result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd, text=True, capture_output=True, timeout=90)
         if result.returncode: raise RuntimeError(result.stderr.strip())
         print(result.stdout, end='')
         # gh create prints its actual target as a URL line; body/reference URLs
@@ -264,7 +343,7 @@ def gateway(args, store):
             if args.slice_id: store.update_followup(followup['id'], followup['status'], {'slice_id': args.slice_id})
         store.audit('github_mutation', {'session_id': sid, 'operation': argv[:2], 'repository': repository, 'number': number})
         return None
-    result = subprocess.run(['gh', *argv], cwd=args.cwd, timeout=90)
+    result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd, timeout=90)
     if result.returncode: raise RuntimeError(f'GitHub operation exited {result.returncode}')
     # Reads and URLs mentioned in comment/body/diagnostic data do not own PRs.
     if mutation and target_info and not target_info[3]:
@@ -330,7 +409,7 @@ def main():
     p = owned('post-review'); p.add_argument('url'); p.add_argument('--kind', choices=['prd','slice'], default='prd'); p.add_argument('--slice-id')
     p = sub.add_parser('review-read'); p.add_argument('--followup', required=True)
     p = owned('status'); p.add_argument('--fresh', action='store_true'); p.add_argument('--pr')
-    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())
@@ -340,6 +419,8 @@ def main():
     p = sub.add_parser('supervise'); p.add_argument('--execute', action='store_true'); p.add_argument('--verbose', action='store_true')
     sub.add_parser('hook')
     args = parser.parse_args()
+    if getattr(args,'session',None):os.environ['CALLER_GATE_SESSION']=args.session
+    os.environ['CALLER_GATE_OPERATION']=args.command+(':worker' if getattr(args,'worker',False) else '')
     store = Store()
     output = None
     try:
@@ -358,13 +439,13 @@ def main():
             store.record_scope(session_id(args), scope, work_item=args.work_item)
             output = {'scope': store.get_scope(session_id(args)), 'immutable': True, 'work_item': args.work_item or 'selected'}
         elif args.command == 'resolve':
-            from .github import collect_pr
+            from .github import collect_review
             from .policy import evaluate_review
             repo,num,issue=reference(args.pr)
             if issue: raise ValueError('GitHub issues have no resolvable review threads; use a reply')
             sid=session_id(args)
             if not any(p['repository']==repo and p['number']==num for p in store.prs(sid)): raise ValueError('PR is not owned by this task')
-            snap=asyncio.run(asyncio.wait_for(collect_pr(repo,num),65))
+            snap=asyncio.run(asyncio.wait_for(collect_review(repo,num),65))
             members=[c for c in snap['comments'] if c.get('thread_id')==args.thread]
             if not members: raise ValueError('Thread is absent from the complete live PR inventory')
             # Require evidenced handling for this thread, including same-account human comments.
@@ -374,15 +455,21 @@ def main():
             if any(str(o['id']) in member_ids and not o['handled'] for o in handling['evidence'].get('obligations',[])):
                 raise ValueError('REVIEW_HANDLED FAIL: record a real fix/nonfix for every comment in this thread before resolving')
             query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}'
-            result=subprocess.run(['gh','api','graphql','-f','query='+query,'-f','id='+args.thread],text=True,capture_output=True,timeout=30)
+            result=github_run(['gh','api','graphql','-f','query='+query,'-f','id='+args.thread],runner=subprocess.run,text=True,capture_output=True,timeout=30)
             if result.returncode: raise RuntimeError(result.stderr.strip())
             output=json.loads(result.stdout)
             if output.get('errors'): raise RuntimeError('GitHub refused review resolution: '+str(output['errors']))
             store.audit('review_thread_resolved',{'session_id':sid,'repository':repo,'number':num,'thread_id':args.thread})
         elif args.command == 'address':
-            from .github import collect_issue, collect_pr
+            from .github import collect_issue, collect_review
             repo, num, issue = reference(args.pr)
-            snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_pr)(repo, num), 65))
+            sid=session_id(args)
+            if issue:
+                if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)):raise ValueError('Document is not owned by this task')
+            else:
+                from .workflow import owned_pr
+                owned_pr(store,sid,repo,num)
+            snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_review)(repo, num), 65))
             comments = [c for c in snap['comments'] if str(c['id']) == args.comment]
             if len(comments) != 1: raise ValueError('Comment ID not found in the complete live review inventory')
             receipt = {'comment_id': args.comment, 'comment_updated_at': comments[0]['updated_at'], 'disposition': args.disposition, 'commit_sha': args.commit, 'reason': args.reason, 'reply_url': args.reply_url}
@@ -406,12 +493,12 @@ def main():
             if args.slice_id and jobs: store.update_followup(jobs[-1]['id'], jobs[-1]['status'], {'slice_id': args.slice_id})
             output = store.followups(sid)
         elif args.command == 'review-read':
-            from .github import collect_issue, collect_pr
+            from .github import collect_issue, collect_review
             matches = [f for f in store.followups() if f['id'] == args.followup]
             if len(matches) != 1: raise ValueError('Followup ID not found')
             job = matches[0]
             if time.time() < job['due_at']: raise ValueError('The 30-minute review check is not due yet')
-            snap = asyncio.run(asyncio.wait_for((collect_issue if job.get('issue_number') else collect_pr)(job['repository'], job['number']), 65))
+            snap = asyncio.run(asyncio.wait_for((collect_issue if job.get('issue_number') else collect_review)(job['repository'], job['number']), 65))
             scope = store.followup_scope(job)
             if scope != job['scope']: raise ValueError('SLICE_SCOPE FAIL: scope differs from original proposal')
             receipt = {'read_at': time.time(), 'head_sha': snap.get('head_sha') or snap.get('updated_at'), 'comment_ids': [str(c['id']) for c in snap['comments']], 'scope_digest': scope_digest(scope)}
@@ -445,22 +532,45 @@ def main():
             output = {'handoff': output, 'obligation_complete': False, 'gates': gates}
         elif args.command in {'validation-plan', 'validate'}:
             from .workflow import owned_pr, run_check, save_plan, launch_check
+            from . import progress
             repo, num, issue = reference(args.pr)
             if issue: raise ValueError('Local validation plans apply to PRs, not review documents')
             sid = session_id(args)
-            owned_pr(store, sid, repo, num)
-            if args.command == 'validation-plan':
-                asyncio.run(inspect(store, sid, args.pr))
-                output = save_plan(store, sid, repo, num, args.cwd, json.loads(Path(args.file).read_text()))
+            owned_pr(store,sid,repo,num)
+            os.environ['CALLER_GATE_SESSION']=sid
+            if args.command=='validation-plan':
+                payload=progress.normalize_plan(json.loads(Path(args.file).read_text()),args.cwd)
             else:
-                refreshed = asyncio.run(inspect(store, sid, args.pr))
-                if (not refreshed or any(g.get('gate') == 'GITHUB_DATA' and g.get('status') == 'UNKNOWN'
-                                         for row in refreshed for g in row.get('gates') or [])):
-                    raise ValueError('Fresh remote PR and target-branch evidence is unavailable; local validation cannot use an earlier passing snapshot')
-                if not args.worker and (args.background or len(store.prs(sid)) > 1):
-                    output = launch_check(store, sid, repo, num, args.cwd, args.check)
-                else:
-                    output = run_check(store, sid, repo, num, args.cwd, args.check, manage_process_group=True)
+                row=store.validation_plan(sid,repo,num,args.cwd)
+                if row is None:raise ValueError('Declare necessary checks before remote validation preflight')
+                if args.check not in {c['id'] for c in row['plan']['checks']}:raise ValueError('Check is absent from declared plan')
+                local=progress.working_state(args.cwd)
+                if not local['clean']:raise ValueError('PUBLISH_REQUIRED: commit and push before local validation')
+                digest=progress.fingerprint(args.cwd,row['plan'])
+                if any(r['check_id']==args.check and r['input_digest']==digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
+                    raise ValueError('This check already ran on unchanged inputs; inspect its recorded result')
+            from .github import collect_validation
+            try:
+                preflight=asyncio.run(asyncio.wait_for(collect_validation(repo,num),65))
+                store.set_preflight(repo,num,preflight)
+                from .policy import branch_freshness_gate
+                freshness=branch_freshness_gate(preflight)
+                if preflight.get('state')!='open' or preflight.get('merged') is not False:raise ValueError('REMOTE_READ_REQUIRED: owned PR is no longer open')
+                if freshness['status']!='PASS':
+                    phase='SYNC_BASE_REQUIRED' if freshness['status']=='FAIL' else 'REMOTE_READ_REQUIRED'
+                    raise ValueError(phase+': '+'; '.join(freshness['details']))
+                cached=(store.snapshot(repo,num) or {}).get('snapshot') or {}
+                if cached.get('head_sha')!=preflight.get('head_sha') or not cached.get('actor_login'):
+                    refreshed=asyncio.run(inspect(store,sid,args.pr))
+                    if not refreshed or any(g['gate']=='GITHUB_DATA' for r in refreshed for g in r['gates']):
+                        raise ValueError('Initial complete remote evidence is unavailable')
+            except Exception:
+                store.set_preflight(repo,num,{'profile':'validation','collected_at':None})
+                raise
+            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload)
+            elif not args.worker and (args.background or len(store.prs(sid))>1):
+                output=launch_check(store,sid,repo,num,args.cwd,args.check)
+            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True)
         elif args.command == 'retry':
             if bool(args.followup) == bool(args.pr): raise ValueError('Choose exactly one --followup ID or --pr URL')
             sid = session_id(args)

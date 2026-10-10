@@ -126,7 +126,7 @@ def record(db, owner, repository, number, snapshot, *, now=None):
 
 
 async def read_live(repository, number):
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     return await collect(GitHubClient(), repository, number)
 
 
@@ -216,7 +216,7 @@ def dispatch(store, *, now=None, spawn=None):
             claimed = db.execute("UPDATE issue_closeouts SET delivery_state='reserved',lease_until=? WHERE owner_session=? AND state='open' AND delivery_state='pending' AND reported_at IS NULL", (now + 3000, sid)).rowcount
         if not claimed: continue
         try:
-            worker = (spawn or (lambda args: subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)))([sys.executable, '-m', 'caller_pr_gates.closure', 'deliver', '--session', sid])
+            worker = (spawn or (lambda args: subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)))([sys.executable, '-P', '-m', 'caller_pr_gates.closure', 'deliver', '--session', sid])
             with store._connect() as db:
                 db.execute("UPDATE issue_closeouts SET worker_pid=? WHERE owner_session=? AND delivery_state='reserved'", (getattr(worker, 'pid', None), sid))
             count += 1

@@ -70,6 +70,7 @@ class Store:
                     receipt TEXT NOT NULL, recorded_at REAL NOT NULL,
                     PRIMARY KEY(repository, number, comment_id, comment_updated_at)
                 );
+                CREATE TABLE IF NOT EXISTS validation_preflights (repository TEXT,number INTEGER,payload TEXT,PRIMARY KEY(repository,number));
                 CREATE TABLE IF NOT EXISTS snapshots (
                     repository TEXT NOT NULL, number INTEGER NOT NULL,
                     snapshot TEXT NOT NULL, gates TEXT NOT NULL, updated_at REAL NOT NULL,
@@ -140,6 +141,14 @@ class Store:
             from .monitor import schema
             schema(db)
             db.execute("BEGIN IMMEDIATE")
+            # Stamp legacy preflights once, conservatively dating unknown reads
+            # at migration. A subsequent full collection can supersede them.
+            for pre in db.execute('SELECT * FROM validation_preflights').fetchall():
+                payload=json.loads(pre['payload'])
+                if 'attempted_at' not in payload:
+                    stamp=payload.get('collected_at')
+                    payload['attempted_at']=stamp if isinstance(stamp,(int,float)) and not isinstance(stamp,bool) else time.time()
+                    db.execute('UPDATE validation_preflights SET payload=? WHERE repository=? AND number=?',(_json(payload),pre['repository'],pre['number']))
             columns = {row["name"] for row in db.execute("PRAGMA table_info(validation_runs)")}
             if "process_group" not in columns:
                 db.execute("ALTER TABLE validation_runs ADD COLUMN process_group INTEGER")
@@ -249,8 +258,6 @@ class Store:
             owner = db.execute('SELECT * FROM sessions WHERE session_id=?', (root,)).fetchone()
             if owner:
                 arm(db, root, owner['client'], repository, number, cwd)
-            db.execute('DELETE FROM unpublished_work WHERE session_id IN (?,?) AND repository=? AND cwd=?',
-                       (session_id, root, repository, str(cwd)))
             return dict(db.execute("SELECT * FROM prs WHERE repository=? AND number=? AND session_id=?", (repository, number, session_id)).fetchone())
 
     def prs(self, session_id=None):
@@ -292,12 +299,25 @@ class Store:
             return [json.loads(row[0]) for row in db.execute("SELECT receipt FROM dispositions WHERE repository=? AND number=? ORDER BY recorded_at", (repository, number))]
 
     def set_snapshot(self, repository, number, snapshot, gates):
+        if snapshot.get('profile') in {'review','validation'}:raise ValueError('Partial evidence cannot replace complete policy snapshots')
+        from .publication import reconcile
+        reconcile(self,repository,number,snapshot)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("""INSERT INTO snapshots VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(repository, number) DO UPDATE SET snapshot=excluded.snapshot,
                 gates=excluded.gates, updated_at=excluded.updated_at""", (repository, number, _json(snapshot), _json(gates), time.time()))
             self._audit(db, "pr_gates_evaluated", {"repository": repository, "number": number, "gates": gates, "head_sha": snapshot.get("head_sha")})
+
+    def set_preflight(self,repository,number,payload):
+        payload={**payload,'attempted_at':time.time()}
+        with self._connect() as db:
+            db.execute('INSERT OR REPLACE INTO validation_preflights VALUES(?,?,?)',(repository,number,_json(payload)))
+
+    def preflight(self,repository,number):
+        with self._connect() as db:
+            row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
+            return json.loads(row[0]) if row else None
 
     def snapshot(self, repository, number):
         with self._connect() as db:
@@ -374,6 +394,33 @@ class Store:
         with self._connect() as db:
             return [dict(row) for row in db.execute(
                 "SELECT * FROM validation_runs WHERE plan_id=? ORDER BY started_at, run_id", (plan_id,))]
+
+    def _validation_evidence(self, db, row):
+        _, checks = self._validation_checks(row["plan"])
+        inputs = {key: value for key, value in row["plan"].items() if key != "checks"}
+        evidence = []
+        for candidate in db.execute("""SELECT r.*, p.plan AS original_plan FROM validation_runs r
+            JOIN validation_plans p ON p.plan_id=r.plan_id
+            WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=?
+            AND p.input_digest=? AND r.input_digest=? ORDER BY r.started_at, r.run_id""",
+            (row["session_id"], row["repository"], row["number"], row["cwd"],
+             row["input_digest"], row["input_digest"])):
+            run = dict(candidate)
+            original, original_checks = self._validation_checks(json.loads(run.pop("original_plan")))
+            if ({key: value for key, value in original.items() if key != "checks"} == inputs
+                    and run["check_id"] in checks
+                    and original_checks.get(run["check_id"]) == checks[run["check_id"]]):
+                evidence.append(run)
+        return evidence
+
+    def validation_evidence(self, plan_id):
+        """Read original runs with identical inputs, check declarations and ownership."""
+        with self._connect() as db:
+            row = self._validation_plan_row(db.execute(
+                "SELECT * FROM validation_plans WHERE plan_id=?", (plan_id,)).fetchone())
+            if row is None:
+                raise ValueError("validation plan not found")
+            return self._validation_evidence(db, row)
 
     def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest):
         if not isinstance(input_digest, str) or not input_digest.strip():
@@ -465,8 +512,8 @@ class Store:
                 raise ValueError("check is absent from the active required validation plan")
             if db.execute("SELECT 1 FROM validation_runs WHERE plan_id=? AND status='running'", (plan_id,)).fetchone():
                 raise ValueError("validation already has an active run")
-            if db.execute("""SELECT 1 FROM validation_runs WHERE plan_id=? AND check_id=?
-                AND input_digest=? AND status IN ('pass','fail')""", (plan_id, check_id, input_digest)).fetchone():
+            if any(run["check_id"] == check_id and run["status"] in {"running", "pass", "fail"}
+                   for run in self._validation_evidence(db, plan)):
                 raise ValueError("this check already completed on unchanged input/evidence; do not repeat it")
             run_id, now = str(uuid.uuid4()), time.time()
             db.execute("""INSERT INTO validation_runs
