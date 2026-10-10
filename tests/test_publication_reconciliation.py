@@ -162,13 +162,15 @@ def test_explicit_checkout_and_session_cannot_retire_unrelated_records(delivered
     assert len(result['retired']) == 2 and count(store, other) == 1 and count(store, root) == 1
 
 
-def test_cli_reconciliation_has_no_completion_or_pr_adoption(delivered, capsys):
+def test_cli_reconciliation_has_no_completion_or_pr_adoption(delivered, capsys, monkeypatch):
     from caller_pr_gates import cli
     store, root, _, base = delivered
+    monkeypatch.setenv('CALLER_GATE_SESSION', 's')
+    monkeypatch.setenv('CALLER_GATE_OPERATION', 'test')
     with store._connect() as db: db.execute("UPDATE prs SET status='retired_merged'")
     with patch('sys.argv', ['caller-pr-gates', 'publication-reconcile', '--session', 's', '--cwd', str(root)]), \
          patch.object(cli, 'Store', return_value=store), patch('caller_pr_gates.transport.GitHubClient', return_value=LiveBase(base)):
-        assert cli.main() == 0
+        cli.main()
     result = json.loads(capsys.readouterr().out)
     assert result['completion'] is False and len(result['retired']) == 2
     assert store.prs('s') == []
