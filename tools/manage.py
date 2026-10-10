@@ -448,8 +448,10 @@ def rollback(home=None,service=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['build','verify','install','rollback','status'])
-    parser.add_argument('--wait-for-workers',type=float,default=0,help='Bounded seconds to wait for worker admission before install; never bypass a lease')
+    parser.add_argument('--wait-for-workers',type=float,default=None,help='Bounded seconds to wait for worker admission before install (default 600); 0 fails immediately, never bypasses a lease')
     args=parser.parse_args()
+    if args.wait_for_workers is None:
+        args.wait_for_workers=600 if args.command=='install' else 0
     if not 0<=args.wait_for_workers<=3600 or args.wait_for_workers and args.command!='install':
         parser.error('--wait-for-workers requires install and a finite value from 0 to 3600')
     BUILD.mkdir(exist_ok=True)

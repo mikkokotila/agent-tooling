@@ -23,9 +23,9 @@ commits, unrelated origins/checkouts, changing target refs, missing evidence,
 changed source/ownership and concurrent record updates remain protected. Errors
 remain local and records stay incomplete. No direct database repair is needed.
 
-Deployment retains worker protection. An explicit bounded wait can keep the
-installation check pending until active work finishes, without retrying deployment
-or changing a lease:
+Deployment retains worker protection. `make install` waits up to 600 seconds for
+active workers by default, without retrying deployment or changing a lease. The
+explicit option changes that bound; use zero for immediate admission failure:
 
 ```sh
 python3.13 tools/manage.py install --wait-for-workers 600
