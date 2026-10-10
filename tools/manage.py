@@ -79,7 +79,8 @@ def verify():
     python = build()
     with tempfile.TemporaryDirectory(prefix='agent-tooling-verification-') as state:
         env = dict(os.environ, PYTHONPATH=str(ROOT), CALLER_PR_GATES_STATE_DIR=state,
-                   CALLER_PR_GATES_PROMPTS_STATE_DIR=state, CALLER_PR_GATES_PROMPTS_FILE=str(ROOT / 'prompts.toml'))
+                   CALLER_PR_GATES_PROMPTS_STATE_DIR=state, CALLER_PR_GATES_PROMPTS_FILE=str(ROOT / 'prompts.toml'),
+                   CODEX_CLI='codex',CLAUDE_CLI='claude')
         run([python, '-m', 'pytest', '-q', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env)
     xml = ET.parse(BUILD / 'verification.xml')
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
@@ -288,7 +289,9 @@ def deploy(home=None, service=None):
         runtime_changed=not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python')
         revision=fingerprint()
         commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-        release_path=live/'release.json';release=json.loads(release_path.read_text()) if release_path.exists() else {'version':CAPTURE['captured_gate_version']}
+        release_path=live/'release.json'
+        asset_before[str(release_path)]=release_path.read_bytes() if release_path.exists() else None
+        release=json.loads(release_path.read_text()) if release_path.exists() else {'version':CAPTURE['captured_gate_version']}
         release['source']=str(ROOT)
         release['agent_tooling']={'version':'0.1.0','commit':commit,'source_fingerprint':revision,'captured_gate_version':CAPTURE['captured_gate_version'], 'known_defects':CAPTURE['known_defects']}
         assets[str(release_path)]=(json.dumps(release,indent=2)+'\n').encode()
