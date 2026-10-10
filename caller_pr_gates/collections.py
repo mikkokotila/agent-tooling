@@ -1,6 +1,6 @@
 """Explicit-profile collection sharing; no TTL can promote old policy evidence."""
 from __future__ import annotations
-import asyncio, contextvars, hashlib, json, os, time, uuid, inspect
+import asyncio, contextvars, hashlib, json, os, time, uuid, inspect, math
 from .quota import Coordinator
 from pathlib import Path
 
@@ -10,14 +10,20 @@ class Collections:
     def __init__(self, coordinator, account):
         self.coordinator=coordinator;self.account=account
         with coordinator.db() as db:
+            db.execute('BEGIN IMMEDIATE')
             db.executescript('''CREATE TABLE IF NOT EXISTS collections (
                 account TEXT,key TEXT,token TEXT,phase TEXT,boundary REAL,started REAL,
-                lease REAL,boot TEXT,payload TEXT,error TEXT, PRIMARY KEY(account,key));
+                lease REAL,boot TEXT,payload TEXT,error TEXT,started_mono REAL, PRIMARY KEY(account,key));
                 CREATE TABLE IF NOT EXISTS immutable_evidence (
                 account TEXT,key TEXT,payload TEXT,observed REAL,PRIMARY KEY(account,key));''')
 
     async def run(self, profile, target, producer, *, boundary=None, operation=None):
-        boundary=time.time() if boundary is None else boundary
+        implicit=boundary is None
+        wall_now=time.time();mono_now=time.monotonic()
+        boundary=wall_now if implicit else boundary
+        if isinstance(boundary,bool) or not isinstance(boundary,(int,float)) or not math.isfinite(boundary) or boundary<0 or boundary>wall_now:raise ValueError('Invalid evidence freshness boundary')
+        mono_boundary=mono_now if implicit else mono_now-max(0,wall_now-boundary)
+        self.coordinator.check(self.account,{'core'} if profile=='validation' else {'core','graphql'})
         key=hashlib.sha256(json.dumps([profile,target],sort_keys=True).encode()).hexdigest()
         joined=None
         caller=next((f'{Path(f.filename).stem}:{f.function}' for f in inspect.stack(context=0) if f.filename.endswith(('/hook.py','/cli.py','/monitor.py','/supervisor.py'))),profile)
@@ -28,11 +34,11 @@ class Collections:
                 db.execute('BEGIN IMMEDIATE')
                 row=db.execute('SELECT * FROM collections WHERE account=? AND key=?',(self.account,key)).fetchone()
                 active=bool(row and row['phase'] in {'pending','reading'} and row['boot']==self.coordinator.boot and row['lease']>time.monotonic())
-                if row and row['phase']=='result' and (row['token']==joined or row['started']>=boundary):
+                if row and row['phase']=='result' and (row['token']==joined or (row['boot']==self.coordinator.boot and row['started'] is not None and row['started_mono'] is not None and row['started']>=boundary and row['started_mono']>=mono_boundary)):
                     if row['error']:
                         raise RuntimeError(row['error'])
                     db.commit()
-                    self.coordinator.audit(**metadata,outcome='reused',requests=0)
+                    self.coordinator.audit(**metadata,collection=row['token'],profile=profile,boundary=boundary,outcome='reused',requests=0,http_requests=0)
                     return json.loads(row['payload'])
                 if active:
                     if row['phase']=='pending':
@@ -41,7 +47,7 @@ class Collections:
                     leader=False
                 else:
                     joined=uuid.uuid4().hex;leader=True
-                    db.execute('INSERT OR REPLACE INTO collections VALUES(?,?,?,?,?,NULL,?,?,NULL,NULL)',
+                    db.execute('INSERT OR REPLACE INTO collections(account,key,token,phase,boundary,started,lease,boot,payload,error,started_mono) VALUES(?,?,?,?,?,NULL,?,?,NULL,NULL,NULL)',
                         (self.account,key,joined,'pending',boundary,time.monotonic()+75,self.coordinator.boot))
             if not leader:
                 await asyncio.sleep(.01);continue
@@ -55,7 +61,7 @@ class Collections:
                     if row['token']!=joined:continue
                     started=time.time()
                     if started<row['boundary']:raise RuntimeError('Collection clock moved behind freshness boundary')
-                    db.execute("UPDATE collections SET phase='reading',started=? WHERE account=? AND key=? AND token=?",(started,self.account,key,joined))
+                    db.execute("UPDATE collections SET phase='reading',started=?,started_mono=? WHERE account=? AND key=? AND token=?",(started,time.monotonic(),self.account,key,joined))
                 metadata.update(collection=joined,profile=profile,boundary=started)
                 marker=context.set(metadata)
                 try:payload=await producer()

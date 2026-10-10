@@ -79,6 +79,15 @@ class Coordinator:
         # Reboot/clock uncertainty: preserve at least the recorded duration once.
         return max(row['deadline']-self.wall(),row['duration'],0)
 
+    def check(self,account,resources):
+        """Avoid launching a collection whose required resource is cooling down."""
+        with self.db() as db:
+            rows=list(db.execute('SELECT * FROM cooldowns WHERE account=?',(account,)))
+            for row in rows:
+                if row['resource'] not in set(resources)|{'*'}:continue
+                if row['boot']!=self.boot or self.remaining(row)>0 or row['lease_token'] and (row['lease_wall']>self.wall() or row['lease_mono']>self.mono()):
+                    raise CoolingDown(account,row['resource'],max(row['deadline'],row['lease_wall']),row['status'])
+
     def admit(self,account,resource):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')

@@ -539,6 +539,7 @@ async def collect_validation_with_client(client,repository,number):
     after=_mapping(await client.get(path),'final validation PR')
     if any(raw.get(k)!=after.get(k) for k in ('state','merged','draft','updated_at')):
         raise EvidenceError('PR lifecycle changed during validation preflight')
+    if (after.get('head') or {}).get('sha')!=head:raise EvidenceError('PR head changed during validation preflight')
     receipt=await _branch_final_read(client,prefix,receipt)
     error=receipt.pop('branch_error',None)
     return dict(repository=repository,number=number,profile='validation',state=raw['state'],merged=raw['merged'],
@@ -560,6 +561,7 @@ async def collect_review_with_client(client,repository,number):
     path=f'/repos/{repository}/pulls/{number}'
     raw,actor=await asyncio.gather(client.get(path),client.get('/user'))
     raw=_mapping(raw,'review PR');head=_mapping(raw.get('head'),'review head').get('sha')
+    if not re.fullmatch(r'[a-fA-F0-9]{40}',str(head)):raise EvidenceError('Missing current review head')
     threads,reviews,issues,commits=await asyncio.gather(_threads(client,variables),_reviews(client,variables),
         _rest_pages(client,f'/repos/{repository}/issues/{number}/comments'),_commits(client,variables))
     if len(commits)!=raw.get('commits'):raise EvidenceError('Review commit chronology incomplete')

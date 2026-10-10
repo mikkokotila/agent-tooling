@@ -510,8 +510,11 @@ def main():
                 preflight=asyncio.run(asyncio.wait_for(collect_validation(repo,num),65))
                 store.set_preflight(repo,num,preflight)
                 from .policy import branch_freshness_gate
-                if preflight.get('state')!='open' or preflight.get('merged') is not False or branch_freshness_gate(preflight)['status']!='PASS':
-                    raise ValueError('Fresh open-PR head and live target ancestry are unavailable or behind')
+                freshness=branch_freshness_gate(preflight)
+                if preflight.get('state')!='open' or preflight.get('merged') is not False:raise ValueError('REMOTE_READ_REQUIRED: owned PR is no longer open')
+                if freshness['status']!='PASS':
+                    phase='SYNC_BASE_REQUIRED' if freshness['status']=='FAIL' else 'REMOTE_READ_REQUIRED'
+                    raise ValueError(phase+': '+'; '.join(freshness['details']))
                 cached=(store.snapshot(repo,num) or {}).get('snapshot') or {}
                 if cached.get('head_sha')!=preflight.get('head_sha') or not cached.get('actor_login'):
                     refreshed=asyncio.run(inspect(store,sid,args.pr))

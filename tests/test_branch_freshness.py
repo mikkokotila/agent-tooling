@@ -233,13 +233,13 @@ def test_cli_validation_always_refreshes_base_before_launch_or_worker(workflow_l
         else: current['branch_comparison'] = None
         return current
     monkeypatch.setattr(cli, 'Store', lambda: store)
-    monkeypatch.setattr('caller_pr_gates.github.collect_pr', fresh)
+    monkeypatch.setattr('caller_pr_gates.github.collect_validation', fresh)
     monkeypatch.setattr(sys, 'argv', ['caller-pr-gates', 'validate', '--session', 's',
         '--pr', 'https://github.com/Owner/Repo/pull/1', '--cwd', str(root), '--check', 'regression', option])
     with patch('caller_pr_gates.workflow._run_process', side_effect=AssertionError('stale snapshot must not run')):
         with pytest.raises(SystemExit) as error: cli.main()
     assert error.value.code == 1
     expected = {'behind': 'SYNC_BASE_REQUIRED', 'unknown': 'REMOTE_READ_REQUIRED',
-                'outage': 'cannot use an earlier passing snapshot'}[mode]
+                'outage': 'GitHub unavailable'}[mode]
     assert expected in capsys.readouterr().err
     assert store.validation_runs(store.validation_plans('s')[0]['plan_id']) == []

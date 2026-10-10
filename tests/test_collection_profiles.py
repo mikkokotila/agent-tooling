@@ -77,9 +77,8 @@ async def test_validation_and_review_profiles_retain_only_required_proof(tmp_pat
 
 @async_test
 async def test_profile_races_and_missing_ancestry_fail_closed():
-    c=Client(head_race=True);p=await github.collect_validation_with_client(c,'mikkokotila/caller',50)
+    with pytest.raises(github.EvidenceError):await github.collect_validation_with_client(Client(head_race=True),'mikkokotila/caller',50)
     from caller_pr_gates.policy import branch_freshness_gate
-    assert branch_freshness_gate(p)['status']!='PASS'
     with pytest.raises(github.EvidenceError):await github.collect_review_with_client(Client(head_race=True),'mikkokotila/caller',50)
     class Outage(Client):
         async def get(self,path,params=None):
@@ -93,12 +92,12 @@ async def test_conditional_read_is_authenticated_and_never_falls_back_on_error(t
     monkeypatch.setattr(original,'get_token',lambda *a:'secret-test-token')
     c=GitHubClient(coordinator=Coordinator(tmp_path));seen=[];responses=[200,304,503,503]
     async def request(self,method,path,**kw):
-        seen.append(kw['headers']);status=responses.pop(0)
+        seen.append({**dict(self.headers),**kw['headers']});status=responses.pop(0)
         return httpx.Response(status,headers={'etag':'"version1"'} if status==200 else {},json={'fresh':True} if status==200 else None,request=httpx.Request(method,'https://api.github.com'+path))
     monkeypatch.setattr(httpx.AsyncClient,'request',request)
     assert await c.get('/repos/o/r/pulls/1')=={'fresh':True}
     assert await c.get('/repos/o/r/pulls/1')=={'fresh':True}
-    assert seen[1]['If-None-Match']=='"version1"' and seen[1]['Authorization']=='Bearer secret-test-token'
+    assert seen[1]['if-none-match']=='"version1"' and seen[1]['authorization']=='Bearer secret-test-token'
     with pytest.raises(RuntimeError):await c.get('/repos/o/r/pulls/1')
     with c.coordinator.db() as db:
         rows=[json.loads(r[0]) for r in db.execute('SELECT fields FROM attribution')]
@@ -129,7 +128,7 @@ def child_collection(directory,start,queue):
     asyncio.run(task())
 
 def test_actual_processes_coalesce_monitor_supervisor_and_stop_status(tmp_path):
-    ctx=multiprocessing.get_context('fork');start=ctx.Event();queue=ctx.Queue()
+    ctx=multiprocessing.get_context('spawn');start=ctx.Event();queue=ctx.Queue()
     # Precreate schema, then align entry into the explicit pending window.
     Collections(Coordinator(tmp_path),'same')
     workers=[ctx.Process(target=child_collection,args=(str(tmp_path),start,queue)) for _ in range(2)]
@@ -174,11 +173,42 @@ def test_plan_and_background_launcher_worker_use_profiles(local,tmp_path,monkeyp
     with store._connect() as db:db.execute('DELETE FROM snapshots')
     base=['caller-pr-gates','--session','s','--pr','https://github.com/Owner/Repo/pull/1','--cwd',str(root)]
     monkeypatch.setattr(sys,'argv',[base[0],'validation-plan',*base[1:],'--file',str(file)])
-    assert cli.main()==0
+    assert cli.main() is None
     for i in range(3):
         for mode in ['--background','--worker']:
-            monkeypatch.setattr(sys,'argv',[base[0],'validate',*base[1:],'--check',f'c{i}',mode]);assert cli.main()==0
+            monkeypatch.setattr(sys,'argv',[base[0],'validate',*base[1:],'--check',f'c{i}',mode]);assert cli.main() is None
     assert counts=={'full':1,'preflight':7}
     # An unplanned check is rejected locally without even a narrow API read.
     monkeypatch.setattr(sys,'argv',[base[0],'validate',*base[1:],'--check','absent','--background'])
-    assert cli.main()==1 and counts=={'full':1,'preflight':7}
+    with pytest.raises(SystemExit) as failure:cli.main()
+    assert failure.value.code==1 and counts=={'full':1,'preflight':7}
+
+@async_test
+async def test_cooldown_blocks_collection_before_healthy_resource_reads(tmp_path):
+    co=Coordinator(tmp_path);p=co.admit('same','core')
+    co.throttle(p,{'http_status':403,'message':'API rate limit exceeded','rate_limit_headers':{'x-ratelimit-resource':'core'}})
+    async def unexpected():pytest.fail('No graph/other reads should start for an impossible collection')
+    with pytest.raises(RuntimeError,match='rate limit'):await Collections(co,'same').run('full-pr','target',unexpected)
+    assert co.admit('same','graphql') # Independently healthy standalone operations remain available.
+
+@async_test
+async def test_collection_cancellation_and_late_worker_are_fenced(tmp_path):
+    co=Coordinator(tmp_path);a=Collections(co,'a');entered=asyncio.Event();hold=asyncio.Event()
+    async def producer():entered.set();await hold.wait();return {'old':True}
+    task=asyncio.create_task(a.run('full','target',producer));await entered.wait()
+    # Simulate a crashed lease and a replacement token while the old worker runs.
+    with co.db() as db:db.execute("UPDATE collections SET token='newer',phase='result',payload='{}',started=0,started_mono=0 WHERE account='a'")
+    hold.set()
+    with pytest.raises(RuntimeError,match='late'):await task
+    with co.db() as db:assert db.execute("SELECT token,payload FROM collections WHERE account='a'").fetchone()['payload']=='{}'
+    task=asyncio.create_task(a.run('full','another',producer));await asyncio.sleep(.001);task.cancel()
+    with pytest.raises(asyncio.CancelledError):await task
+    async def healthy():return {'fresh':True}
+    assert await a.run('full','another',healthy)=={'fresh':True}
+
+@async_test
+async def test_repeated_review_action_budget_and_changed_replies():
+    c=Client()
+    for _ in range(3):await github.collect_review_with_client(c,'mikkokotila/caller',50)
+    assert len(c.paths)==12 # address+resolve+review-read: 4 REST each, no CI/rules/ancestry reload.
+    assert not any('/actions/' in p or '/check-runs' in p or '/rules/' in p for p in c.paths)

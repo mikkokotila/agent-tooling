@@ -17,3 +17,5 @@ The separately discussed shared cooldown is also outside this release. There is 
 ## Issue #3 repair
 
 Version 0.1.1 removes the three expected-failure marks after correcting stable quota identity and retaining full redacted diagnostics. Shared cooldown and collection reuse remain pending later stages of this same issue until their tests and installation are verified. The v0.1.0 tag remains the immutable capture.
+
+Issue #3 repairs these captured failures in 0.1.1 and adds coordinated recovery and narrower collections through 0.1.3. Current required tests have no expected failures. The original capture remains immutable.

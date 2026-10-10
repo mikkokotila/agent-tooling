@@ -1,4 +1,4 @@
-"""Keep all fixture state local; explicitly retain the captured quota defect."""
+"""Keep all fixture state local; reject accidental live HTTP."""
 from pathlib import Path
 import json, pytest
 
@@ -19,3 +19,15 @@ def isolated_prompt_state(tmp_path, monkeypatch):
 def isolated_gh_child_credentials(monkeypatch):
     monkeypatch.setattr('caller_pr_gates.ghrelay.credentials',lambda:'isolated-test-credential')
     monkeypatch.setattr('caller_pr_gates.ghrelay.settings',lambda:{})
+
+
+@pytest.fixture(autouse=True)
+def prohibit_live_http(monkeypatch):
+    import httpx
+    def denied(*args,**kwargs):raise AssertionError('Tests must inject fake HTTP, never call live GitHub')
+    async def async_denied(*args,**kwargs):denied()
+    monkeypatch.setattr(httpx,'request',denied)
+    monkeypatch.setattr(httpx.Client,'request',denied)
+    monkeypatch.setattr(httpx.AsyncClient,'request',async_denied)
+    monkeypatch.delenv('CALLER_GATE_OPERATION',raising=False)
+    monkeypatch.delenv('CALLER_GATE_SESSION',raising=False)
