@@ -181,8 +181,10 @@ def process_alive(pid):
 def orphaned_claude_delivery(db,row):
     # A consumed deadline is not an active worker when both independent owner
     # inventories prove it finished. Preserve the row and every task receipt.
+    if not {'delivery_state','client','worker_pid','owner_session'}.issubset(row.keys()): return False
     if row['delivery_state']!='consumed' or row['client']!='claude' or process_alive(row['worker_pid']): return False
-    owner=db.execute('SELECT cwd,client FROM sessions WHERE session_id=?',(row['owner_session'],)).fetchone()
+    try: owner=db.execute('SELECT cwd,client FROM sessions WHERE session_id=?',(row['owner_session'],)).fetchone()
+    except sqlite3.Error: return False
     if not owner or owner['client']!='claude' or not owner['cwd']: return False
     from caller_pr_gates.supervisor import claude_availability
     return claude_availability(row['owner_session'],owner['cwd'])=='idle'
