@@ -366,7 +366,7 @@ def test_finishing_closed_branch_does_not_manufacture_new_pr(local):
         db.execute("UPDATE pr_watch SET state='merged',branch='old-fix',updated_at=?", (time.time() + 1,))
     event = dict(hook_event_name='PostToolUse', session_id=SID, cwd=root, tool_name='Edit', tool_input={'file_path': root + '/source.py'})
     done = type('Done', (), {'returncode': 0, 'stdout': '{"found":false}'})()
-    with patch.object(hook, '_mutation_dirs', return_value=[root]), patch.object(hook, '_git_context', return_value=(root, 'owner/repo', 'old-fix')), patch.object(hook.subprocess, 'run', return_value=done):
+    with patch.object(hook, '_mutation_dirs', return_value=[root]), patch.object(hook, '_git_context', return_value=(root, 'owner/repo', 'old-fix')), patch.object(hook, 'discover_current_pr', return_value={'found':False}):
         hook.discover(event, store)
     with store._connect() as db:
         assert db.execute('SELECT COUNT(*) FROM unpublished_work').fetchone()[0] == 0

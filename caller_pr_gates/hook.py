@@ -351,6 +351,20 @@ def _git_context(cwd):
     return root, m.group(1), r.stdout.strip()
 
 
+def discover_current_pr(repository, branch):
+    from .transport import GitHubClient
+    from .github import _rest_pages, EvidenceError
+    async def read():
+        owner=repository.split('/')[0]
+        pulls=await _rest_pages(GitHubClient(),f'/repos/{repository}/pulls',{'head':owner+':'+branch,'state':'open'})
+        if len(pulls)>1:raise EvidenceError('Multiple open PRs for this exact branch')
+        if not pulls:return {'found':False}
+        pull=pulls[0]
+        if (pull.get('head') or {}).get('ref')!=branch:raise EvidenceError('Discovery returned a different branch')
+        return {'found':True,'pull_number':int(pull['number']),'head_sha':pull['head']['sha']}
+    return asyncio.run(asyncio.wait_for(read(),22))
+
+
 def discover(event, store):
     """Reconcile an explicit successful local mutation, never an observation."""
     operation = _local_mutation(event)
@@ -364,9 +378,7 @@ def discover(event, store):
         root, repository, branch = context
         if not branch: continue
         try:
-            result = subprocess.run([OLD_INTERFACE, '--current-pr'], cwd=root, capture_output=True, text=True, timeout=22)
-            if result.returncode: raise RuntimeError(result.stderr.strip()[:500])
-            found = json.loads(result.stdout)
+            found = discover_current_pr(repository, branch)
             if found.get('found'):
                 key = repository.lower() + '/' + str(found['pull_number'])
                 if key not in known:

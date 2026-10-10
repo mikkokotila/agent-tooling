@@ -255,7 +255,7 @@ def _check(raw: dict, kind: str, *, key: str | None = None, attempt: int = 1) ->
 
 
 async def collect_pr(repository: str, number: int, token_user: str | None = None) -> dict:
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     return await collect_with_client(GitHubClient(token_user), repository, number)
 
 
@@ -435,7 +435,7 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
 
 
 async def collect_issue(repository: str, number: int, token_user: str | None = None) -> dict:
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     return await collect_issue_with_client(GitHubClient(token_user), repository, number)
 
 

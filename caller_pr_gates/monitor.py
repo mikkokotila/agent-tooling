@@ -88,12 +88,12 @@ def bootstrap(store):
 
 
 async def probe(repository, number):
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     return await GitHubClient().get(f'/repos/{repository}/pulls/{number}')
 
 
 async def probe_branch(repository, ref):
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     from urllib.parse import quote
     return await GitHubClient().get(f'/repos/{repository}/branches/{quote(ref, safe="")}')
 

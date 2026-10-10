@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from .store import Store
+from .ghrelay import run as github_run
 
 REF = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(pull|issues)/(\d+)')
 DOC = re.compile(r'\b(?:PRD|product requirements document|slice(?:\s+\d+)?)\b', re.I)
@@ -244,7 +245,7 @@ def gateway(args, store):
             if not supplied: argv += ['--match-head-commit', expected_head]
     if creation:
         # Posting without a registered scope is allowed only for ordinary engineering PRs/issues.
-        result = subprocess.run(['gh', *argv], cwd=args.cwd, text=True, capture_output=True, timeout=90)
+        result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd, text=True, capture_output=True, timeout=90)
         if result.returncode: raise RuntimeError(result.stderr.strip())
         print(result.stdout, end='')
         # gh create prints its actual target as a URL line; body/reference URLs
@@ -264,7 +265,7 @@ def gateway(args, store):
             if args.slice_id: store.update_followup(followup['id'], followup['status'], {'slice_id': args.slice_id})
         store.audit('github_mutation', {'session_id': sid, 'operation': argv[:2], 'repository': repository, 'number': number})
         return None
-    result = subprocess.run(['gh', *argv], cwd=args.cwd, timeout=90)
+    result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd, timeout=90)
     if result.returncode: raise RuntimeError(f'GitHub operation exited {result.returncode}')
     # Reads and URLs mentioned in comment/body/diagnostic data do not own PRs.
     if mutation and target_info and not target_info[3]:
@@ -374,7 +375,7 @@ def main():
             if any(str(o['id']) in member_ids and not o['handled'] for o in handling['evidence'].get('obligations',[])):
                 raise ValueError('REVIEW_HANDLED FAIL: record a real fix/nonfix for every comment in this thread before resolving')
             query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}'
-            result=subprocess.run(['gh','api','graphql','-f','query='+query,'-f','id='+args.thread],text=True,capture_output=True,timeout=30)
+            result=github_run(['gh','api','graphql','-f','query='+query,'-f','id='+args.thread],runner=subprocess.run,text=True,capture_output=True,timeout=30)
             if result.returncode: raise RuntimeError(result.stderr.strip())
             output=json.loads(result.stdout)
             if output.get('errors'): raise RuntimeError('GitHub refused review resolution: '+str(output['errors']))

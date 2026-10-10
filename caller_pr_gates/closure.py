@@ -126,7 +126,7 @@ def record(db, owner, repository, number, snapshot, *, now=None):
 
 
 async def read_live(repository, number):
-    from github_interface.client import GitHubClient
+    from .transport import GitHubClient
     return await collect(GitHubClient(), repository, number)
 
 
