@@ -44,7 +44,8 @@ def test_unknown_head_owner_and_source_mismatch_retain_publication(local):
 def delivered(local):
     store, root, snap, _ = local
     git(root, 'branch', 'shipped')
-    git(root, 'switch', '-qc', 'main')
+    if git(root, 'branch', '--show-current') != 'main':
+        git(root, 'branch', '-m', 'main')
     (root / 'src.txt').write_text('delivered base advanced')
     git(root, 'add', 'src.txt'); git(root, 'commit', '-qm', 'Another merged change')
     base = git(root, 'rev-parse', 'HEAD')
