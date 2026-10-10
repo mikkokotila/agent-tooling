@@ -375,6 +375,33 @@ class Store:
             return [dict(row) for row in db.execute(
                 "SELECT * FROM validation_runs WHERE plan_id=? ORDER BY started_at, run_id", (plan_id,))]
 
+    def _validation_evidence(self, db, row):
+        _, checks = self._validation_checks(row["plan"])
+        inputs = {key: value for key, value in row["plan"].items() if key != "checks"}
+        evidence = []
+        for candidate in db.execute("""SELECT r.*, p.plan AS original_plan FROM validation_runs r
+            JOIN validation_plans p ON p.plan_id=r.plan_id
+            WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=?
+            AND p.input_digest=? AND r.input_digest=? ORDER BY r.started_at, r.run_id""",
+            (row["session_id"], row["repository"], row["number"], row["cwd"],
+             row["input_digest"], row["input_digest"])):
+            run = dict(candidate)
+            original, original_checks = self._validation_checks(json.loads(run.pop("original_plan")))
+            if ({key: value for key, value in original.items() if key != "checks"} == inputs
+                    and run["check_id"] in checks
+                    and original_checks.get(run["check_id"]) == checks[run["check_id"]]):
+                evidence.append(run)
+        return evidence
+
+    def validation_evidence(self, plan_id):
+        """Read original runs with identical inputs, check declarations and ownership."""
+        with self._connect() as db:
+            row = self._validation_plan_row(db.execute(
+                "SELECT * FROM validation_plans WHERE plan_id=?", (plan_id,)).fetchone())
+            if row is None:
+                raise ValueError("validation plan not found")
+            return self._validation_evidence(db, row)
+
     def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest):
         if not isinstance(input_digest, str) or not input_digest.strip():
             raise ValueError("validation input_digest is required")
@@ -465,8 +492,8 @@ class Store:
                 raise ValueError("check is absent from the active required validation plan")
             if db.execute("SELECT 1 FROM validation_runs WHERE plan_id=? AND status='running'", (plan_id,)).fetchone():
                 raise ValueError("validation already has an active run")
-            if db.execute("""SELECT 1 FROM validation_runs WHERE plan_id=? AND check_id=?
-                AND input_digest=? AND status IN ('pass','fail')""", (plan_id, check_id, input_digest)).fetchone():
+            if any(run["check_id"] == check_id and run["status"] in {"running", "pass", "fail"}
+                   for run in self._validation_evidence(db, plan)):
                 raise ValueError("this check already completed on unchanged input/evidence; do not repeat it")
             run_id, now = str(uuid.uuid4()), time.time()
             db.execute("""INSERT INTO validation_runs

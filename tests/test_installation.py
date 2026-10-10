@@ -244,3 +244,24 @@ def test_source_race_before_activation_is_rejected(installed,monkeypatch):
     with pytest.raises(RuntimeError,match='before activation'):
         manage.deploy(home,service,verified_fingerprint='verified')
     assert original_bytes(home)==before and service.stops==0
+
+
+def test_reviewed_live_baseline_is_exact_and_rollback_retains_it(installed,monkeypatch):
+    home,service=installed
+    package=home/'.local/share/caller-pr-gates/caller_pr_gates'
+    path=package/'workflow.py';path.write_bytes(path.read_bytes()+b'\n# Concurrent reviewed maintenance\n')
+    base=home/'.local/share/agent-tooling';base.mkdir(parents=True)
+    pointer={'version':'0.1.1','commit':'reviewed','gate_hashes':{'wrong':'hash'}}
+    manage.dump(base/'current.json',pointer)
+    row={'previous_version':'0.1.1','previous_commit':'reviewed','runtime_version':'1.7.0',
+         'gate_hashes':{p.name:manage.sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}}
+    original=Path.read_text
+    def read(p,*a,**k):
+        if p==manage.ROOT/'release/upgrade-baselines.json':return json.dumps([row])
+        return original(p,*a,**k)
+    monkeypatch.setattr(Path,'read_text',read)
+    before=path.read_bytes()
+    manage.deploy(home,service);manage.rollback(home,service)
+    assert path.read_bytes()==before
+    path.write_bytes(before+b'# Additional unreviewed edit\n')
+    with pytest.raises(RuntimeError,match='changed locally'):manage.deploy(home,service)

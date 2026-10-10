@@ -298,7 +298,16 @@ def deploy(home=None, service=None, verified_fingerprint=None):
         incoming={p.name:p.read_bytes() for p in (ROOT/'caller_pr_gates').iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
         originals={p.name:p.read_bytes() for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}} if package.exists() else {}
         expected=(current or {}).get('gate_hashes',{Path(n).name:v for n,v in RELEASE['gate_files'].items()})
-        if originals and {n:sha(v) for n,v in originals.items()} != expected: raise RuntimeError('Installed gate code changed locally; reconcile before installation')
+        actual_hashes={n:sha(v) for n,v in originals.items()}
+        if originals and actual_hashes != expected:
+            # Only a committed, reviewed complete baseline may cross the drift guard.
+            accepted=json.loads((ROOT/'release/upgrade-baselines.json').read_text())
+            live_release=json.loads((live/'release.json').read_text())
+            if not current or not any(
+                current.get('commit')==b['previous_commit'] and current.get('version')==b['previous_version']
+                and live_release.get('version')==b['runtime_version'] and actual_hashes==b['gate_hashes']
+                for b in accepted):
+                raise RuntimeError('Installed gate code changed locally; reconcile before installation')
         code_changed=incoming != originals
         runtime_changed=not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python')
         revision=fingerprint()

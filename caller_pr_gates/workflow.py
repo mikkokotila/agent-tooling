@@ -73,7 +73,7 @@ def current_phase(store, row):
     snapshot = cached.get('snapshot') or {}
     dispositions = store.dispositions(row['repository'], row['number'])
     gates = evaluate_pr(snapshot, dispositions)
-    return progress.evaluate_progress(row, store.validation_runs(row['plan_id']),
+    return progress.evaluate_progress(row, store.validation_evidence(row['plan_id']),
         progress.fingerprint(row['cwd'], row['plan']), snapshot, gates,
         progress.working_state(row['cwd']))
 
@@ -179,7 +179,7 @@ def launch_check(store, sid, repository, number, cwd, check_id):
         raise ValueError(f"PR_PROGRESS {phase['phase']}: {phase.get('next_action')}")
     if check_id not in {c['id'] for c in row['plan']['checks']}:
         raise ValueError('Check is absent from the declared plan')
-    if any(r['check_id'] == check_id and r['input_digest'] == digest and r['status'] in {'running','pass','fail'} for r in store.validation_runs(row['plan_id'])):
+    if any(r['check_id'] == check_id and r['input_digest'] == digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
         raise ValueError('This check is already running or completed for these inputs')
     logs = store.state_dir / 'validation-logs'
     logs.mkdir(mode=0o700, exist_ok=True)

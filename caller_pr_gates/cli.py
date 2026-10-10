@@ -101,6 +101,44 @@ def _api_reply_allowed(repo, number, issue, endpoint, method, fields, input_file
     return len(replies) == 1 and re.fullmatch(r'[1-9][0-9]*', replies[0]) is not None
 
 
+def _cancelled_readiness_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
+    """Retry only this owned PR's cancelled readiness gate; never a review."""
+    match = re.fullmatch(re.escape(f'repos/{repo}/actions/') + r'(jobs|runs)/([1-9][0-9]*)/rerun', endpoint)
+    if issue or not match or method != 'POST' or argv != ['api', endpoint, '--method', 'POST']:
+        return False
+    from .workflow import owned_pr
+    from .github import collect_pr
+    from .policy import branch_freshness_gate
+    owned_pr(store, sid, repo, number)
+    snapshot = asyncio.run(collect_pr(repo, number))
+    head = snapshot.get('head_sha')
+    if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
+            or snapshot.get('head_sha_after') != head or branch_freshness_gate(snapshot)['status'] != 'PASS'):
+        raise ValueError('Readiness retry requires fresh open-PR head and target ancestry')
+    def read(path):
+        result = github_run(['gh', 'api', path], runner=subprocess.run, text=True, capture_output=True, check=True, timeout=30)
+        return json.loads(result.stdout)
+    item = read(endpoint.removesuffix('/rerun'))
+    if (item.get('name') != 'pr_merge_readiness' or item.get('status') != 'completed'
+            or item.get('conclusion') != 'cancelled' or item.get('head_sha') != head):
+        return False
+    run = read(f'repos/{repo}/actions/runs/{item["run_id"]}') if match[1] == 'jobs' else item
+    if (run.get('path') != '.github/workflows/pr_merge_readiness.yml' or run.get('head_sha') != head
+            or run.get('status') != 'completed' or run.get('conclusion') != 'cancelled'
+            or run.get('run_attempt') != item.get('run_attempt')
+            or not any(pr.get('url') == f'https://api.github.com/repos/{repo}/pulls/{number}'
+                       for pr in run.get('pull_requests', []))):
+        return False
+    after = read(f'repos/{repo}/pulls/{number}')
+    base = read(f'repos/{repo}/branches/{snapshot["base_ref"]}')
+    if (after.get('state') != 'open' or after.get('merged') is not False
+            or (after.get('head') or {}).get('sha') != head
+            or (after.get('base') or {}).get('ref') != snapshot['base_ref']
+            or (base.get('commit') or {}).get('sha') != snapshot['base_sha']):
+        raise ValueError('PR head or target branch changed before readiness retry')
+    return True
+
+
 def _gateway_ownership(store, args, sid, repository, number, origin, operation):
     target = f'https://github.com/{repository}/pull/{number}'
     store.register(sid, args.client, repository, number, args.cwd)
@@ -172,6 +210,8 @@ def gateway(args, store):
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
+            allowed_readiness_rerun = _cancelled_readiness_rerun_allowed(
+                store, sid, repo, num, issue, endpoint, method, argv)
             allowed_runner_registration = (
                 repo == 'Vaquum/Origo'
                 and issue
@@ -204,7 +244,7 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config):
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_readiness_rerun):
                 raise ValueError('API gateway permits review replies and owned Origo runner registration only; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
