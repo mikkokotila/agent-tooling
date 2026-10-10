@@ -58,7 +58,7 @@ def test_capture_code_and_wheel_assets_are_byte_identical():
     manage.assert_capture()
     wheel=next((ROOT/'.build/dist').glob('agent_tooling-*.whl'))
     with zipfile.ZipFile(wheel) as z:
-        for name,digest in manage.CAPTURE['gate_files'].items():assert manage.sha(z.read(name))==digest
+        for name,digest in manage.RELEASE['gate_files'].items():assert manage.sha(z.read(name))==digest
         assert z.read('agent_tooling_assets/prompts.toml')==(ROOT/'prompts.toml').read_bytes()
         for p in (ROOT/'config').iterdir():assert z.read('agent_tooling_assets/config/'+p.name)==p.read_bytes()
 
@@ -69,7 +69,7 @@ def test_install_preserves_operational_assets_and_state(installed):
     assert service.stops==service.starts==0
     for name,data in before.items():
         if name!='.local/share/caller-pr-gates/release.json':assert (home/name).read_bytes()==data,name
-    assert json.loads((home/'.local/share/caller-pr-gates/release.json').read_text())['version']=='1.7.0'
+    assert json.loads((home/'.local/share/caller-pr-gates/release.json').read_text())['version']==manage.RELEASE['runtime_version']
 
 def test_repeated_install_is_a_true_noop(installed):
     home,service=installed;manage.deploy(home,service);before=original_bytes(home)

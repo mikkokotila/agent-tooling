@@ -14,73 +14,7 @@ class EvidenceError(RuntimeError):
     """GitHub did not provide complete evidence; completion must fail closed."""
 
 
-def _component_error(error: Exception, path: str) -> dict:
-    """Classify the response evidence, not the client's generic 403 label."""
-    text = str(error)
-    status: int | None = None
-    body = text
-    headers: dict[str, str] = {}
-    current: BaseException | None = error
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
-        response = getattr(current, "response", None)
-        if response is not None:
-            status = getattr(response, "status_code", None)
-            body = getattr(response, "text", text)
-            response_headers = getattr(response, "headers", {})
-            headers = {name: str(response_headers[name]) for name in (
-                "x-ratelimit-resource", "x-ratelimit-limit", "x-ratelimit-remaining",
-                "x-ratelimit-used", "x-ratelimit-reset", "retry-after")
-                if name in response_headers}
-            break
-        current = current.__cause__ or current.__context__
-    if status is None:
-        match = re.match(r"GitHub\s+(\d{3})(?:\s+rate-limit)?\s*:\s*(.*)", text, re.DOTALL)
-        if match:
-            status = int(match[1])
-            body = match[2]
-            if " body=" in body:
-                raw_headers, body = body.split(" body=", 1)
-                try:
-                    parsed_headers = ast.literal_eval(raw_headers)
-                    if isinstance(parsed_headers, dict):
-                        headers = {str(key).lower(): str(value) for key, value in parsed_headers.items()
-                                   if str(key).lower().startswith("x-ratelimit-") or str(key).lower() == "retry-after"}
-                except (ValueError, SyntaxError):
-                    pass
-    message = body
-    try:
-        payload = json.loads(body)
-        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
-            message = payload["message"]
-    except (ValueError, TypeError):
-        pass
-    lowered = str(message).lower()
-    if (status == 429 or headers.get("x-ratelimit-remaining") == "0"
-            or "retry-after" in headers or "rate limit" in lowered
-            or "secondary rate" in lowered):
-        kind = "rate_limited"
-    elif (status == 403 and "/rules/branches/" in path
-          and "upgrade to github" in lowered
-          and "make this repository public" in lowered
-          and "enable this feature" in lowered):
-        kind = "feature_unavailable"
-    elif status in {401, 403}:
-        kind = "permission_denied"
-    elif status == 404:
-        kind = "not_found_or_permission"
-    elif status is not None and 500 <= status <= 599:
-        kind = "transient"
-    elif isinstance(error, (TimeoutError, ConnectionError)) or any(
-            word in type(error).__name__.lower() for word in ("timeout", "connect", "transport")):
-        kind = "transient"
-    elif isinstance(error, EvidenceError):
-        kind = "invalid_evidence"
-    else:
-        kind = "api_error"
-    return {"kind": kind, "http_status": status, "message": message,
-            "path": path, "response_body": body, "rate_limit_headers": headers}
+from .errors import diagnostic as _component_error
 
 
 ISSUE_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {

@@ -1,0 +1,25 @@
+{
+  "version": "0.1.1",
+  "runtime_version": "1.7.1",
+  "known_defects": [],
+  "gate_files": {
+    "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
+    "caller_pr_gates/cli.py": "9375874cba292f027f8f1e33a82d0b6ca1f19a211faf5693a41b8ebb4e0fec06",
+    "caller_pr_gates/closure.py": "92e0747001cc1c88b97d4446b5121b09a2437754421e1f63a44b95837ba60621",
+    "caller_pr_gates/errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
+    "caller_pr_gates/external.py": "574ce453fe31a8db8d51b9803206e7e4ce96aa9f0e17fe7ae8b4120d68a6cebe",
+    "caller_pr_gates/github.py": "9754a286038a215f0cfbe2bcea2a9e2f23baf4aa001a5b75984c7c41e167509d",
+    "caller_pr_gates/handoff.py": "d80a33c7ee4167707d9d9b1f20b7858f8672041d823cc08449257707f8c64b84",
+    "caller_pr_gates/hook.py": "f40acdcbecd2147a4ccba72fd5bf5dcb05e1fc4a820ea5bdb54ff392996a27c2",
+    "caller_pr_gates/monitor.py": "4db576e1a6abc3d359c8f1b667d277d28afd28d18d4f86a7a072c9159e2f017f",
+    "caller_pr_gates/policy.py": "a8b59de964f31b8c7cb81688ffc42f6dad5e9389b1c987ca6e73c99532109eb5",
+    "caller_pr_gates/progress.py": "9689b7cc3df95078f5e4a070df11c651194a9a7e558ba51da98925da3e3d058c",
+    "caller_pr_gates/prompt-defaults.json": "b30902688108ffb02a23296e49a3c8a5c366f0d9306d7ac252bd9ac487832eda",
+    "caller_pr_gates/prompts.py": "da0ffa8a0ec106f80ed33004e843eb5a20f00db423593b067271db35c02cf622",
+    "caller_pr_gates/store.py": "c849adf9807374a06cd7eb31932424e628609f81ae19303fabad1a60fce2b664",
+    "caller_pr_gates/supervisor.py": "08229b2ee9442127ff39ba700ba10ddc51a235fa8c25c6e7133d0f2c2f2420b0",
+    "caller_pr_gates/troubleshooting.py": "a48af58188b4c51f280ec9c6068bd66e36b4d5525a7d85dc2cf10d74e5144ac9",
+    "caller_pr_gates/turns.py": "350ccf2be5403dbe401b6f83e5bb8c820e270b66ea54fec1d45feb62730780a0",
+    "caller_pr_gates/workflow.py": "2d35a225fd763a5dab6873e3f1b717b43e3b7f37d07ff655d2d025df38f1c45e"
+  }
+}

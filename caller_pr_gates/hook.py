@@ -398,7 +398,10 @@ async def evaluate(store, sid):
             gates = evaluate_pr(snapshot, store.dispositions(row['repository'], int(row['number'])))
             store.set_snapshot(row['repository'], int(row['number']), snapshot, gates)
         except Exception as exc:
-            gates = [{'gate': 'GITHUB_DATA', 'status': 'UNKNOWN', 'details': [str(exc)[:600]], 'evidence': {}}]
+            from .errors import diagnostic
+            error = diagnostic(exc, f"/repos/{row['repository']}/pulls/{row['number']}")
+            snapshot['component_errors'] = {'collection': error}
+            gates = [{'gate': 'GITHUB_DATA', 'status': 'UNKNOWN', 'details': [error['message'][:600]], 'evidence': {'error': error}}]
             store.set_snapshot(row['repository'], int(row['number']), snapshot, gates)
         return dict(row, stop_snapshot=snapshot), gates
     if rows: outcomes = await asyncio.gather(*(one(row) for row in rows))

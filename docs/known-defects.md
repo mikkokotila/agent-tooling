@@ -13,3 +13,7 @@ These original regression tests remain in the suite and are marked `xfail(strict
 Strict expected failure means they are visibly failing as expected; an unexpected pass fails this capture's verification too. A later fix must deliberately update the known-defect inventory/marks and verify the corrected behavior. All other regressions and new installation tests must pass.
 
 The separately discussed shared cooldown is also outside this release. There is no new primary-quota cooldown/backoff added to the captured gate. No PR gates are waived and no state database is edited to silence this defect.
+
+## Issue #3 repair
+
+Version 0.1.1 removes the three expected-failure marks after correcting stable quota identity and retaining full redacted diagnostics. Shared cooldown and collection reuse remain pending later stages of this same issue until their tests and installation are verified. The v0.1.0 tag remains the immutable capture.
