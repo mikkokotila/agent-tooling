@@ -4,6 +4,8 @@ Run `make install` from this checkout after updating it. It builds a standard wh
 
 Verification is bound to the SHA-256 inventory of the entire source checkout. A source/dependency/test/config change invalidates the cached result. An unchanged successful verification is reused. A new unexpected failure blocks installation; known defects are recorded as strict expected failures, never hidden passing checks.
 
+Installation requires a committed, clean checkout, so recorded Git provenance identifies the deployed source. Commit/publish repository edits before installing; local live prompt edits remain separately protected.
+
 The installer checks for concurrent configuration/source edits and worker leases before changing operational components. A lease can defer activation without clearing state or forcing another chat turn. Source directories/runtimes use atomic filesystem exchange; individual settings use atomic replacement. Candidate callbacks are exercised with a temporary state database, never production ownership or real GitHub mutations.
 
 Each deployment stores a local journal and the previous affected code/config files under `~/.local/share/agent-tooling/deployments/`. A failed activation restores the prior files and monitor service. The next installation recovers an interrupted journal before doing new work. Backups remain local and are not added to Git.

@@ -7,6 +7,7 @@ ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT/'tools'))
 import manage
 NATIVE=manage.native_smoke
+RUNTIME_MATCHES=manage.runtime_matches
 
 class FakeService:
     def __init__(self,home):
@@ -189,3 +190,43 @@ def test_deployment_lock_refuses_another_installer(installed):
     home,service=installed;base=home/'.local/share/agent-tooling'
     with manage.locked(base/'deployment.lock'):
         with pytest.raises(RuntimeError,match='Another'):manage.deploy(home,service)
+
+def test_rollback_refuses_later_source_edits(installed):
+    home,service=installed;alter_owned_code(home);manage.deploy(home,service)
+    path=home/'.local/share/caller-pr-gates/caller_pr_gates/hook.py';path.write_bytes(path.read_bytes()+b'\n# Human edit after deployment\n')
+    before=original_bytes(home)
+    with pytest.raises(RuntimeError,match='Local source edit'):manage.rollback(home,service)
+    assert original_bytes(home)==before and service.active
+
+def test_interrupted_file_activation_recovers_without_state_rewind(installed,monkeypatch):
+    home,service=installed;original=manage.atomic;release=home/'.local/share/caller-pr-gates/release.json'
+    def interrupted(path,*args,**kwargs):
+        result=original(path,*args,**kwargs)
+        if Path(path)==release:raise KeyboardInterrupt('simulated process death after write')
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(manage,'atomic',interrupted)
+        with pytest.raises(KeyboardInterrupt):manage.deploy(home,service)
+    assert (home/'.local/share/agent-tooling/pending.json').exists()
+    with sqlite3.connect(home/'.local/state/caller-pr-gates/registry.sqlite3') as db:db.execute('UPDATE evidence SET value="post-crash work"')
+    manage.deploy(home,service)
+    assert not (home/'.local/share/agent-tooling/pending.json').exists()
+    with sqlite3.connect(home/'.local/state/caller-pr-gates/registry.sqlite3') as db:assert db.execute('SELECT value FROM evidence').fetchone()[0]=='post-crash work'
+
+def test_completed_journal_is_not_rolled_back_on_pending_cleanup(installed):
+    home,service=installed;manage.deploy(home,service)
+    base=home/'.local/share/agent-tooling';current=json.loads((base/'current.json').read_text())
+    manage.dump(base/'pending.json',{'journal':str(Path(current['deployment'])/'journal.json')})
+    before=original_bytes(home)
+    assert manage.deploy(home,service)['status']=='already_installed'
+    assert original_bytes(home)==before and service.stops==0
+
+def test_missing_dependency_runtime_is_rebuilt_offline(installed,monkeypatch):
+    home,service=installed
+    monkeypatch.setattr(manage,'runtime_matches',RUNTIME_MATCHES)
+    result=manage.deploy(home,service)
+    runtime=home/'.local/share/caller-pr-stop-gate'
+    assert runtime.is_symlink() and RUNTIME_MATCHES(runtime/'bin/python')
+    assert not result['runtime_unchanged'] and service.active
+    manage.rollback(home,service)
+    assert not runtime.exists()

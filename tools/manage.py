@@ -6,13 +6,16 @@ import sqlite3, subprocess, sys, tempfile, time, tomllib, uuid, xml.etree.Elemen
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.build'
 CAPTURE = json.loads((ROOT / 'capture/operational-baseline.json').read_text())
+VERSION = (ROOT / 'VERSION').read_text().strip()
 EXCLUDED = {'.git', '.build', '.venv', 'dist', '__pycache__', '.pytest_cache'}
 
 def sha(data): return hashlib.sha256(data).hexdigest()
 def source_files():
-    return sorted(p for p in ROOT.rglob('*') if p.is_file() and not any(
-        part in EXCLUDED or part.endswith('.egg-info') for part in p.relative_to(ROOT).parts)
-        and p.suffix != '.pyc' and p.name != '.DS_Store')
+    result=[]
+    for directory, folders, names in os.walk(ROOT):
+        folders[:]=[name for name in folders if name not in EXCLUDED and not name.endswith('.egg-info')]
+        result.extend(Path(directory)/name for name in names if not name.endswith('.pyc') and name!='.DS_Store')
+    return sorted(result)
 
 def fingerprint():
     return sha(json.dumps({str(p.relative_to(ROOT)): sha(p.read_bytes()) for p in source_files()}, sort_keys=True).encode())
@@ -42,6 +45,7 @@ def run(argv, **kwargs):
     return subprocess.run(list(map(str, argv)), check=True, timeout=kwargs.pop('timeout', 180), **kwargs)
 
 def assert_capture():
+    if tomllib.loads((ROOT/'pyproject.toml').read_text())['project']['version']!=VERSION: raise RuntimeError('VERSION and project metadata disagree')
     for name, expected in CAPTURE['gate_files'].items():
         if sha((ROOT / name).read_bytes()) != expected:
             raise RuntimeError('v0.1.0 must preserve captured runtime: ' + name)
@@ -86,7 +90,7 @@ def verify():
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
     if len(expected) != len(CAPTURE['known_defects']): raise RuntimeError('Known defect inventory changed')
     if fingerprint() != revision: raise RuntimeError('Checkout changed during verification; publish and verify the new revision')
-    value = {'source_fingerprint':revision, 'verified_at':time.time(), 'version':'0.1.0',
+    value = {'source_fingerprint':revision, 'verified_at':time.time(), 'version':VERSION,
              'known_expected_failures':CAPTURE['known_defects'], 'testcases':len(list(xml.iter('testcase')))}
     dump(report, value); return value
 
@@ -272,10 +276,14 @@ def deploy(home=None, service=None):
         pending=base/'pending.json'
         if pending.exists():
             previous=json.loads(Path(json.loads(pending.read_text())['journal']).read_text())
-            if live_leases(state): raise RuntimeError('Interrupted deployment recovery awaits a live worker lease')
-            if service.running(): service.stop()
-            restore(previous)
-            if previous.get('was_running'): service.start()
+            if not previous.get('committed'):
+                if live_leases(state): raise RuntimeError('Interrupted deployment recovery awaits a live worker lease')
+                if service.running(): service.stop()
+                restore(previous)
+                prior=previous.get('previous_pointer')
+                if prior is None: (base/'current.json').unlink(missing_ok=True)
+                else: dump(base/'current.json',prior)
+                if previous.get('was_running'): service.start()
             pending.unlink()
         pointer=base/'current.json';current=json.loads(pointer.read_text()) if pointer.exists() else None
         assets=desired_assets(home,current)
@@ -288,21 +296,22 @@ def deploy(home=None, service=None):
         code_changed=incoming != originals
         runtime_changed=not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python')
         revision=fingerprint()
+        if subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip(): raise RuntimeError('Commit and publish checkout changes before installation')
         commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
         release_path=live/'release.json'
         asset_before[str(release_path)]=release_path.read_bytes() if release_path.exists() else None
         release=json.loads(release_path.read_text()) if release_path.exists() else {'version':CAPTURE['captured_gate_version']}
         release['source']=str(ROOT)
-        release['agent_tooling']={'version':'0.1.0','commit':commit,'source_fingerprint':revision,'captured_gate_version':CAPTURE['captured_gate_version'], 'known_defects':CAPTURE['known_defects']}
+        release['agent_tooling']={'version':VERSION,'commit':commit,'source_fingerprint':revision,'captured_gate_version':CAPTURE['captured_gate_version'], 'known_defects':CAPTURE['known_defects']}
         assets[str(release_path)]=(json.dumps(release,indent=2)+'\n').encode()
         changes={name:data for name,data in assets.items() if not Path(name).exists() or Path(name).read_bytes()!=data}
         if not changes and not code_changed and not runtime_changed and service.running():
-            return {'status':'already_installed','version':'0.1.0','commit':commit,'runtime_unchanged':True}
+            return {'status':'already_installed','version':VERSION,'commit':commit,'runtime_unchanged':True}
         operational_change=code_changed or runtime_changed or any(name!=str(release_path) for name in changes)
         if operational_change and live_leases(state): raise RuntimeError('A live PR/document worker holds a lease; deployment deferred without changing state')
         prepared=prepare_runtime(base) if runtime_changed else None
         deployment=base/'deployments'/(str(time.time_ns())+'-'+uuid.uuid4().hex[:8]);deployment.mkdir(parents=True,mode=0o700)
-        journal={'version':'0.1.0','commit':commit,'files':{},'exchanges':[], 'state_restored':False,'previous_pointer':current}
+        journal={'version':VERSION,'commit':commit,'files':{},'exchanges':[], 'state_restored':False,'previous_pointer':current}
         was_running=service.running()
         journal['was_running']=was_running
         restart=code_changed or runtime_changed or str(service.plist) in changes
@@ -345,15 +354,17 @@ def deploy(home=None, service=None):
             if not service.running(): raise RuntimeError('Monitor is not running after installation')
             if not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'): raise RuntimeError('Post-install runtime differs')
             native_smoke(home/'.local/share/caller-pr-stop-gate/bin/python',home)
-            pointer_value={'version':'0.1.0','commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
+            pointer_value={'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
                 'gate_hashes':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
-            dump(pointer,pointer_value);dump(deployment/'journal.json',journal)
+            dump(pointer,pointer_value);journal['committed']=True;dump(deployment/'journal.json',journal)
             pending.unlink()
-            return {'status':'installed','version':'0.1.0','commit':commit,'deployment':str(deployment),'code_unchanged':not code_changed,
+            return {'status':'installed','version':VERSION,'commit':commit,'deployment':str(deployment),'code_unchanged':not code_changed,
                     'runtime_unchanged':not runtime_changed,'service_restarted':restart or not was_running,'changed_files':list(changes),'state_restored':False}
         except Exception:
             if (code_changed or runtime_changed) and service.running(): service.stop()
             restore(journal)
+            if current is None: pointer.unlink(missing_ok=True)
+            else: dump(pointer,current)
             if was_running and not service.running(): service.start()
             pending.unlink(missing_ok=True)
             raise
@@ -369,6 +380,11 @@ def rollback(home=None,service=None):
         # Validate every affected file before changing any.
         for name,row in journal['files'].items():
             if (sha(Path(name).read_bytes()) if Path(name).exists() else None)!=row['after']: raise RuntimeError('Local edit blocks rollback: '+name)
+        package=home/'.local/share/caller-pr-gates/caller_pr_gates'
+        hashes={p.name:sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}
+        if hashes!=current['gate_hashes']: raise RuntimeError('Local source edit blocks rollback')
+        if any(row['live'].endswith('/caller-pr-stop-gate') for row in journal['exchanges']) and not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'):
+            raise RuntimeError('Local dependency edit blocks rollback')
         was_running=service.running()
         if restart and was_running: service.stop()
         restore(journal)
