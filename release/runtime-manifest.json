@@ -17,7 +17,7 @@
     "caller_pr_gates/progress.py": "9689b7cc3df95078f5e4a070df11c651194a9a7e558ba51da98925da3e3d058c",
     "caller_pr_gates/prompt-defaults.json": "b30902688108ffb02a23296e49a3c8a5c366f0d9306d7ac252bd9ac487832eda",
     "caller_pr_gates/prompts.py": "da0ffa8a0ec106f80ed33004e843eb5a20f00db423593b067271db35c02cf622",
-    "caller_pr_gates/quota.py": "68a8f8cf4bee9c7993cf59007d64f6d4539b6407a6723b0244f7bdec6c7a1a7e",
+    "caller_pr_gates/quota.py": "b971af45574818715e3aa9835216c797720c075d8379c5d140e0000542b9eede",
     "caller_pr_gates/store.py": "c849adf9807374a06cd7eb31932424e628609f81ae19303fabad1a60fce2b664",
     "caller_pr_gates/supervisor.py": "08229b2ee9442127ff39ba700ba10ddc51a235fa8c25c6e7133d0f2c2f2420b0",
     "caller_pr_gates/transport.py": "6235dd80744f6cf31e1935fd650ad53af22ca91d8c096375e6c5515e7c4e521b",

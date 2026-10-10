@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 import hashlib
+import ctypes
 import json
 import math
 import os
@@ -21,7 +22,12 @@ from .errors import diagnostic
 def boot_identity():
     path=Path('/proc/sys/kernel/random/boot_id')
     if path.exists(): return path.read_text().strip()
-    return subprocess.check_output(['sysctl','-n','kern.boottime'],text=True).strip()
+    class Timeval(ctypes.Structure):
+        _fields_=[('seconds',ctypes.c_long),('microseconds',ctypes.c_int)]
+    value=Timeval();size=ctypes.c_size_t(ctypes.sizeof(value))
+    result=ctypes.CDLL(None,use_errno=True).sysctlbyname(b'kern.boottime',ctypes.byref(value),ctypes.byref(size),None,0)
+    if result:raise OSError(ctypes.get_errno(),'Boot identity unavailable')
+    return str(value.seconds)
 
 class CoolingDown(RuntimeError):
     def __init__(self, account, resource, deadline, status=403):
