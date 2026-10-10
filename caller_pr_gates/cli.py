@@ -381,6 +381,8 @@ def main():
     p = sub.add_parser('supervise'); p.add_argument('--execute', action='store_true'); p.add_argument('--verbose', action='store_true')
     sub.add_parser('hook')
     args = parser.parse_args()
+    if getattr(args,'session',None):os.environ['CALLER_GATE_SESSION']=args.session
+    os.environ['CALLER_GATE_OPERATION']=args.command+(':worker' if getattr(args,'worker',False) else '')
     store = Store()
     output = None
     try:
@@ -399,13 +401,13 @@ def main():
             store.record_scope(session_id(args), scope, work_item=args.work_item)
             output = {'scope': store.get_scope(session_id(args)), 'immutable': True, 'work_item': args.work_item or 'selected'}
         elif args.command == 'resolve':
-            from .github import collect_pr
+            from .github import collect_review
             from .policy import evaluate_review
             repo,num,issue=reference(args.pr)
             if issue: raise ValueError('GitHub issues have no resolvable review threads; use a reply')
             sid=session_id(args)
             if not any(p['repository']==repo and p['number']==num for p in store.prs(sid)): raise ValueError('PR is not owned by this task')
-            snap=asyncio.run(asyncio.wait_for(collect_pr(repo,num),65))
+            snap=asyncio.run(asyncio.wait_for(collect_review(repo,num),65))
             members=[c for c in snap['comments'] if c.get('thread_id')==args.thread]
             if not members: raise ValueError('Thread is absent from the complete live PR inventory')
             # Require evidenced handling for this thread, including same-account human comments.
@@ -421,9 +423,9 @@ def main():
             if output.get('errors'): raise RuntimeError('GitHub refused review resolution: '+str(output['errors']))
             store.audit('review_thread_resolved',{'session_id':sid,'repository':repo,'number':num,'thread_id':args.thread})
         elif args.command == 'address':
-            from .github import collect_issue, collect_pr
+            from .github import collect_issue, collect_review
             repo, num, issue = reference(args.pr)
-            snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_pr)(repo, num), 65))
+            snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_review)(repo, num), 65))
             comments = [c for c in snap['comments'] if str(c['id']) == args.comment]
             if len(comments) != 1: raise ValueError('Comment ID not found in the complete live review inventory')
             receipt = {'comment_id': args.comment, 'comment_updated_at': comments[0]['updated_at'], 'disposition': args.disposition, 'commit_sha': args.commit, 'reason': args.reason, 'reply_url': args.reply_url}
@@ -447,12 +449,12 @@ def main():
             if args.slice_id and jobs: store.update_followup(jobs[-1]['id'], jobs[-1]['status'], {'slice_id': args.slice_id})
             output = store.followups(sid)
         elif args.command == 'review-read':
-            from .github import collect_issue, collect_pr
+            from .github import collect_issue, collect_review
             matches = [f for f in store.followups() if f['id'] == args.followup]
             if len(matches) != 1: raise ValueError('Followup ID not found')
             job = matches[0]
             if time.time() < job['due_at']: raise ValueError('The 30-minute review check is not due yet')
-            snap = asyncio.run(asyncio.wait_for((collect_issue if job.get('issue_number') else collect_pr)(job['repository'], job['number']), 65))
+            snap = asyncio.run(asyncio.wait_for((collect_issue if job.get('issue_number') else collect_review)(job['repository'], job['number']), 65))
             scope = store.followup_scope(job)
             if scope != job['scope']: raise ValueError('SLICE_SCOPE FAIL: scope differs from original proposal')
             receipt = {'read_at': time.time(), 'head_sha': snap.get('head_sha') or snap.get('updated_at'), 'comment_ids': [str(c['id']) for c in snap['comments']], 'scope_digest': scope_digest(scope)}
@@ -486,22 +488,42 @@ def main():
             output = {'handoff': output, 'obligation_complete': False, 'gates': gates}
         elif args.command in {'validation-plan', 'validate'}:
             from .workflow import owned_pr, run_check, save_plan, launch_check
+            from . import progress
             repo, num, issue = reference(args.pr)
             if issue: raise ValueError('Local validation plans apply to PRs, not review documents')
             sid = session_id(args)
-            owned_pr(store, sid, repo, num)
-            if args.command == 'validation-plan':
-                asyncio.run(inspect(store, sid, args.pr))
-                output = save_plan(store, sid, repo, num, args.cwd, json.loads(Path(args.file).read_text()))
+            owned_pr(store,sid,repo,num)
+            os.environ['CALLER_GATE_SESSION']=sid
+            if args.command=='validation-plan':
+                payload=progress.normalize_plan(json.loads(Path(args.file).read_text()),args.cwd)
             else:
-                refreshed = asyncio.run(inspect(store, sid, args.pr))
-                if (not refreshed or any(g.get('gate') == 'GITHUB_DATA' and g.get('status') == 'UNKNOWN'
-                                         for row in refreshed for g in row.get('gates') or [])):
-                    raise ValueError('Fresh remote PR and target-branch evidence is unavailable; local validation cannot use an earlier passing snapshot')
-                if not args.worker and (args.background or len(store.prs(sid)) > 1):
-                    output = launch_check(store, sid, repo, num, args.cwd, args.check)
-                else:
-                    output = run_check(store, sid, repo, num, args.cwd, args.check, manage_process_group=True)
+                row=store.validation_plan(sid,repo,num,args.cwd)
+                if row is None:raise ValueError('Declare necessary checks before remote validation preflight')
+                if args.check not in {c['id'] for c in row['plan']['checks']}:raise ValueError('Check is absent from declared plan')
+                local=progress.working_state(args.cwd)
+                if not local['clean']:raise ValueError('PUBLISH_REQUIRED: commit and push before local validation')
+                digest=progress.fingerprint(args.cwd,row['plan'])
+                if any(r['check_id']==args.check and r['input_digest']==digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
+                    raise ValueError('This check already ran on unchanged inputs; inspect its recorded result')
+            from .github import collect_validation
+            try:
+                preflight=asyncio.run(asyncio.wait_for(collect_validation(repo,num),65))
+                store.set_preflight(repo,num,preflight)
+                from .policy import branch_freshness_gate
+                if preflight.get('state')!='open' or preflight.get('merged') is not False or branch_freshness_gate(preflight)['status']!='PASS':
+                    raise ValueError('Fresh open-PR head and live target ancestry are unavailable or behind')
+                cached=(store.snapshot(repo,num) or {}).get('snapshot') or {}
+                if cached.get('head_sha')!=preflight.get('head_sha') or not cached.get('actor_login'):
+                    refreshed=asyncio.run(inspect(store,sid,args.pr))
+                    if not refreshed or any(g['gate']=='GITHUB_DATA' for r in refreshed for g in r['gates']):
+                        raise ValueError('Initial complete remote evidence is unavailable')
+            except Exception:
+                store.set_preflight(repo,num,{'profile':'validation','collected_at':None})
+                raise
+            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload)
+            elif not args.worker and (args.background or len(store.prs(sid))>1):
+                output=launch_check(store,sid,repo,num,args.cwd,args.check)
+            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True)
         elif args.command == 'retry':
             if bool(args.followup) == bool(args.pr): raise ValueError('Choose exactly one --followup ID or --pr URL')
             sid = session_id(args)

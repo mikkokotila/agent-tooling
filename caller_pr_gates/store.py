@@ -70,6 +70,7 @@ class Store:
                     receipt TEXT NOT NULL, recorded_at REAL NOT NULL,
                     PRIMARY KEY(repository, number, comment_id, comment_updated_at)
                 );
+                CREATE TABLE IF NOT EXISTS validation_preflights (repository TEXT,number INTEGER,payload TEXT,PRIMARY KEY(repository,number));
                 CREATE TABLE IF NOT EXISTS snapshots (
                     repository TEXT NOT NULL, number INTEGER NOT NULL,
                     snapshot TEXT NOT NULL, gates TEXT NOT NULL, updated_at REAL NOT NULL,
@@ -249,8 +250,6 @@ class Store:
             owner = db.execute('SELECT * FROM sessions WHERE session_id=?', (root,)).fetchone()
             if owner:
                 arm(db, root, owner['client'], repository, number, cwd)
-            db.execute('DELETE FROM unpublished_work WHERE session_id IN (?,?) AND repository=? AND cwd=?',
-                       (session_id, root, repository, str(cwd)))
             return dict(db.execute("SELECT * FROM prs WHERE repository=? AND number=? AND session_id=?", (repository, number, session_id)).fetchone())
 
     def prs(self, session_id=None):
@@ -292,12 +291,24 @@ class Store:
             return [json.loads(row[0]) for row in db.execute("SELECT receipt FROM dispositions WHERE repository=? AND number=? ORDER BY recorded_at", (repository, number))]
 
     def set_snapshot(self, repository, number, snapshot, gates):
+        if snapshot.get('profile') in {'review','validation'}:raise ValueError('Partial evidence cannot replace complete policy snapshots')
+        from .publication import reconcile
+        reconcile(self,repository,number,snapshot)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("""INSERT INTO snapshots VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(repository, number) DO UPDATE SET snapshot=excluded.snapshot,
                 gates=excluded.gates, updated_at=excluded.updated_at""", (repository, number, _json(snapshot), _json(gates), time.time()))
             self._audit(db, "pr_gates_evaluated", {"repository": repository, "number": number, "gates": gates, "head_sha": snapshot.get("head_sha")})
+
+    def set_preflight(self,repository,number,payload):
+        with self._connect() as db:
+            db.execute('INSERT OR REPLACE INTO validation_preflights VALUES(?,?,?)',(repository,number,_json(payload)))
+
+    def preflight(self,repository,number):
+        with self._connect() as db:
+            row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
+            return json.loads(row[0]) if row else None
 
     def snapshot(self, repository, number):
         with self._connect() as db:

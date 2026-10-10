@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import inspect
+import json
+import hashlib
+import time
 from urllib.parse import urljoin, urlparse
 import httpx
 from github_interface.client import GitHubClient as OriginalClient, _raise_for_response
@@ -16,9 +19,12 @@ class GitHubClient(OriginalClient):
         self.account=account_key(self.base_url,self.token)
 
     def metadata(self,path,resource):
+        from .collections import context
+        scoped=context.get()
+        if scoped:return {**scoped,'target':path.split('?')[0],'resource':resource}
         frames=inspect.stack(context=0)
         operation=next((f.function for f in frames if '/caller_pr_gates/' in f.filename and not f.filename.endswith('/transport.py')), 'transport')
-        return dict(operation=operation,session=os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_SESSION_ID'),
+        return dict(operation=os.environ.get('CALLER_GATE_OPERATION') or operation,session=os.environ.get('CALLER_GATE_SESSION') or os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_SESSION_ID'),
                     process=os.getpid(),target=path.split('?')[0],account=self.account,resource=resource)
 
     async def _request(self,method,path,headers,retry_transient,follow_redirects,**kwargs):
@@ -66,3 +72,30 @@ class GitHubClient(OriginalClient):
         try:response.raise_for_status()
         except httpx.HTTPStatusError as error:_raise_for_response(response,error)
         return response.text
+
+    async def get(self,path,**kwargs):
+        """Authenticated conditional revalidation, never a fallback on failure."""
+        headers=dict(kwargs.pop('headers',{}))
+        headers.update(Authorization='Bearer '+self.token,Accept='application/vnd.github+json')
+        headers['X-GitHub-Api-Version']='2022-11-28'
+        key=hashlib.sha256(json.dumps([self.base_url,path,kwargs.get('params'),headers['Accept'],headers['X-GitHub-Api-Version']],sort_keys=True).encode()).hexdigest()
+        with self.coordinator.db() as db:
+            cached=db.execute('SELECT * FROM representations WHERE account=? AND key=?',(self.account,key)).fetchone()
+        if cached and cached['etag']:headers['If-None-Match']=cached['etag']
+        started=time.time()
+        response=await self._request('GET',path,headers,True,True,**kwargs)
+        if response.status_code==304:
+            if not cached or not headers.get('If-None-Match'):raise RuntimeError('Conditional response has no complete authenticated representation')
+            self.coordinator.audit(**self.metadata(path,resource_for(path)),outcome='revalidated',requests=0,status=304)
+            return json.loads(cached['payload'])
+        try:response.raise_for_status()
+        except httpx.HTTPStatusError as error:_raise_for_response(response,error)
+        payload=response.json() if response.content else None
+        if response.status_code==200 and response.headers.get('etag') and len(response.content)<=4*1024*1024:
+            with self.coordinator.db() as db:
+                db.execute("""INSERT INTO representations VALUES(?,?,?,?,?) ON CONFLICT(account,key) DO UPDATE SET
+                    etag=excluded.etag,payload=excluded.payload,observed=excluded.observed
+                    WHERE excluded.observed>=representations.observed""",
+                    (self.account,key,response.headers['etag'],json.dumps(payload),started))
+                db.execute('DELETE FROM representations WHERE rowid IN (SELECT rowid FROM representations ORDER BY observed DESC LIMIT -1 OFFSET 2000)')
+        return payload

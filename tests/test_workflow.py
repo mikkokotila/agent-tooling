@@ -268,7 +268,7 @@ def test_background_check_returns_before_process_exit_and_records_actual_complet
     bootstrap = ('import json\nfrom caller_pr_gates import github, cli\n'
                  f'remote = json.loads({json.dumps(snap)!r})\n'
                  'async def collect(*args):\n    return remote\n'
-                 'github.collect_pr = collect\ncli.main()\n')
+                 'github.collect_pr = collect\ngithub.collect_validation = collect\ncli.main()\n')
     def fixture_worker(argv, **kwargs):
         if argv[1:3] == ['-m', 'caller_pr_gates.cli']:
             argv = [argv[0], '-c', bootstrap, *argv[3:]]

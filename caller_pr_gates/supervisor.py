@@ -212,7 +212,7 @@ async def _tick(store: Any = None, *, execute: bool = False, collect_pr: Callabl
         evaluate_pr = evaluate_pr or policy.evaluate_pr
         evaluate_review = evaluate_review or policy.evaluate_review
     now = clock()
-    result: dict[str, Any] = {"at": now, "execute": execute, "refreshed": [], "actions": [], "completed": [], "deferred": [], "errors": []}
+    result: dict[str, Any] = {"network_scope": "all owned open PRs and due documents; dry-run suppresses dispatch only", "collection_profiles": "full-pr / issue; attribution in github-coordination.sqlite3", "at": now, "execute": execute, "refreshed": [], "actions": [], "completed": [], "deferred": [], "errors": []}
     cache: dict[tuple[str, int, bool], tuple[dict, list[dict]]] = {}
 
     async def refresh(repository: str, number: int, issue: bool = False) -> tuple[dict, list[dict]]:

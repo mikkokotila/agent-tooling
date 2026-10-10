@@ -114,6 +114,8 @@ def retire(store, repository, number, raw):
     state = lifecycle(raw)
     if state == 'open':
         return False
+    from .publication import reconcile
+    reconcile(store,repository,number,raw)
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
         target = db.execute('SELECT owner_session FROM pr_watch WHERE repository=? AND number=?', (repository, number)).fetchone()
@@ -128,8 +130,6 @@ def retire(store, repository, number, raw):
         branch = raw['head'].get('ref')
         db.execute("UPDATE pr_watch SET state=?,branch=COALESCE(?,branch),event_id=NULL,payload=NULL,delivery_state=NULL,error=NULL,lease_until=0,terminal_notice=?,updated_at=? WHERE repository=? AND number=?",
                    (state, branch, notice, time.time(), repository, number))
-        if target and branch:
-            db.execute('DELETE FROM unpublished_work WHERE session_id=? AND repository=? AND branch=?', (target['owner_session'], repository, branch))
         db.execute("UPDATE prs SET status=?,updated_at=? WHERE repository=? AND number=? AND status='active'",
                    ('retired_' + state, time.time(), repository, number))
         # Evidence and dispositions remain; retirement is never a passing receipt.

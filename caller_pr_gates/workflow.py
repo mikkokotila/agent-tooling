@@ -75,7 +75,7 @@ def current_phase(store, row):
     gates = evaluate_pr(snapshot, dispositions)
     return progress.evaluate_progress(row, store.validation_evidence(row['plan_id']),
         progress.fingerprint(row['cwd'], row['plan']), snapshot, gates,
-        progress.working_state(row['cwd']))
+        progress.working_state(row['cwd']),store.preflight(row['repository'],row['number']))
 
 
 def save_plan(store, sid, repository, number, cwd, payload):

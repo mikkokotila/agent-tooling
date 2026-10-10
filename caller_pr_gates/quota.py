@@ -152,7 +152,7 @@ class Coordinator:
 
     def audit(self,**fields):
         # Whitelist caller-supplied metadata; no query bodies, headers or tokens.
-        allowed={'operation','session','process','target','account','resource','reason','outcome','requests','status'}
+        allowed={'operation','session','process','target','account','resource','reason','outcome','requests','status','collection','profile','boundary','http_requests'}
         value={k:v for k,v in fields.items() if k in allowed}
         with self.db() as db:
             db.execute('INSERT INTO attribution(at,fields) VALUES(?,?)',(self.wall(),json.dumps(value,sort_keys=True)))
