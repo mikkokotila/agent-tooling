@@ -1,11 +1,12 @@
 """A dead delivery deadline cannot block installation; live/unknown work can."""
-import sqlite3
+import sys
 import time
 from pathlib import Path
 
 import pytest
 from caller_pr_gates.store import Store
 from caller_pr_gates import monitor
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'tools'))
 import manage
 
 
