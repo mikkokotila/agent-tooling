@@ -26,7 +26,7 @@ Managed global instruction sections mirror this same selected catalogue. Already
 
 The baseline is specific to macOS arm64 and Python 3.13. The captured Codex trust records apply only to the exact captured home and unchanged callback definitions. A different home/new command requires normal Codex hook review; copying a historical hash cannot grant trust to a new command. The installer does not bypass that mechanism.
 
-Application authentication, GitHub permissions and external runner/account availability remain host/account responsibilities. They are not packaged into the release. Release 0.1.3 installs runtime 1.7.3; these versions and the exact source commit are recorded separately. Native callback commands and trust records stay unchanged; the CLI launcher uses Python safe-path mode to prevent a repository cwd from shadowing the installed module.
+Application authentication, GitHub permissions and external runner/account availability remain host/account responsibilities. They are not packaged into the release. Release 0.1.3 installs runtime 1.7.3; these versions and the exact source commit are recorded separately. Native callback commands and trust records stay unchanged; the CLI launcher and managed background worker use Python safe-path mode to prevent a repository cwd from shadowing the installed module.
 
 
 ## Reviewed concurrent maintenance

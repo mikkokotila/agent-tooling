@@ -270,8 +270,8 @@ def test_background_check_returns_before_process_exit_and_records_actual_complet
                  'async def collect(*args):\n    return remote\n'
                  'github.collect_pr = collect\ngithub.collect_validation = collect\ncli.main()\n')
     def fixture_worker(argv, **kwargs):
-        if argv[1:3] == ['-m', 'caller_pr_gates.cli']:
-            argv = [argv[0], '-c', bootstrap, *argv[3:]]
+        if argv[1:4] == ['-P', '-m', 'caller_pr_gates.cli']:
+            argv = [argv[0], '-c', bootstrap, *argv[4:]]
         return original_popen(argv, **kwargs)
     monkeypatch.setattr(subprocess, 'Popen', fixture_worker)
     launched = workflow.launch_check(store, 's', 'Owner/Repo', 1, root, 'regression')

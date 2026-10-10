@@ -37,7 +37,7 @@ class UnixServer(socketserver.ThreadingMixIn,http.server.HTTPServer):
 def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
     coordinator=coordinator or Coordinator();token=credentials()
     if not token:raise RuntimeError('No active GitHub credential; no requests started')
-    config=settings();operation='cli:'+':'.join(argv[1:3]);session=os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_SESSION_ID')
+    config=settings();operation='cli:'+':'.join(argv[1:3]);session=os.environ.get('CALLER_GATE_SESSION') or os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_SESSION_ID')
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version='HTTP/1.1'
         def log_message(self,*args):pass

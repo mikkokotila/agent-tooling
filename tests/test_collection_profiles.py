@@ -84,7 +84,9 @@ async def test_profile_races_and_missing_ancestry_fail_closed():
         async def get(self,path,params=None):
             if '/branches/' in path:raise RuntimeError('quota unavailable')
             return await super().get(path,params)
-    assert branch_freshness_gate(await github.collect_validation_with_client(Outage(),'mikkokotila/caller',50))['status']=='UNKNOWN'
+    p=await github.collect_validation_with_client(Outage(),'mikkokotila/caller',50)
+    p.update(state='open',merged=False)
+    assert branch_freshness_gate(p)['status']=='UNKNOWN'
 
 @async_test
 async def test_conditional_read_is_authenticated_and_never_falls_back_on_error(tmp_path,monkeypatch):

@@ -303,7 +303,7 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
             if not claimed:
                 continue
             try:
-                args = [sys.executable, '-m', 'caller_pr_gates.monitor', 'deliver', '--session', sid]
+                args = [sys.executable, '-P', '-m', 'caller_pr_gates.monitor', 'deliver', '--session', sid]
                 if spawn:
                     worker = spawn(args)
                 else:

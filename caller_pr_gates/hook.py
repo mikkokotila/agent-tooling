@@ -679,6 +679,8 @@ def handle(event, store=None):
     name = str(event.get('hook_event_name') or '')
     sid = _session(event)
     if not sid: raise RuntimeError('Hook session_id missing; ownership cannot be established')
+    os.environ['CALLER_GATE_SESSION']=sid
+    os.environ['CALLER_GATE_OPERATION']='hook:'+name
     store.record_session(sid, _client(), _cwd(event))
     if name == 'SubagentStart':
         agent = event.get('agent_id')

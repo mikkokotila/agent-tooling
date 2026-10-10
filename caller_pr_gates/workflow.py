@@ -186,7 +186,7 @@ def launch_check(store, sid, repository, number, cwd, check_id):
     log = logs / (str(uuid.uuid4()) + '.log')
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                CALLER_PR_GATES_STATE_DIR=str(store.state_dir))
-    args = [sys.executable, '-m', 'caller_pr_gates.cli', 'validate', '--worker', '--session', sid,
+    args = [sys.executable, '-P', '-m', 'caller_pr_gates.cli', 'validate', '--worker', '--session', sid,
             '--pr', f'https://github.com/{repository}/pull/{number}', '--cwd', cwd, '--check', check_id]
     with log.open('w') as output:
         log.chmod(0o600)

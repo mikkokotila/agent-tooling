@@ -16,6 +16,9 @@ class Collections:
                 lease REAL,boot TEXT,payload TEXT,error TEXT,started_mono REAL, PRIMARY KEY(account,key));
                 CREATE TABLE IF NOT EXISTS immutable_evidence (
                 account TEXT,key TEXT,payload TEXT,observed REAL,PRIMARY KEY(account,key));''')
+            db.execute('BEGIN IMMEDIATE')
+            if 'started_mono' not in {r['name'] for r in db.execute('PRAGMA table_info(collections)')}:
+                db.execute('ALTER TABLE collections ADD COLUMN started_mono REAL')
 
     async def run(self, profile, target, producer, *, boundary=None, operation=None):
         implicit=boundary is None
@@ -23,12 +26,15 @@ class Collections:
         boundary=wall_now if implicit else boundary
         if isinstance(boundary,bool) or not isinstance(boundary,(int,float)) or not math.isfinite(boundary) or boundary<0 or boundary>wall_now:raise ValueError('Invalid evidence freshness boundary')
         mono_boundary=mono_now if implicit else mono_now-max(0,wall_now-boundary)
-        self.coordinator.check(self.account,{'core'} if profile=='validation' else {'core','graphql'})
         key=hashlib.sha256(json.dumps([profile,target],sort_keys=True).encode()).hexdigest()
         joined=None
         caller=next((f'{Path(f.filename).stem}:{f.function}' for f in inspect.stack(context=0) if f.filename.endswith(('/hook.py','/cli.py','/monitor.py','/supervisor.py'))),profile)
         metadata=dict(operation=operation or os.environ.get('CALLER_GATE_OPERATION') or caller,session=os.environ.get('CALLER_GATE_SESSION') or os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_SESSION_ID'),
                       process=os.getpid(),target=target,account=self.account,resource='collection',reason=profile)
+        try:self.coordinator.check(self.account,{'core'} if profile=='validation' else {'core','graphql'})
+        except Exception:
+            self.coordinator.audit(**metadata,outcome='cooldown',requests=0,http_requests=0)
+            raise
         while True:
             with self.coordinator.db() as db:
                 db.execute('BEGIN IMMEDIATE')
