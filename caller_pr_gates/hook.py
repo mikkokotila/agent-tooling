@@ -766,6 +766,10 @@ def handle(event, store=None):
             asyncio.run(refresh_closeouts(store, sid, force=True))
         blocked += [f"{g['gate']} {g['status']}: " + '; '.join(g['details']) for g in closeout_gates(store, sid)]
         if hasattr(store, '_connect'):
+            from .publication import refresh as refresh_publication
+            publication = asyncio.run(asyncio.wait_for(refresh_publication(store, sid), timeout=35))
+            if publication['errors']:
+                store.audit('publication_reconciliation_unavailable', {'session_id': sid, 'errors': publication['errors']})
             with store._connect() as db:
                 unpublished = [dict(r) for r in db.execute('SELECT * FROM unpublished_work WHERE session_id=?', (sid,))]
             for row in unpublished:

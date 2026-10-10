@@ -1,4 +1,5 @@
 """A dead delivery deadline cannot block installation; live/unknown work can."""
+import json
 import sys
 import time
 from pathlib import Path
@@ -8,6 +9,42 @@ from caller_pr_gates.store import Store
 from caller_pr_gates import monitor
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'tools'))
 import manage
+
+
+def test_bounded_wait_does_not_deploy_or_change_a_live_lease(monkeypatch,tmp_path):
+    clock=[0.0];observed=[]
+    monkeypatch.setattr(manage.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(manage.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    monkeypatch.setattr(manage,'live_leases',lambda state:observed.append(state) or [{'table':'pr_watch','count':1}])
+    with pytest.raises(RuntimeError,match='deployment deferred without changing state'):
+        manage.wait_for_workers(tmp_path,12)
+    assert clock[0]==12 and observed==[tmp_path]*4
+
+
+def test_bounded_wait_returns_only_after_worker_admission(monkeypatch,tmp_path):
+    clock=[0.0];reads=[0]
+    def leases(state):
+        reads[0]+=1
+        return [{'table':'pr_watch','count':1}] if reads[0]<3 else []
+    monkeypatch.setattr(manage,'live_leases',leases)
+    monkeypatch.setattr(manage.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(manage.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    assert manage.wait_for_workers(tmp_path,30) is None
+    assert clock[0]==10 and reads[0]==3
+
+
+@pytest.mark.parametrize('arguments,expected', [([],600),(['--wait-for-workers','0'],None),(['--wait-for-workers','30'],30)])
+def test_install_command_waits_before_deployment_without_changing_the_command_contract(monkeypatch,tmp_path,capsys,arguments,expected):
+    calls=[]
+    monkeypatch.setattr(manage.sys,'argv',['manage.py','install',*arguments])
+    monkeypatch.setattr(manage,'BUILD',tmp_path/'build')
+    monkeypatch.setattr(manage,'locked',lambda path:manage.contextlib.nullcontext())
+    monkeypatch.setattr(manage,'verify',lambda:{'source_fingerprint':'verified'})
+    monkeypatch.setattr(manage,'wait_for_workers',lambda state,seconds:calls.append(('wait',seconds)))
+    monkeypatch.setattr(manage,'deploy',lambda **kwargs:calls.append(('deploy',kwargs['verified_fingerprint'])) or {'status':'installed'})
+    manage.main()
+    assert calls==([] if expected is None else [('wait',expected)])+[('deploy','verified')]
+    assert json.loads(capsys.readouterr().out)=={'status':'installed'}
 
 
 @pytest.fixture
