@@ -171,15 +171,33 @@ def native_smoke(python, home):
                 if event=='SessionStart' and not output.get('hookSpecificOutput',{}).get('additionalContext'): raise RuntimeError('Missing native context')
                 if event=='PreToolUse' and output.get('hookSpecificOutput',{}).get('permissionDecision')!='deny': raise RuntimeError('Native draft denial was lost')
 
+def process_alive(pid):
+    if type(pid) is not int or pid <= 0: return True
+    try: os.kill(pid,0)
+    except ProcessLookupError: return False
+    except (PermissionError,OSError): return True
+    return True
+
+def orphaned_claude_delivery(db,row):
+    # A consumed deadline is not an active worker when both independent owner
+    # inventories prove it finished. Preserve the row and every task receipt.
+    if row['delivery_state']!='consumed' or row['client']!='claude' or process_alive(row['worker_pid']): return False
+    owner=db.execute('SELECT cwd,client FROM sessions WHERE session_id=?',(row['owner_session'],)).fetchone()
+    if not owner or owner['client']!='claude' or not owner['cwd']: return False
+    from caller_pr_gates.supervisor import claude_availability
+    return claude_availability(row['owner_session'],owner['cwd'])=='idle'
+
 def live_leases(state):
     path = state / 'registry.sqlite3'
     if not path.exists(): return []
     with sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True,timeout=3) as db:
+        db.row_factory=sqlite3.Row
         result = []
         for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
             columns = {r[1] for r in db.execute('PRAGMA table_info("'+table+'")')}
             if 'lease_until' in columns:
-                count = db.execute('SELECT count(*) FROM "'+table+'" WHERE lease_until>?',(time.time(),)).fetchone()[0]
+                rows=db.execute('SELECT * FROM "'+table+'" WHERE lease_until>?',(time.time(),)).fetchall()
+                count=sum(not (table=='pr_watch' and orphaned_claude_delivery(db,row)) for row in rows)
                 if count: result.append({'table':table,'count':count})
             if table == 'recovery':
                 for (raw,) in db.execute('SELECT fields FROM recovery'):
