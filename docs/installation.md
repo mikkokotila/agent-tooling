@@ -1,0 +1,27 @@
+# Installation and rollback
+
+Run `make install` from this checkout after updating it. It builds a standard wheel, runs the isolated regression and deployment suite, and activates only after verification. Dependencies and test tools come from captured local wheels; no package-index access is needed. GitHub CI runs this same verification on macOS arm64 with Python 3.13.2.
+
+Verification is bound to the SHA-256 inventory of the entire source checkout. A source/dependency/test/config change invalidates the cached result. An unchanged successful verification is reused. A new unexpected failure blocks installation; known defects are recorded as strict expected failures, never hidden passing checks.
+
+The installer checks for concurrent configuration/source edits and worker leases before changing operational components. A lease can defer activation without clearing state or forcing another chat turn. Source directories/runtimes use atomic filesystem exchange; individual settings use atomic replacement. Candidate callbacks are exercised with a temporary state database, never production ownership or real GitHub mutations.
+
+Each deployment stores a local journal and the previous affected code/config files under `~/.local/share/agent-tooling/deployments/`. A failed activation restores the prior files and monitor service. The next installation recovers an interrupted journal before doing new work. Backups remain local and are not added to Git.
+
+`make rollback` restores the prior deployment. It never restores an old PR database, recreates obligations, changes issue/review evidence or clears leases. Local edits to affected deployed files cause rollback to refuse before writing. Personal settings and instruction text outside the managed sections remain intact during installation.
+
+The first v0.1.0 install on the captured machine is operationally a no-op: it adds repository commit/version provenance to `release.json` and records a deployment journal. It does not replace byte-identical code, dependency files, wiring or prompts, and does not restart an already-running unchanged monitor. Reinstalling the same commit is fully idempotent.
+
+## Prompts
+
+All prompt text remains in one annotated catalogue. Edit the live `~/.local/share/caller-pr-gates/prompts.toml` for immediate local changes, or the repository `prompts.toml` for a reviewed/versioned change followed by `make install`. The running hooks retain the existing valid-edit live reload and invalid-edit last-good fallback.
+
+Installation preserves valid local prompt edits when repository text has not changed. If both have changed since the previous deployment, installation stops before activation and asks the operator to reconcile those actual file differences. It never silently discards local text. Invalid current text also stops installation; the existing running loader remains responsible for its last-good fallback.
+
+Managed global instruction sections mirror this same selected catalogue. Already-loaded conversation context still needs a reread/new run; the installer cannot rewrite an agent's existing context.
+
+## Boundaries
+
+The baseline is specific to macOS arm64 and Python 3.13. The captured Codex trust records apply only to the exact captured home and unchanged callback definitions. A different home/new command requires normal Codex hook review; copying a historical hash cannot grant trust to a new command. The installer does not bypass that mechanism.
+
+Application authentication, GitHub permissions and external runner/account availability remain host/account responsibilities. They are not packaged into the release. The existing runtime gate's version remains 1.7.0; the repository/release version is 0.1.0.

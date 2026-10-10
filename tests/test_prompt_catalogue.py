@@ -214,9 +214,9 @@ def test_communication_edit_is_delivered_once_and_unrelated_edit_does_not_repeat
 
 def global_targets(tmp_path):
     result = []
-    for path in ['/Users/mikkokotila/.codex/AGENTS.md', '/Users/mikkokotila/.claude/CLAUDE.md']:
-        target = tmp_path / Path(path).name
-        target.write_bytes(Path(path).read_bytes())
+    for client, name in [('codex', 'AGENTS.md'), ('claude', 'CLAUDE.md')]:
+        target = tmp_path / name
+        target.write_bytes((ROOT / 'tests/fixtures' / (client + '-instructions.md')).read_bytes())
         result.append(target)
     return result
 
@@ -284,14 +284,15 @@ def test_prompt_edit_does_not_rearm_evidence_identity_or_write_registry(catalogu
     assert monitor.identity(snapshot, []) == digest
 
 
-@pytest.mark.parametrize('client,config', [('codex', '/Users/mikkokotila/.codex/hooks.json'), ('claude', '/Users/mikkokotila/.claude/settings.json')])
+@pytest.mark.parametrize('client,config', [('codex', 'codex-hooks.json'), ('claude', 'claude-hooks.json')])
 def test_actual_native_hook_command_uses_one_editable_catalogue(catalogue, tmp_path, client, config):
-    data = json.loads(Path(config).read_text())
+    data = json.loads((ROOT / 'config' / config).read_text().replace('${HOME}', str(Path.home())))
     command = next(h['command'] for group in data['hooks']['UserPromptSubmit'] for h in group['hooks'] if h['command'].endswith('caller_pr_gates.hook'))
     args = []
     for part in shlex.split(command):
         if part.startswith('PYTHONPATH='): part = 'PYTHONPATH=' + str(ROOT)
         if part.startswith('CALLER_PR_GATES_STATE_DIR='): part = 'CALLER_PR_GATES_STATE_DIR=' + str(tmp_path / 'native-state')
+        if part.endswith('/caller-pr-stop-gate/bin/python'): part = sys.executable
         args.append(part)
     edit(catalogue, 'pr_rules', prompts.baseline_text('pr_rules') + ' Native editable catalogue verified.')
     event = dict(hook_event_name='UserPromptSubmit', session_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd', cwd=str(tmp_path), prompt='Explain the current mechanism.')

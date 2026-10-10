@@ -1,0 +1,38 @@
+[
+  {
+    "file": "pytest-9.1.1-py3-none-any.whl",
+    "name": "pytest",
+    "version": "9.1.1",
+    "sha256": "f1e3f748ee0ed598b34f92643a389c3b2b8dfcab5d1d7f164da8507b71d6a781"
+  },
+  {
+    "file": "pluggy-1.6.0-py3-none-any.whl",
+    "name": "pluggy",
+    "version": "1.6.0",
+    "sha256": "37162fe87eedc9ea6e186f9d5f22e507c4e417847bdccd15cd7b3af82bf651b0"
+  },
+  {
+    "file": "iniconfig-2.3.1-py3-none-any.whl",
+    "name": "iniconfig",
+    "version": "2.3.1",
+    "sha256": "ef899bb95ba99ec399a0e5344f689fe7e8fbafbe2fbfd044e091c9ba5d3a1194"
+  },
+  {
+    "file": "packaging-26.3-py3-none-any.whl",
+    "name": "packaging",
+    "version": "26.3",
+    "sha256": "31aea002d64de34b1bcd9d682bb94d7362d705790f580db9cd8d1788d6a1e71d"
+  },
+  {
+    "file": "Pygments-2.21.0-py3-none-any.whl",
+    "name": "Pygments",
+    "version": "2.21.0",
+    "sha256": "75dabc0f52b2c8571696917fb21cf743ad86b89808ecc746faa6b2f43d6ee6d7"
+  },
+  {
+    "file": "wheel-0.45.1-py3-none-any.whl",
+    "name": "wheel",
+    "version": "0.45.1",
+    "sha256": "5f35e2ff8cfd033f4e5fdf8091029527aa891d0be8a58d288e067f2fb480178b"
+  }
+]
