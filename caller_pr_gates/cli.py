@@ -409,6 +409,7 @@ def main():
     p = owned('post-review'); p.add_argument('url'); p.add_argument('--kind', choices=['prd','slice'], default='prd'); p.add_argument('--slice-id')
     p = sub.add_parser('review-read'); p.add_argument('--followup', required=True)
     p = owned('status'); p.add_argument('--fresh', action='store_true'); p.add_argument('--pr')
+    p = owned('publication-reconcile'); p.add_argument('--cwd', required=True)
     p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
@@ -515,6 +516,12 @@ def main():
             else: output = {'task_gates': task_gates(store, sid) if sid else [], 'prs': store.prs(sid), 'snapshots': [store.snapshot(p['repository'], p['number']) for p in store.prs(sid)], 'followups': store.followups(sid), 'scope': store.get_scope(sid) if sid else None}
             if sid:
                 output['external_blockers'] = [hold for p in store.prs(sid) if (hold := store.external_blocker(sid, p['repository'], p['number']))]
+                if args.fresh:
+                    from .publication import refresh as refresh_publication
+                    output['publication'] = asyncio.run(asyncio.wait_for(refresh_publication(store, sid), timeout=35))
+        elif args.command == 'publication-reconcile':
+            from .publication import refresh as refresh_publication
+            output = asyncio.run(asyncio.wait_for(refresh_publication(store, session_id(args), cwd=args.cwd), timeout=35))
         elif args.command == 'blocked':
             from .github import collect_pr
             from .policy import evaluate_pr
