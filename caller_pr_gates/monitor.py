@@ -143,8 +143,9 @@ def actionable(snapshot, gates):
     items = []
     if 'CI_FAILED' in failures:
         from .policy import _latest_checks, _outcome
+        from .copilot import is_service_check
         names = sorted({str(c.get('name') or c.get('key')) for c in _latest_checks(snapshot.get('checks') or [])
-                        if _outcome(c) == 'failed'})
+                        if not is_service_check(c) and _outcome(c) == 'failed'})
         items.append(render_prompt('monitor_ci_failed', check_names=', '.join(names[:5])))
     if {'REVIEW_HANDLED', 'REVIEW_CONCLUDED'} & failures.keys():
         obligations = (failures.get('REVIEW_HANDLED') or failures.get('REVIEW_CONCLUDED'))['evidence'].get('obligations', [])

@@ -7,6 +7,7 @@ import re
 import time
 
 from .policy import _latest_checks, _outcome
+from .copilot import is_service_check
 
 
 from .errors import error_identity as _error_identity
@@ -52,7 +53,7 @@ def evidence_fingerprint(snapshot, gates, previous_branch=None, previous_closure
                  "body": hashlib.sha256(str(comment.get("body", "")).encode()).hexdigest()}
                 for comment in snapshot.get("comments") or [] if isinstance(comment, dict)]
     failures = []
-    for check in _latest_checks(snapshot.get("checks") or []):
+    for check in _latest_checks([c for c in snapshot.get("checks") or [] if not is_service_check(c)]):
         if _outcome(check) == "failed":
             failures.append({key: check.get(key) for key in
                 ("kind", "key", "name", "id", "run_attempt", "status", "conclusion")})

@@ -5,6 +5,7 @@ import re
 import hashlib
 from datetime import datetime
 from typing import Any
+from .copilot import SERVICE_CONTEXTS, is_service_check
 
 GATES = ("PR_NOT_DRAFT", "CI_FAILED", "CI_PENDING", "REVIEW_HANDLED", "REVIEW_CONCLUDED", "MERGE_CONFLICT", "BRANCH_UP_TO_DATE", "ISSUE_CLOSURE")
 FAILURES = {"failure", "failed", "error", "cancelled", "canceled", "timed_out", "action_required", "stale", "startup_failure"}
@@ -66,11 +67,17 @@ def _ci(snapshot: dict, expected_override: list[str] | None) -> list[dict]:
     if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
         return [_gate(name, "UNKNOWN", ["Individual CI evidence is missing or malformed"])
                 for name in ("CI_FAILED", "CI_PENDING")]
+    # Keep raw failed/pending service results in evidence, without pretending
+    # they succeeded. No submitted review feedback is exempted.
+    service_checks = [check for check in checks if is_service_check(check)]
+    checks = [check for check in checks if not is_service_check(check)]
     discovery_unknown = not isinstance(expected, list) or any(not isinstance(name, str) for name in expected)
     if discovery_unknown:
         expected = snapshot.get("known_expected_checks") or []
         if not isinstance(expected, list) or any(not isinstance(name, str) for name in expected):
             expected = []
+    service_contexts = sorted(set(expected) & SERVICE_CONTEXTS)
+    expected = [name for name in expected if name not in SERVICE_CONTEXTS]
     head = str(snapshot["head_sha"])
     if any(check.get("head_sha") and check["head_sha"] != head for check in checks):
         return [_gate(name, "UNKNOWN", ["CI evidence belongs to a different commit"])
@@ -103,6 +110,8 @@ def _ci(snapshot: dict, expected_override: list[str] | None) -> list[dict]:
     pending.extend(f"Required check missing: {name}" for name in missing)
     evidence = {"head_sha": head, "checks": checks, "expected_checks": None if discovery_unknown else expected,
                 "known_expected_checks": expected, "missing_checks": missing,
+                "nonblocking_service_checks": service_checks,
+                "nonblocking_service_contexts": service_contexts,
                 "component_errors": snapshot.get("component_errors") or {}}
     failed_status = "FAIL" if failed else ("UNKNOWN" if unknown else "PASS")
     pending_status = "WAIT" if pending else ("UNKNOWN" if unknown else "PASS")
