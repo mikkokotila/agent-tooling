@@ -214,3 +214,64 @@ async def test_repeated_review_action_budget_and_changed_replies():
     for _ in range(3):await github.collect_review_with_client(c,'mikkokotila/caller',50)
     assert len(c.paths)==12 # address+resolve+review-read: 4 REST each, no CI/rules/ancestry reload.
     assert not any('/actions/' in p or '/check-runs' in p or '/rules/' in p for p in c.paths)
+
+@async_test
+async def test_failed_fresh_inspection_cannot_leave_old_passing_snapshot(local,monkeypatch):
+    store,root,snap,plan=local
+    async def fail(*a):raise RuntimeError('GitHub 403: API rate limit exceeded')
+    monkeypatch.setattr(github,'collect_pr',fail)
+    result=await cli.inspect(store,'s','https://github.com/Owner/Repo/pull/1')
+    assert result[0]['gates'][0]['status']=='UNKNOWN'
+    cached=store.snapshot('Owner/Repo',1)
+    assert cached['gates'][0]['status']=='UNKNOWN' and 'collected_at' not in cached['snapshot']
+
+@async_test
+async def test_waiter_cancel_does_not_release_collection_owner(tmp_path):
+    co=Coordinator(tmp_path);a=Collections(co,'same');entered=asyncio.Event();hold=asyncio.Event()
+    async def produce():entered.set();await hold.wait();return {'fresh':True}
+    owner=asyncio.create_task(a.run('full','target',produce))
+    await asyncio.sleep(.001)
+    waiter=asyncio.create_task(a.run('full','target',produce))
+    await asyncio.sleep(.002);waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):await waiter
+    await entered.wait();hold.set()
+    assert await owner=={'fresh':True}
+
+@async_test
+async def test_actual_hook_status_and_monitor_supervisor_overlap(tmp_path,monkeypatch):
+    from caller_pr_gates import hook,monitor,supervisor
+    class OpenBudget(BudgetClient):
+        async def get(self,path,params=None):
+            value=await super().get(path,params)
+            if path.endswith('/pulls/50'):value.update(state='open',merged=False)
+            return value
+        async def graphql(self,query,variables):
+            value=await super().graphql(query,variables)
+            if query==github.BATCH_QUERY:value['repository']['pullRequest'].update(state='OPEN',merged=False)
+            return value
+    for callers in ['hook-status','monitor-supervisor']:
+        c=OpenBudget(tmp_path/callers);s=Store(tmp_path/(callers+'-registry'))
+        s.record_session('s','codex',str(tmp_path));s.register('s','codex','mikkokotila/caller',50,str(tmp_path))
+        collections=Collections(c.coordinator,c.account);fulls=[]
+        async def collect(*a):
+            async def produce():fulls.append(1);return await github.collect_with_client(github._BatchClient(c),'mikkokotila/caller',50)
+            return await collections.run('full-pr','mikkokotila/caller/pull/50',produce)
+        monkeypatch.setattr(github,'collect_pr',collect)
+        if callers=='hook-status':
+            await asyncio.gather(hook.evaluate(s,'s'),cli.inspect(s,'s','https://github.com/mikkokotila/caller/pull/50'))
+        else:
+            async def reader(*a):return await c.get('/repos/mikkokotila/caller/pulls/50')
+            await asyncio.gather(monitor.tick(s,reader=reader,collector=collect),supervisor._tick(s,collect_pr=collect))
+        assert len(fulls)==1 and len(c.graphs)==1
+        assert len(c.paths)==12+(callers=='monitor-supervisor') # One extra monitor lifecycle probe.
+
+
+def test_old_coordination_schema_migrates_without_freshening_old_result(tmp_path):
+    co=Coordinator(tmp_path)
+    with co.db() as db:
+        db.execute('CREATE TABLE collections(account TEXT,key TEXT,token TEXT,phase TEXT,boundary REAL,started REAL,lease REAL,boot TEXT,payload TEXT,error TEXT,PRIMARY KEY(account,key))')
+        db.execute("INSERT INTO collections VALUES('a','key','old','result',0,0,0,'old','{}',NULL)")
+    Collections(co,'a')
+    with co.db() as db:
+        row=db.execute('SELECT * FROM collections').fetchone()
+        assert row['token']=='old' and row['started_mono'] is None and row['payload']=='{}'

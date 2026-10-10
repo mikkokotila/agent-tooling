@@ -182,7 +182,11 @@ async def inspect(store, sid=None, url=None):
             result.append({'repository': row['repository'], 'number': row['number'], 'head_sha': snap['head_sha'], 'gates': gates,
                            'scope': store.pr_scope(sid, row['repository'], row['number']) if sid else None})
         except Exception as exc:
-            result.append({'repository': row['repository'], 'number': row['number'], 'gates': [{'gate': 'GITHUB_DATA', 'status': 'UNKNOWN', 'details': [str(exc)[:900]], 'evidence': {}}]})
+            from .errors import diagnostic
+            error=diagnostic(exc,f"/repos/{row['repository']}/pulls/{row['number']}")
+            gates=[{'gate':'GITHUB_DATA','status':'UNKNOWN','details':[error['message'][:900]],'evidence':{'error':error}}]
+            store.set_snapshot(row['repository'],row['number'],{'repository':row['repository'],'number':row['number'],'component_errors':{'collection':error}},gates)
+            result.append({'repository':row['repository'],'number':row['number'],'gates':gates})
     return result
 
 
@@ -425,6 +429,12 @@ def main():
         elif args.command == 'address':
             from .github import collect_issue, collect_review
             repo, num, issue = reference(args.pr)
+            sid=session_id(args)
+            if issue:
+                if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)):raise ValueError('Document is not owned by this task')
+            else:
+                from .workflow import owned_pr
+                owned_pr(store,sid,repo,num)
             snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_review)(repo, num), 65))
             comments = [c for c in snap['comments'] if str(c['id']) == args.comment]
             if len(comments) != 1: raise ValueError('Comment ID not found in the complete live review inventory')
