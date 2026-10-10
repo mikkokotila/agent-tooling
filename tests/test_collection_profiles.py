@@ -275,3 +275,27 @@ def test_old_coordination_schema_migrates_without_freshening_old_result(tmp_path
     with co.db() as db:
         row=db.execute('SELECT * FROM collections').fetchone()
         assert row['token']=='old' and row['started_mono'] is None and row['payload']=='{}'
+
+
+def test_full_refresh_supersedes_expired_preflight_but_not_newer_failure(local):
+    store,root,snap,plan=local
+    (root/'src.txt').write_text('fixed');publish(local)
+    row=workflow.save_plan(store,'s','Owner/Repo',1,root,plan)['plan']
+    r=store.begin_validation(row['plan_id'],'regression',row['input_digest']);store.finish_validation(r['run_id'],0,row['input_digest'])
+    old={**snap,'profile':'validation','collected_at':time.time()-500,'attempted_at':time.time()-500}
+    with store._connect() as db:db.execute('INSERT OR REPLACE INTO validation_preflights VALUES(?,?,?)',('Owner/Repo',1,json.dumps(old)))
+    snap['collected_at']=time.time();store.set_snapshot('Owner/Repo',1,snap,evaluate_pr(snap,[]))
+    assert workflow.current_phase(store,row)['phase']=='COMPLETE'
+    store.set_preflight('Owner/Repo',1,{'profile':'validation','collected_at':None})
+    assert workflow.current_phase(store,row)['phase']=='REMOTE_READ_REQUIRED'
+    snap['collected_at']=time.time();store.set_snapshot('Owner/Repo',1,snap,evaluate_pr(snap,[]))
+    assert workflow.current_phase(store,row)['phase']=='COMPLETE'
+
+
+def test_legacy_unknown_preflight_preserved_and_full_read_can_supersede(local):
+    store,root,snap,plan=local
+    with store._connect() as db:db.execute('INSERT OR REPLACE INTO validation_preflights VALUES(?,?,?)',('Owner/Repo',1,json.dumps({'profile':'validation','collected_at':None})))
+    restarted=Store(store.state_dir);receipt=restarted.preflight('Owner/Repo',1)
+    assert receipt['collected_at'] is None and receipt['attempted_at']>=snap['collected_at']
+    again=Store(store.state_dir).preflight('Owner/Repo',1)
+    assert again==receipt # Restart never moves the marker forward again.

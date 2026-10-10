@@ -141,6 +141,14 @@ class Store:
             from .monitor import schema
             schema(db)
             db.execute("BEGIN IMMEDIATE")
+            # Stamp legacy preflights once, conservatively dating unknown reads
+            # at migration. A subsequent full collection can supersede them.
+            for pre in db.execute('SELECT * FROM validation_preflights').fetchall():
+                payload=json.loads(pre['payload'])
+                if 'attempted_at' not in payload:
+                    stamp=payload.get('collected_at')
+                    payload['attempted_at']=stamp if isinstance(stamp,(int,float)) and not isinstance(stamp,bool) else time.time()
+                    db.execute('UPDATE validation_preflights SET payload=? WHERE repository=? AND number=?',(_json(payload),pre['repository'],pre['number']))
             columns = {row["name"] for row in db.execute("PRAGMA table_info(validation_runs)")}
             if "process_group" not in columns:
                 db.execute("ALTER TABLE validation_runs ADD COLUMN process_group INTEGER")
@@ -302,6 +310,7 @@ class Store:
             self._audit(db, "pr_gates_evaluated", {"repository": repository, "number": number, "gates": gates, "head_sha": snapshot.get("head_sha")})
 
     def set_preflight(self,repository,number,payload):
+        payload={**payload,'attempted_at':time.time()}
         with self._connect() as db:
             db.execute('INSERT OR REPLACE INTO validation_preflights VALUES(?,?,?)',(repository,number,_json(payload)))
 
