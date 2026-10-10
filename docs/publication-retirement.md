@@ -22,3 +22,14 @@ again before retiring that exact durable record. Dirty source, unpublished
 commits, unrelated origins/checkouts, changing target refs, missing evidence,
 changed source/ownership and concurrent record updates remain protected. Errors
 remain local and records stay incomplete. No direct database repair is needed.
+
+Deployment retains worker protection. An explicit bounded wait can keep the
+installation check pending until active work finishes, without retrying deployment
+or changing a lease:
+
+```sh
+python3.13 tools/manage.py install --wait-for-workers 600
+```
+
+Timeout leaves the running installation intact. Deployment rechecks worker
+admission after the wait and at its existing transaction boundaries.

@@ -207,6 +207,15 @@ def live_leases(state):
                     if fields.get('lease_until',0) > time.time(): result.append({'table':table,'count':1})
         return result
 
+def wait_for_workers(state, seconds):
+    """Wait before deployment; admission is still rechecked by deploy itself."""
+    deadline=time.monotonic()+seconds
+    while live_leases(state):
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            raise RuntimeError('A live PR/document worker still holds a lease; deployment deferred without changing state')
+        time.sleep(min(5,remaining))
+
 class Service:
     def __init__(self, home):
         self.target=f'gui/{os.getuid()}/local.caller-pr-monitor'
@@ -438,7 +447,11 @@ def rollback(home=None,service=None):
         return {'status':'rolled_back','state_restored':False,'service_restarted':restart and was_running}
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['build','verify','install','rollback','status']);args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['build','verify','install','rollback','status'])
+    parser.add_argument('--wait-for-workers',type=float,default=0,help='Bounded seconds to wait for worker admission before install; never bypass a lease')
+    args=parser.parse_args()
+    if not 0<=args.wait_for_workers<=3600 or args.wait_for_workers and args.command!='install':
+        parser.error('--wait-for-workers requires install and a finite value from 0 to 3600')
     BUILD.mkdir(exist_ok=True)
     if args.command=='status':
         target=Path.home()/'.local/share/agent-tooling/current.json'
@@ -448,6 +461,8 @@ def main():
         if args.command=='build': build()
         else:
             report=verify()
+            if args.command=='install' and args.wait_for_workers:
+                wait_for_workers(Path.home()/'.local/state/caller-pr-gates',args.wait_for_workers)
             print(json.dumps(deploy(verified_fingerprint=report['source_fingerprint']) if args.command=='install' else report,indent=2))
 
 if __name__=='__main__': main()

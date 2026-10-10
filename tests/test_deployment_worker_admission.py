@@ -10,6 +10,28 @@ sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'tools'))
 import manage
 
 
+def test_bounded_wait_does_not_deploy_or_change_a_live_lease(monkeypatch,tmp_path):
+    clock=[0.0];observed=[]
+    monkeypatch.setattr(manage.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(manage.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    monkeypatch.setattr(manage,'live_leases',lambda state:observed.append(state) or [{'table':'pr_watch','count':1}])
+    with pytest.raises(RuntimeError,match='deployment deferred without changing state'):
+        manage.wait_for_workers(tmp_path,12)
+    assert clock[0]==12 and observed==[tmp_path]*4
+
+
+def test_bounded_wait_returns_only_after_worker_admission(monkeypatch,tmp_path):
+    clock=[0.0];reads=[0]
+    def leases(state):
+        reads[0]+=1
+        return [{'table':'pr_watch','count':1}] if reads[0]<3 else []
+    monkeypatch.setattr(manage,'live_leases',leases)
+    monkeypatch.setattr(manage.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(manage.time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    assert manage.wait_for_workers(tmp_path,30) is None
+    assert clock[0]==10 and reads[0]==3
+
+
 @pytest.fixture
 def worker(tmp_path):
     store=Store(tmp_path);store.record_session('owner','claude',str(tmp_path));store.register('owner','claude','o/r',1,str(tmp_path))
