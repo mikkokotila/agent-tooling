@@ -1,4 +1,5 @@
 """A dead delivery deadline cannot block installation; live/unknown work can."""
+import json
 import sys
 import time
 from pathlib import Path
