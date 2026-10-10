@@ -230,3 +230,17 @@ def test_missing_dependency_runtime_is_rebuilt_offline(installed,monkeypatch):
     assert not result['runtime_unchanged'] and service.active
     manage.rollback(home,service)
     assert not runtime.exists()
+
+def test_stale_verification_cannot_activate(installed):
+    home,service=installed;before=original_bytes(home)
+    with pytest.raises(RuntimeError,match='after verification'):
+        manage.deploy(home,service,verified_fingerprint='not-the-verified-source')
+    assert original_bytes(home)==before and service.stops==0
+
+def test_source_race_before_activation_is_rejected(installed,monkeypatch):
+    home,service=installed;before=original_bytes(home)
+    values=iter(['verified','verified','changed'])
+    monkeypatch.setattr(manage,'fingerprint',lambda:next(values))
+    with pytest.raises(RuntimeError,match='before activation'):
+        manage.deploy(home,service,verified_fingerprint='verified')
+    assert original_bytes(home)==before and service.stops==0

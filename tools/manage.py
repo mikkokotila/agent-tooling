@@ -268,7 +268,9 @@ def restore(journal):
             exchange(path,prior)
         else: exchange(path,prior)
 
-def deploy(home=None, service=None):
+def deploy(home=None, service=None, verified_fingerprint=None):
+    if verified_fingerprint is not None and fingerprint()!=verified_fingerprint:
+        raise RuntimeError('Checkout changed after verification; publish and verify the current revision')
     home=Path(home or Path.home());base=home/'.local/share/agent-tooling';live=home/'.local/share/caller-pr-gates'
     state=home/'.local/state/caller-pr-gates';service=service or Service(home)
     base.mkdir(parents=True,exist_ok=True)
@@ -296,6 +298,8 @@ def deploy(home=None, service=None):
         code_changed=incoming != originals
         runtime_changed=not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python')
         revision=fingerprint()
+        if verified_fingerprint is not None and revision!=verified_fingerprint:
+            raise RuntimeError('Checkout changed while preparing deployment')
         if subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip(): raise RuntimeError('Commit and publish checkout changes before installation')
         commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
         release_path=live/'release.json'
@@ -318,6 +322,8 @@ def deploy(home=None, service=None):
         stopped=False
         try:
             # Last compare before activation catches human edits during preparation.
+            if verified_fingerprint is not None and fingerprint()!=verified_fingerprint:
+                raise RuntimeError('Checkout changed before activation; no activation performed')
             if operational_change and live_leases(state): raise RuntimeError('A worker acquired a lease; no activation performed')
             if any((Path(name).read_bytes() if Path(name).exists() else None)!=before for name,before in asset_before.items()): raise RuntimeError('Concurrent configuration edit; no activation performed')
             if package.exists() and {p.name:sha(p.read_bytes()) for p in package.iterdir() if p.is_file() and p.suffix in {'.py','.json'}}!={n:sha(v) for n,v in originals.items()}: raise RuntimeError('Concurrent code edit; no activation performed')
@@ -404,6 +410,6 @@ def main():
         if args.command=='build': build()
         else:
             report=verify()
-            print(json.dumps(deploy() if args.command=='install' else report,indent=2))
+            print(json.dumps(deploy(verified_fingerprint=report['source_fingerprint']) if args.command=='install' else report,indent=2))
 
 if __name__=='__main__': main()
