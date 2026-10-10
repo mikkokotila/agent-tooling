@@ -137,3 +137,32 @@ def test_stop_and_supervisor_do_not_report_or_resume_for_service_failure(tmp_pat
     async def collect(*args):return copy.deepcopy(data)
     result=asyncio.run(supervisor.tick(store,execute=True,collect_pr=collect,runner=lambda *args,**kw:pytest.fail('service failure must not resume a chat')))
     assert not result['actions'] and not result['errors']
+
+
+def test_monitor_stays_silent_for_service_changes_then_delivers_actual_feedback(tmp_path):
+    store=Store(tmp_path);store.record_session('s','codex',str(tmp_path));store.register('s','codex','owner/repo',1,str(tmp_path))
+    data=snapshot();data['checks'].append(service())
+    async def reader(*args):
+        return dict(state='open',merged=False,mergeable=True,head={'sha':data['head_sha']},base={'ref':'main','sha':data['base_sha']})
+    async def collector(*args):return copy.deepcopy(data)
+    for now in [1000,1300]:
+        result=asyncio.run(monitor.tick(store,execute=True,now=now,reader=reader,collector=collector,spawn=lambda *args:pytest.fail('service must not wake a chat')))
+        assert result['events']==result['workers']==result['errors']==0
+        data['checks'][-1].update(id='99',conclusion='cancelled')
+    data['comments']=[comment(author_login='copilot-pull-request-reviewer[bot]')]
+    launched=[]
+    result=asyncio.run(monitor.tick(store,execute=True,now=1600,reader=reader,collector=collector,spawn=launched.append))
+    assert result['events']==result['workers']==1 and len(launched)==1
+
+
+def test_legacy_quota_hold_releases_after_fresh_service_classification(tmp_path):
+    from caller_pr_gates.external import current_hold, gate_fingerprint
+    store=Store(tmp_path);store.record_session('s','codex',str(tmp_path));store.register('s','codex','owner/repo',1,str(tmp_path))
+    old=snapshot();raw=service()
+    for key in ['workflow_path','workflow_event','workflow_id']:raw.pop(key)
+    old['checks'].append(raw);old_gates=evaluate_pr(old,[])
+    store.record_external_blocker('s','owner/repo',1,old['head_sha'],gate_fingerprint(old,old_gates),'Historical verified quota rejection','https://github.com/owner/repo/actions/runs/1/job/2')
+    data=snapshot();data['checks'].append(service())
+    assert current_hold(store,'s',data,evaluate_pr(data,[])) is None
+    assert store.external_blocker('s','owner/repo',1) is None
+    assert store.prs('s')[0]['status']=='active'  # Never fake completion.

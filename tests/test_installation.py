@@ -94,6 +94,9 @@ def test_rollback_preserves_newer_pr_state(installed):
 
 def test_valid_live_prompt_edit_is_preserved_and_mirrored(installed):
     home,service=installed;prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    # Establish the installed release baseline before applying a human edit.
+    # Concurrent changes against the older capture must still be rejected.
+    manage.deploy(home,service)
     text=prompt.read_text();text=text.replace('Completion requires every separate gate to pass:', 'Completion requires every separate gate to pass:')
     # Change a plain fragment while retaining required protected prefixes/tokens.
     text=text.replace('Handle routine engineering and CI work autonomously', 'Handle routine engineering and CI work carefully and autonomously')
