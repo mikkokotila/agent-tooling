@@ -1,0 +1,47 @@
+{
+  "/Users/mikkokotila/.codex/hooks.json:pre_tool_use:0:0": {
+    "trusted_hash": "sha256:efe99b7e487fe039deb904fa61a9aa856ff9173c26ae374eb2933a1c88abd0ac"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:post_tool_use:0:0": {
+    "trusted_hash": "sha256:4a6b0afc281be1832243d10e253afa5afa856495127d3f89262a0f5f95f77cd0"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:session_start:0:0": {
+    "trusted_hash": "sha256:d44480554a624e4656439632b22a92d57b5fb7536b08333bc8514985a35f375e"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:session_end:0:0": {
+    "trusted_hash": "sha256:256d252e8fb924c51f65632f29dc5a26f41c46a036a75c586717b5c7a8c65219"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:user_prompt_submit:0:0": {
+    "trusted_hash": "sha256:e416ffbb5a33099cfb9ec0733591e0543157eb574da74aa2ed67749e95523af8"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:subagent_start:0:0": {
+    "trusted_hash": "sha256:d7407399df6753a40fe9739c7c2eeb753074ee3c1d93100ac427381cb42b180b"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:subagent_stop:0:0": {
+    "trusted_hash": "sha256:7946f1335448457574df1b5c7287902266b3512fcbdc7be245149c3dbcb5d6d0"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:stop:0:0": {
+    "trusted_hash": "sha256:9acd44c5ed027a637299593fdc0d1cd4595b35344e5692205a128212bce2a7f8"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:interrupt:0:0": {
+    "trusted_hash": "sha256:b858673f7f88c417b63e5fed9cdb47193d03f248d7325ac5c4d1f1af1c54495b"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:post_tool_use:1:0": {
+    "trusted_hash": "sha256:ca22fa1b7e154832fd57c01daed60b82eb2dcc3d095ca150e704b26f8a2d1fce"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:session_start:1:0": {
+    "trusted_hash": "sha256:1df3436c9fbda7bfdfd31534615880975d70ef4cb473605cb8b8f7e72c63cdb7"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:user_prompt_submit:1:0": {
+    "trusted_hash": "sha256:84e9b40a8c721381b5c8a5be2596c3ad1db5a31f5a3443720fc7db2f8dcd8e54"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:subagent_start:1:0": {
+    "trusted_hash": "sha256:0156cd35dff34067747b657ebbbb65f874cebf3e44c2b65253c0a05b65f15f54"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:subagent_stop:1:0": {
+    "trusted_hash": "sha256:b20325bce164c80ed97b0e6fa7e7f5bb4f218184c7e98bcb10e1cdf03e463477"
+  },
+  "/Users/mikkokotila/.codex/hooks.json:stop:1:0": {
+    "trusted_hash": "sha256:9c5c59ac0dd2b3b2f4e5ae17180443f6216a3e338c1b1942d20890ddb36117d5"
+  }
+}
