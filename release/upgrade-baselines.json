@@ -53,5 +53,37 @@
       "external.py": "4f65962293b6c94b99b8e447363f61d16ad3ac084defd221e4897fee2a34f8f7",
       "closure.py": "8a2f205dea2a829a6b904983b9fd553ddd78a345ddf2e516c5c5e853046b2e5b"
     }
+  },
+  {
+    "previous_commit": "e8a0239ddeb408fdd0850b560631b3b8fe56d8d1",
+    "previous_version": "0.1.5",
+    "runtime_version": "1.7.5",
+    "reason": "Reviewed concurrent Limen maintenance: preserve nested executable validation guard; replace PR-specific failed CI rerun exception with bounded current-head owned CI retry.",
+    "gate_hashes": {
+      "store.py": "213ced660be7929c3770f25efdf247963241120df70f880c95ac679d8ede6bd7",
+      "monitor.py": "98c1f24cf3a5a5db5f40840e5b7280c3ea980ff283f872afc2f4faa580abc764",
+      "transport.py": "35269b7c4e1ff47745cd56066c3371d73aa99d3b5838cc5b497f376ae9e2bb47",
+      "handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
+      "supervisor.py": "bec29df4c50a8153bdbabef3ea44953f4f30acf064e051b94baec22bb9d1cb9f",
+      "copilot.py": "4a03a51861a2e06becc68b7ae6e6ce8137ace5133adf2005511cdc8ef4d2a8a0",
+      "quota.py": "94088f3848e77e5d5649fa760c2e0465bc92b6367e7415298b6068176d16ba3a",
+      "policy.py": "3e2bae93a94e6cdc71fbb6ead0558e4d5e7b14f453ef5d1cf9c3fab737b1187b",
+      "hook.py": "9cf045c0a145b8da245c3851ce2e207c63539cf8abd9cbaa73e13db21f62a666",
+      "__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
+      "prompts.py": "da0ffa8a0ec106f80ed33004e843eb5a20f00db423593b067271db35c02cf622",
+      "ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
+      "troubleshooting.py": "a48af58188b4c51f280ec9c6068bd66e36b4d5525a7d85dc2cf10d74e5144ac9",
+      "cli.py": "6bdb2620f75f42f9bd9bc86e02fb1db219d7026136bae5aa18668169dfbed62c",
+      "collections.py": "843cbe80a139861e5f0bfb72e992acf97ae8d1ea870e56025c02dcf89146d895",
+      "turns.py": "350ccf2be5403dbe401b6f83e5bb8c820e270b66ea54fec1d45feb62730780a0",
+      "publication.py": "db3adc76039fa42710b65ac0721e5b08159f76850f4bf5ef4c17ec83a885eab8",
+      "prompt-defaults.json": "d24cabbe90f2924fcecb3335867251c63277f441b492a0a2ee756ec786628308",
+      "errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
+      "workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf",
+      "progress.py": "243d1273633dd5ab7c3b7915a24fe48f27c58a4dc16dcc4b26d70c09ee2309c1",
+      "github.py": "bc03c5017cef060346bda5b53ec049ad4f17f8ee1f42ae1bc8bcb1f43d000384",
+      "external.py": "4f65962293b6c94b99b8e447363f61d16ad3ac084defd221e4897fee2a34f8f7",
+      "closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f"
+    }
   }
 ]

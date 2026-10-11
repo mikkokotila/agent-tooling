@@ -1,7 +1,7 @@
 {
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
-    "caller_pr_gates/cli.py": "8db52fe9ab82f40732d3fb0e3f0604807ac37a1962dd0cf9dfc0b1a2807ac42f",
+    "caller_pr_gates/cli.py": "be1a64084a07704aab29f5c6c167ab31f35f6db56cc7b6f717fbce5ee427258a",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "843cbe80a139861e5f0bfb72e992acf97ae8d1ea870e56025c02dcf89146d895",
     "caller_pr_gates/copilot.py": "4a03a51861a2e06becc68b7ae6e6ce8137ace5133adf2005511cdc8ef4d2a8a0",
@@ -10,8 +10,8 @@
     "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
     "caller_pr_gates/github.py": "bc03c5017cef060346bda5b53ec049ad4f17f8ee1f42ae1bc8bcb1f43d000384",
     "caller_pr_gates/handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
-    "caller_pr_gates/hook.py": "537f68dbcff547cf408b61ef5fcc0950143f679f4a003590ca4ada8f14e30566",
-    "caller_pr_gates/monitor.py": "98c1f24cf3a5a5db5f40840e5b7280c3ea980ff283f872afc2f4faa580abc764",
+    "caller_pr_gates/hook.py": "9cf045c0a145b8da245c3851ce2e207c63539cf8abd9cbaa73e13db21f62a666",
+    "caller_pr_gates/monitor.py": "021c9cc5f1ea88ce96bf607bb77b71c20888bd71fa181980516fe772c10523f0",
     "caller_pr_gates/policy.py": "3e2bae93a94e6cdc71fbb6ead0558e4d5e7b14f453ef5d1cf9c3fab737b1187b",
     "caller_pr_gates/progress.py": "243d1273633dd5ab7c3b7915a24fe48f27c58a4dc16dcc4b26d70c09ee2309c1",
     "caller_pr_gates/prompt-defaults.json": "d24cabbe90f2924fcecb3335867251c63277f441b492a0a2ee756ec786628308",
@@ -26,6 +26,6 @@
     "caller_pr_gates/workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf"
   },
   "known_defects": [],
-  "runtime_version": "1.7.5",
-  "version": "0.1.5"
+  "runtime_version": "1.7.6",
+  "version": "0.1.6"
 }

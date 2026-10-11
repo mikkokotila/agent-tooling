@@ -481,7 +481,7 @@ def _scope_gate(store, sid):
 
 def _local_validation_guard(event, store, sid):
     from .progress import validation_command
-    command = _operation_command(_command(event))
+    command = _draft_command_text(event)
     if not validation_command(command): return None
     rows = store.prs(sid)
     if hasattr(store, '_connect'):

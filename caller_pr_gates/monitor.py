@@ -431,8 +431,89 @@ def retry(store, sid, repository, number):
         if row['lease_until'] > time.time():
             raise ValueError('Monitor still has a live worker lease')
         db.execute('UPDATE pr_watch SET delivered_fingerprint=NULL,delivery_state=NULL,event_id=NULL,payload=NULL,error=NULL,retry_at=0,next_check_at=0,worker_pid=NULL WHERE repository=? AND number=?', (repository, number))
+        _receipt(db, store, row, {'idle_retry_fingerprint': None, 'idle_retry_outcome': None, 'awaiting_user_turn': None})
         store._audit(db, 'pr_monitor_explicit_retry', {'session_id': sid, 'repository': repository, 'number': number})
     return True
+
+
+def _receipt(db, store, row, updates):
+    """Extend existing recovery evidence atomically; preserve leases and ownership."""
+    key = (row['repository'], row['number'], row['owner_session'])
+    owned = store._task_sessions(db, key[2])
+    if not any(p[0] in owned for p in db.execute("SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", key[:2])):
+        raise ValueError('PR is no longer owned by this task')
+    previous = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?', key).fetchone()
+    fields = json.loads(previous['fields']) if previous else {}
+    fields.update(updates)
+    now = time.time()
+    db.execute('''INSERT INTO recovery VALUES(?,?,?,?,?,?) ON CONFLICT(repository,number,session_id)
+                  DO UPDATE SET fields=excluded.fields,updated_at=excluded.updated_at''',
+               (*key, json.dumps(fields), now, now))
+    store._audit(db, 'pr_continuation_outcome', dict(repository=key[0], number=key[1], session_id=key[2], **updates))
+    return fields
+
+
+def _idle_handoff(store, sid, event, result):
+    """One recovery for a new idle transition, using evidence already collected."""
+    if result and result.get('decision') == 'block':
+        return result
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        mode = db.execute('SELECT * FROM turn_modes WHERE session_id=?', (sid,)).fetchone()
+        if not mode or mode['mode'] != 'engineering' or event.get('turn_id') and event['turn_id'] != mode['turn_id']:
+            return result
+        rows = db.execute("SELECT * FROM pr_watch WHERE owner_session=? AND state='open' AND armed=1 AND delivery_state='consumed' AND lease_until<=?", (sid, time.time())).fetchall()
+        stalled = False
+        for row in rows:
+            cached = db.execute('SELECT snapshot,gates FROM snapshots WHERE repository=? AND number=?', (row['repository'], row['number'])).fetchone()
+            if not cached or not row['payload']:
+                continue
+            snapshot, gates = json.loads(cached['snapshot']), json.loads(cached['gates'])
+            if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
+                    or time.time() - snapshot.get('collected_at', 0) > MULTI_INTERVAL
+                    or snapshot.get('head_sha') != json.loads(row['payload'])['head_sha']
+                    or any(g.get('status') == 'UNKNOWN' for g in gates)):
+                continue
+            snapshot['local_failures'] = local_failures(store, sid, snapshot, full=False)
+            if not actionable(snapshot, gates) or quiet_hold(store, sid, snapshot, gates):
+                continue
+            old = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?', (row['repository'], row['number'], sid)).fetchone()
+            fields = json.loads(old['fields']) if old else {}
+            if fields.get('awaiting_user_turn') == mode['turn_id'] or float(fields.get('lease_until') or 0) > time.time():
+                continue
+            running = db.execute('''SELECT r.pid FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
+                                    WHERE p.repository=? AND p.number=? AND r.status='running' ''',
+                                 (row['repository'], row['number'])).fetchall()
+            if any(_worker_alive(r['pid']) for r in running):
+                continue
+            fingerprint = row['fingerprint']
+            if not fingerprint or fingerprint != row['delivered_fingerprint']:
+                continue
+            if fields.get('idle_retry_fingerprint') == fingerprint:
+                if fields.get('idle_retry_outcome') != 'stalled':
+                    _receipt(db, store, row, {'idle_retry_outcome': 'stalled'})
+                    db.execute('UPDATE pr_watch SET error=? WHERE repository=? AND number=?',
+                               ('Agent yielded with actionable work after bounded recovery; explicit retry required', row['repository'], row['number']))
+                    stalled = True
+                continue
+            _receipt(db, store, row, {'idle_retry_fingerprint': fingerprint, 'idle_retry_outcome': 'pending'})
+            db.execute("UPDATE pr_watch SET delivery_state='pending',event_id=?,retry_at=next_check_at WHERE repository=? AND number=?",
+                       (str(uuid.uuid4()), row['repository'], row['number']))
+        if stalled:
+            return dict(result or {}, systemMessage=render_prompt('incomplete_handoff'))
+    return result
+
+
+def _worker_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return True  # Uncertain process evidence never authorizes recovery.
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
 
 
 def native(event, store, result):
@@ -443,6 +524,17 @@ def native(event, store, result):
     owner = store.session(sid)
     if not owner or owner['root_session'] != sid:
         return result
+    if name == 'PostToolUse' and re.split(r'__|[.:/]', str(event.get('tool_name') or ''))[-1] == 'request_user_input_async':
+        from .hook import _succeeded
+        if _succeeded(event) and isinstance(event.get('tool_input'), dict) and event['tool_input'].get('questions'):
+            with store._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                mode = db.execute('SELECT turn_id FROM turn_modes WHERE session_id=?', (sid,)).fetchone()
+                rows = db.execute("SELECT * FROM pr_watch WHERE owner_session=? AND state='open'", (sid,)).fetchall()
+                text = json.dumps(event['tool_input'])
+                for row in rows:
+                    if mode and (len(rows) == 1 or f"https://github.com/{row['repository']}/pull/{row['number']}" in text):
+                        _receipt(db, store, row, {'awaiting_user_turn': mode['turn_id']})
     busy = name in {'UserPromptSubmit', 'PreToolUse', 'PostToolUse'}
     if busy or name in {'Stop', 'Interrupt', 'SessionEnd', 'StopFailure'}:
         if name == 'Stop' and result and result.get('decision') == 'block':
@@ -488,7 +580,7 @@ def native(event, store, result):
         text = consume(store, sid, full=False)
         if text:
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text + '\n' + render_prompt('pr_rules')}}
-    return result
+    return _idle_handoff(store, sid, event, result) if name == 'Stop' else result
 
 
 async def deliver(store, sid, *, reader=probe, collector=None, runner=None, availability=None):
