@@ -411,7 +411,8 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
 
 
 def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=True, branch_reader=None):
-    rows = pending(store, sid)
+    rows = [row for row in pending(store, sid)
+            if row['delivery_state'] != 'pending' or row['retry_at'] <= time.time()]
     if event_id and not any(r['event_id'] == event_id for r in rows):
         return None
     if not full:
@@ -465,6 +466,8 @@ def _idle_handoff(store, sid, event, result, *, retry_at=None):
         return result
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_modes'").fetchone():
+            return result
         mode = db.execute('SELECT * FROM turn_modes WHERE session_id=?', (sid,)).fetchone()
         if not mode or mode['mode'] != 'engineering' or event.get('turn_id') and event['turn_id'] != mode['turn_id']:
             return result
@@ -476,7 +479,7 @@ def _idle_handoff(store, sid, event, result, *, retry_at=None):
                 continue
             snapshot, gates = json.loads(cached['snapshot']), json.loads(cached['gates'])
             if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
-                    or time.time() - snapshot.get('collected_at', 0) > MULTI_INTERVAL
+                    or time.time() - float(snapshot.get('collected_at') or 0) > MULTI_INTERVAL
                     or snapshot.get('head_sha') != json.loads(row['payload'])['head_sha']
                     or any(g.get('status') == 'UNKNOWN' for g in gates)):
                 continue
@@ -499,7 +502,7 @@ def _idle_handoff(store, sid, event, result, *, retry_at=None):
                 continue
             if fields.get('idle_retry_fingerprint') == fingerprint:
                 if fields.get('idle_retry_outcome') != 'stalled':
-                    _receipt(db, store, row, {'idle_retry_outcome': 'stalled'})
+                    _receipt(db, store, row, {'idle_retry_outcome': 'stalled', 'awaiting_validation': False})
                     db.execute('UPDATE pr_watch SET error=? WHERE repository=? AND number=?',
                                ('Agent yielded with actionable work after bounded recovery; explicit retry required', row['repository'], row['number']))
                     stalled = True

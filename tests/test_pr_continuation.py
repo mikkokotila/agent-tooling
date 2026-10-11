@@ -27,6 +27,9 @@ def test_idle_after_delivery_has_one_recovery_at_existing_cadence_then_stays_qui
     assert len(local[2]) == calls  # Stop uses only already collected evidence.
     assert row(store)['delivery_state'] == 'pending' and row(store)['event_id'] != original
     assert row(store)['retry_at'] == row(store)['next_check_at'] == 1300
+    with patch.object(monitor.time, 'time', return_value=1000):
+        assert monitor.consume(store, SID, reader=local[3], collector=local[4]) is None
+    assert len(local[2]) == calls  # Deferred native consumption also makes no reads.
     launched = []
     assert tick(local, 1299, True, launched.append)['workers'] == 0
     assert len(local[2]) == calls
@@ -127,6 +130,15 @@ def test_nested_command_guard_reads_executable_command_not_edited_file_data(loca
     from caller_pr_gates import hook
     store = delivered(local)
     event = {'tool_name': 'functions.exec', 'cwd': store.session(SID)['cwd'], 'tool_input': {'code': "await tools.exec_command({cmd:'pytest tests/test_fix.py'});"}}
-    assert hook._local_validation_guard(event, store, SID)
-    event['tool_input']['code'] = "await tools.apply_patch('*** Add File: note.txt\\n+pytest tests/test_fix.py');"
-    assert hook._local_validation_guard(event, store, SID) is None
+    with patch.object(hook, '_candidate_dirs', return_value=[event['cwd']]), patch.object(hook, '_git_context', return_value=(event['cwd'], 'owner/repo', 'fix')):
+        assert hook._local_validation_guard(event, store, SID)
+        event['tool_input']['code'] = "await tools.apply_patch('*** Add File: note.txt\\n+pytest tests/test_fix.py');"
+        assert hook._local_validation_guard(event, store, SID) is None
+
+
+def test_stop_without_a_recorded_user_turn_does_not_adopt_work(local):
+    store = local[0]
+    tick(local)
+    monitor.consume(store, SID, reader=local[3], collector=local[4])
+    assert stop(store) is None
+    assert row(store)['delivery_state'] == 'consumed'
