@@ -280,6 +280,12 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                 db.execute('''UPDATE pr_watch SET fingerprint=?,event_id=?,payload=?,delivery_state=?,
                               branch_identity=?,closure_identity=?,error=NULL,updated_at=? WHERE repository=? AND number=?''',
                            (fingerprint, event, payload, delivery, json.dumps(branch_proof) if branch_proof else None, json.dumps(link_proof) if link_proof else None, now, repository, number))
+                saved = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?',
+                                   (repository, number, row['owner_session'])).fetchone()
+                waiting = bool(saved and json.loads(saved['fields']).get('awaiting_validation'))
+                busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
+            if waiting and delivery == 'consumed' and not (busy and busy['busy']):
+                _idle_handoff(store, row['owner_session'], {}, None, retry_at=now)
             result['checked'] += 1
         except Exception as exc:
             with store._connect() as db:
@@ -431,7 +437,7 @@ def retry(store, sid, repository, number):
         if row['lease_until'] > time.time():
             raise ValueError('Monitor still has a live worker lease')
         db.execute('UPDATE pr_watch SET delivered_fingerprint=NULL,delivery_state=NULL,event_id=NULL,payload=NULL,error=NULL,retry_at=0,next_check_at=0,worker_pid=NULL WHERE repository=? AND number=?', (repository, number))
-        _receipt(db, store, row, {'idle_retry_fingerprint': None, 'idle_retry_outcome': None, 'awaiting_user_turn': None})
+        _receipt(db, store, row, {'idle_retry_fingerprint': None, 'idle_retry_outcome': None, 'awaiting_user_turn': None, 'awaiting_validation': False})
         store._audit(db, 'pr_monitor_explicit_retry', {'session_id': sid, 'repository': repository, 'number': number})
     return True
 
@@ -453,7 +459,7 @@ def _receipt(db, store, row, updates):
     return fields
 
 
-def _idle_handoff(store, sid, event, result):
+def _idle_handoff(store, sid, event, result, *, retry_at=None):
     """One recovery for a new idle transition, using evidence already collected."""
     if result and result.get('decision') == 'block':
         return result
@@ -485,6 +491,8 @@ def _idle_handoff(store, sid, event, result):
                                     WHERE p.repository=? AND p.number=? AND r.status='running' ''',
                                  (row['repository'], row['number'])).fetchall()
             if any(_worker_alive(r['pid']) for r in running):
+                if not fields.get('awaiting_validation'):
+                    _receipt(db, store, row, {'awaiting_validation': True})
                 continue
             fingerprint = row['fingerprint']
             if not fingerprint or fingerprint != row['delivered_fingerprint']:
@@ -496,9 +504,9 @@ def _idle_handoff(store, sid, event, result):
                                ('Agent yielded with actionable work after bounded recovery; explicit retry required', row['repository'], row['number']))
                     stalled = True
                 continue
-            _receipt(db, store, row, {'idle_retry_fingerprint': fingerprint, 'idle_retry_outcome': 'pending'})
-            db.execute("UPDATE pr_watch SET delivery_state='pending',event_id=?,retry_at=next_check_at WHERE repository=? AND number=?",
-                       (str(uuid.uuid4()), row['repository'], row['number']))
+            _receipt(db, store, row, {'idle_retry_fingerprint': fingerprint, 'idle_retry_outcome': 'pending', 'awaiting_validation': False})
+            db.execute("UPDATE pr_watch SET delivery_state='pending',event_id=?,retry_at=? WHERE repository=? AND number=?",
+                       (str(uuid.uuid4()), row['next_check_at'] if retry_at is None else retry_at, row['repository'], row['number']))
         if stalled:
             return dict(result or {}, systemMessage=render_prompt('incomplete_handoff'))
     return result

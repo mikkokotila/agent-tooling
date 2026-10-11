@@ -539,9 +539,9 @@ def main():
             else: output = {'task_gates': task_gates(store, sid) if sid else [], 'prs': store.prs(sid), 'snapshots': [store.snapshot(p['repository'], p['number']) for p in store.prs(sid)], 'followups': store.followups(sid), 'scope': store.get_scope(sid) if sid else None}
             if sid:
                 output['external_blockers'] = [hold for p in store.prs(sid) if (hold := store.external_blocker(sid, p['repository'], p['number']))]
-                output['continuations'] = [{k: receipt.get(k) for k in ('repository','number','idle_retry_outcome','awaiting_user_turn')}
+                output['continuations'] = [{k: receipt.get(k) for k in ('repository','number','idle_retry_outcome','awaiting_user_turn','awaiting_validation')}
                                            for p in store.prs(sid) if (receipt := store.recovery(p['repository'], p['number'], sid))
-                                           and (receipt.get('idle_retry_outcome') or receipt.get('awaiting_user_turn'))]
+                                           and (receipt.get('idle_retry_outcome') or receipt.get('awaiting_user_turn') or receipt.get('awaiting_validation'))]
                 if args.fresh:
                     from .publication import refresh as refresh_publication
                     output['publication'] = asyncio.run(asyncio.wait_for(refresh_publication(store, sid), timeout=35))

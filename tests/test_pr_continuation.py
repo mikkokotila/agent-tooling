@@ -93,6 +93,12 @@ def test_background_process_wait_is_local_and_does_not_create_another_delivery(l
     store.begin_validation(plan['plan_id'], 'check', 'inputs', owner_pid=os.getpid(), session_id=SID)
     stop(store)
     assert row(store)['delivery_state'] == 'consumed'
+    assert store.recovery('owner/repo', 1, SID)['awaiting_validation'] is True
+    run = store.validation_runs(plan['plan_id'])[0]
+    store.finish_validation(run['run_id'], 0, 'inputs', session_id=SID)
+    launched = []
+    assert tick(local, 1300, True, launched.append)['workers'] == 1
+    assert len(launched) == 1
 
 
 def test_foreign_owner_and_repeated_explicit_retry_respect_ownership_and_lease(local):
@@ -120,7 +126,7 @@ def test_multiple_pr_question_receipt_is_bound_to_explicit_target(local):
 def test_nested_command_guard_reads_executable_command_not_edited_file_data(local):
     from caller_pr_gates import hook
     store = delivered(local)
-    event = {'tool_name': 'functions.exec', 'tool_input': {'code': "await tools.exec_command({cmd:'pytest tests/test_fix.py'});"}}
+    event = {'tool_name': 'functions.exec', 'cwd': store.session(SID)['cwd'], 'tool_input': {'code': "await tools.exec_command({cmd:'pytest tests/test_fix.py'});"}}
     assert hook._local_validation_guard(event, store, SID)
     event['tool_input']['code'] = "await tools.apply_patch('*** Add File: note.txt\\n+pytest tests/test_fix.py');"
     assert hook._local_validation_guard(event, store, SID) is None
