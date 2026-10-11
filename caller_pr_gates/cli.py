@@ -101,41 +101,64 @@ def _api_reply_allowed(repo, number, issue, endpoint, method, fields, input_file
     return len(replies) == 1 and re.fullmatch(r'[1-9][0-9]*', replies[0]) is not None
 
 
-def _cancelled_readiness_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
-    """Retry only this owned PR's cancelled readiness gate; never a review."""
+def _owned_ci_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
+    """One retry of an owned current-head failed/cancelled CI run; never a review."""
     match = re.fullmatch(re.escape(f'repos/{repo}/actions/') + r'(jobs|runs)/([1-9][0-9]*)/rerun', endpoint)
     if issue or not match or method != 'POST' or argv != ['api', endpoint, '--method', 'POST']:
         return False
     from .workflow import owned_pr
-    from .github import collect_pr
+    from .github import collect_validation
     from .policy import branch_freshness_gate
     owned_pr(store, sid, repo, number)
-    snapshot = asyncio.run(collect_pr(repo, number))
+    prior = (store.recovery(repo, number, sid) or {}).get('ci_reruns') or {}
+    if match[1] == 'runs' and match[2] in prior.get('run_ids', []):
+        raise ValueError('This CI run already had its bounded retry; fix its cause before retrying')
+    snapshot = asyncio.run(collect_validation(repo, number))
     head = snapshot.get('head_sha')
     if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
             or snapshot.get('head_sha_after') != head or branch_freshness_gate(snapshot)['status'] != 'PASS'):
-        raise ValueError('Readiness retry requires fresh open-PR head and target ancestry')
+        raise ValueError('CI retry requires fresh open-PR head and target ancestry')
     def read(path):
         result = github_run(['gh', 'api', path], runner=subprocess.run, text=True, capture_output=True, check=True, timeout=30)
         return json.loads(result.stdout)
     item = read(endpoint.removesuffix('/rerun'))
-    if (item.get('name') != 'pr_merge_readiness' or item.get('status') != 'completed'
-            or item.get('conclusion') != 'cancelled' or item.get('head_sha') != head):
+    if (str(item.get('id')) != match[2] or item.get('status') != 'completed'
+            or item.get('conclusion') not in {'failure', 'cancelled'} or item.get('head_sha') != head):
         return False
     run = read(f'repos/{repo}/actions/runs/{item["run_id"]}') if match[1] == 'jobs' else item
-    if (run.get('path') != '.github/workflows/pr_merge_readiness.yml' or run.get('head_sha') != head
-            or run.get('status') != 'completed' or run.get('conclusion') != 'cancelled'
+    path = run.get('path') or ''
+    readiness = path == '.github/workflows/pr_merge_readiness.yml'
+    if (not path.startswith('.github/workflows/') or run.get('head_sha') != head
+            or (not readiness and re.search(r'copilot|review', path + ' ' + str(run.get('name') or '') + ' ' + str(item.get('name') or ''), re.I))
+            or run.get('event') not in ({'pull_request', 'pull_request_review'} if readiness else {'pull_request'})
+            or run.get('status') != 'completed' or run.get('conclusion') not in {'failure', 'cancelled'}
             or run.get('run_attempt') != item.get('run_attempt')
             or not any(pr.get('url') == f'https://api.github.com/repos/{repo}/pulls/{number}'
                        for pr in run.get('pull_requests', []))):
         return False
     after = read(f'repos/{repo}/pulls/{number}')
-    base = read(f'repos/{repo}/branches/{snapshot["base_ref"]}')
+    from urllib.parse import quote
+    base = read(f'repos/{repo}/branches/{quote(snapshot["base_ref"], safe="")}')
     if (after.get('state') != 'open' or after.get('merged') is not False
             or (after.get('head') or {}).get('sha') != head
             or (after.get('base') or {}).get('ref') != snapshot['base_ref']
             or (base.get('commit') or {}).get('sha') != snapshot['base_sha']):
-        raise ValueError('PR head or target branch changed before readiness retry')
+        raise ValueError('PR head or target branch changed before CI retry')
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        root = store._root(sid, store._parents(db))
+        row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state=\'open\'', (repo, number, root)).fetchone()
+        if not row:
+            return False
+        saved = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?', (repo, number, root)).fetchone()
+        fields = json.loads(saved['fields']) if saved else {}
+        prior = fields.get('ci_reruns') or {}
+        ids = prior.get('run_ids', []) if prior.get('head_sha') == head else []
+        run_id = str(run['id'])
+        if run_id in ids:
+            raise ValueError('This CI run already had its bounded retry; fix its cause before retrying')
+        from .monitor import _receipt
+        _receipt(db, store, row, {'ci_reruns': {'head_sha': head, 'run_ids': [*ids, run_id]}})
     return True
 
 
@@ -247,7 +270,7 @@ def gateway(args, store):
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
-            allowed_readiness_rerun = _cancelled_readiness_rerun_allowed(
+            allowed_ci_rerun = _owned_ci_rerun_allowed(
                 store, sid, repo, num, issue, endpoint, method, argv)
             allowed_runner_registration = (
                 repo == 'Vaquum/Origo'
@@ -281,8 +304,8 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_readiness_rerun):
-                raise ValueError('API gateway permits review replies and owned Origo runner registration only; use resolve for thread resolution, gh pr/issue for other writes')
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_ci_rerun):
+                raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
             else: target_info = (args.target, repo, num, False)
@@ -516,6 +539,9 @@ def main():
             else: output = {'task_gates': task_gates(store, sid) if sid else [], 'prs': store.prs(sid), 'snapshots': [store.snapshot(p['repository'], p['number']) for p in store.prs(sid)], 'followups': store.followups(sid), 'scope': store.get_scope(sid) if sid else None}
             if sid:
                 output['external_blockers'] = [hold for p in store.prs(sid) if (hold := store.external_blocker(sid, p['repository'], p['number']))]
+                output['continuations'] = [{k: receipt.get(k) for k in ('repository','number','idle_retry_outcome','awaiting_user_turn','awaiting_validation')}
+                                           for p in store.prs(sid) if (receipt := store.recovery(p['repository'], p['number'], sid))
+                                           and (receipt.get('idle_retry_outcome') or receipt.get('awaiting_user_turn') or receipt.get('awaiting_validation'))]
                 if args.fresh:
                     from .publication import refresh as refresh_publication
                     output['publication'] = asyncio.run(asyncio.wait_for(refresh_publication(store, sid), timeout=35))
