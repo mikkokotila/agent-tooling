@@ -87,6 +87,19 @@ def test_every_extracted_runtime_expression_preserves_original_text(catalogue, c
             assert actual != expected
             assert 'non-blocking' in actual
             continue
+        if entry['key'] in {'monitor_issue_closure', 'pr_recovery'}:
+            # The original extraction remains immutable; these messages now
+            # describe the authorized task-issue path without broadening work.
+            assert actual != expected
+            assert 'genuine issue' in actual and 'GitHub gateway' in actual
+            assert 'scope' in actual if entry['key'] == 'pr_recovery' else 'default branch' in actual
+            continue
+        if entry['key'] == 'communication':
+            # Preserve the original advisory and the already-live human-action
+            # guidance now captured in the versioned catalogue.
+            assert actual.startswith(expected)
+            assert 'Does this really need the human' in actual
+            continue
         assert actual == expected, (entry['key'], entry['module'], entry['line'])
 
 
