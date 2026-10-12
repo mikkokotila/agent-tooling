@@ -319,7 +319,7 @@ def gateway(args, store):
     if argv[0] == 'pr' and (creation or argv[1] == 'edit' and ('--body' in options or '-b' in options or body_file)):
         from .closure import has_closing_reference
         if not has_closing_reference(body):
-            raise ValueError('ISSUE_CLOSURE FAIL: the PR body must close its actual existing issue, for example Closes #123; do not create an issue to satisfy this check')
+            raise ValueError('ISSUE_CLOSURE FAIL: add a closing reference to the genuine issue for this authorized work, for example Closes #123. Find and reuse a matching issue; if none exists, create an issue recording the authorized task through the GitHub gateway. Do not create placeholders, duplicates or unrelated issues.')
     scope = store.get_scope(sid)
     kind = args.kind
     if not kind and DOC.search(title): kind = 'slice' if re.search(r'\bslice\b', title, re.I) else 'prd'

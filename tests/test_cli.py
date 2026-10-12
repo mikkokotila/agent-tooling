@@ -89,6 +89,20 @@ def test_gateway_creation_uses_unique_actual_url_line(store):
     assert [row['number'] for row in store.prs('s')] == [77]
 
 
+def test_authorized_chat_task_issue_can_be_created_then_linked_without_document_followup(store):
+    value = args(['issue', 'create', '--repo', 'o/r', '--title', 'Fix the reported export failure',
+                  '--body', 'User request: fix the export failure. Acceptance: the requested export succeeds.'])
+    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0, stdout='https://github.com/o/r/issues/76\n')):
+        gateway(value, store)
+    assert store.prs('s') == [] and store.followups('s') == []
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('missing issue reference must not publish')):
+        with pytest.raises(ValueError, match='Find and reuse a matching issue'):
+            gateway(args(['pr', 'create', '--repo', 'o/r', '--title', 'Fix export', '--body', 'Fix the authorized export request']), store)
+    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0, stdout='https://github.com/o/r/pull/77\n')):
+        gateway(args(['pr', 'create', '--repo', 'o/r', '--title', 'Fix export', '--body', 'Fix the authorized export request. Closes #76']), store)
+    assert [row['number'] for row in store.prs('s')] == [77]
+
+
 def test_write_target_mismatch_is_denied_before_remote_write(store):
     value = args(['pr', 'comment', 'https://github.com/o/r/pull/77', '--body', 'Reply'])
     value.target = 'https://github.com/o/r/pull/99'
