@@ -193,6 +193,18 @@ def test_unchanged_failure_and_unavailable_evidence_never_replay(local):
     assert tick(local, 2200)['events'] == 1
 
 
+def test_losing_review_inventory_in_outage_never_replays_known_repairs(local):
+    store,data,_,reader,collector=local
+    data['comments']=[comment()]
+    tick(local)
+    assert monitor.consume(store,SID,reader=reader,collector=collector,checklist=True)
+    data['comments']=[]
+    data['component_errors']={'review':'GitHub quota exhausted'}
+    assert tick(local,1300)['events']==0 and row(store)['event_id'] is None
+    data['comments']=[comment()];data['component_errors']={}
+    assert tick(local,1600)['events']==0
+
+
 def test_cached_retired_advisory_entrypoint_stays_silent():
     with patch('sys.stdin', io.StringIO(json.dumps(dict(hook_event_name='SessionStart', session_id=SID)))), patch('sys.stdout', new_callable=io.StringIO) as output:
         troubleshooting.main()

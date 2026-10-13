@@ -268,7 +268,9 @@ def desired_assets(home, current):
         legacy={'prompts':{k:v for k,v in defaults['prompts'].items() if k!='pr_checklist'}}
         catalogue_texts(existing,legacy)
         section=incoming[incoming.index(b'[prompts.pr_checklist]'):]
-        existing=existing+b'\n\n# Active native PR-only checklist. Older sections are retained CLI diagnostics.\n'+section
+        existing=(b'# v0.1.8: Only [prompts.pr_checklist] below drives native chat messages.\n'
+                  b'# One global PR block is mirrored. Older sections/comments describe retained CLI compatibility.\n'
+                  +existing+b'\n\n# Active native PR-only checklist. Older sections are retained CLI diagnostics.\n'+section)
         migrated=True
     if not migrated and existing is not None and sha(existing) != prior and sha(incoming) != prior and existing != incoming:
         raise RuntimeError('Local prompts and repository prompts both changed. Reconcile them before installation; live text was preserved.')

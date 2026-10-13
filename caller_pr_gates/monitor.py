@@ -142,6 +142,8 @@ def retire(store, repository, number, raw, *, checklist=False):
 
 
 def actionable(snapshot, gates, *, checklist=False):
+    if checklist and snapshot.get('component_errors'):
+        return []  # Partial API outages cannot authorize a chat continuation.
     failures = {g['gate']: g for g in gates if g.get('status') == 'FAIL'}
     items = []
     if 'CI_FAILED' in failures:

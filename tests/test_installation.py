@@ -125,7 +125,7 @@ def test_old_catalogue_upgrade_keeps_human_edits_and_removes_legacy_callbacks(in
         data['hooks']['SessionStart'].append({'hooks':[{'type':'command','command':'foreign-callback'}]})
         config.write_text(json.dumps(data))
     manage.deploy(home,service)
-    assert prompt.read_text().startswith(text) and '[prompts.pr_checklist]' in prompt.read_text()
+    assert text in prompt.read_text() and '[prompts.pr_checklist]' in prompt.read_text()
     for client,name in [('codex','hooks.json'),('claude','settings.json')]:
         data=json.loads((home/('.'+client)/name).read_text())
         commands=[h['command'] for groups in data['hooks'].values() for g in groups for h in g['hooks']]

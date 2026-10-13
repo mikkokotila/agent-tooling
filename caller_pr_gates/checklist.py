@@ -19,7 +19,7 @@ def instructions(texts):
         'Ownership is the exact recorded chat and PR checkout; references and repository reads do not adopt work. '
         'Register created/modified PRs by explicit URL with caller-pr-gates register URL --session SESSION --client CLIENT --cwd CHECKOUT. '
         'Use caller-pr-gates github --session SESSION --client CLIENT -- ... for GitHub writes. '
-        'Publish useful commits and a non-draft PR before local checks. Keep the agreed scope and genuine closing issue reference. '
+        'Publish useful commits and a non-draft PR before local checks. Keep the agreed scope and genuine closing issue reference; find or create that scoped tracking issue yourself. '
         'Record required checks with validation-plan and run them with validate --background; actual results are required. '
         'Inspect evidence with status --session SESSION --fresh. CLI help describes evidenced review dispositions and resolution. '
         'The PR monitor checks one owned open PR every five minutes, or several every ten minutes. '

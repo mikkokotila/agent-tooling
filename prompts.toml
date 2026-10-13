@@ -14,7 +14,7 @@
 # RELOAD / FAILURE BEHAVIOR
 # Valid edits are read by the next applicable hook or delivery without restarting
 # either client. The existing monitor also refreshes once a minute, including the
-# three generated global instruction blocks in AGENTS.md and CLAUDE.md. Other text
+# single generated PR instruction block in AGENTS.md and CLAUDE.md. Other text
 # in those files is preserved. Existing loaded context still needs a new run/reread.
 # Already queued messages retain their saved text and still undergo stale checking.
 # Malformed, missing, incomplete or wrongly templated files retain the last valid
