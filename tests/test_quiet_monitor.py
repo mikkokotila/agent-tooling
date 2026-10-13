@@ -117,13 +117,14 @@ def test_api_outage_stays_local_without_fabricating_a_pass(local):
     assert 'unavailable' in row(store)['error']
 
 
-def test_new_owner_invalidates_old_queued_delivery(local):
+def test_registration_cannot_steal_canonical_owner(local):
     tick(local)
     store, _, _, reader, collector = local
     token = row(store)['event_id']
     store.register(OTHER, 'codex', 'owner/repo', 1, store.session(SID)['cwd'])
-    assert monitor.consume(store, SID, event_id=token, reader=reader, collector=collector) is None
-    assert row(store)['owner_session'] == OTHER
+    assert monitor.consume(store, OTHER, event_id=token, reader=reader, collector=collector) is None
+    assert row(store)['owner_session'] == SID
+    assert monitor.consume(store, SID, event_id=token, reader=reader, collector=collector)
 
 
 def test_foreign_chat_cannot_consume_owned_event(local):
@@ -303,12 +304,14 @@ def test_explicit_retry_respects_live_lease_then_rearms(local):
     assert tick(local, 1001)['events'] == 1
 
 
-def test_new_owner_clears_old_worker_and_terminal_state(local):
+def test_other_registration_preserves_canonical_worker_and_state(local):
     with local[0]._connect() as db:
         db.execute('UPDATE pr_watch SET lease_until=?,worker_pid=123,terminal_notice=1', (time.time() + 300,))
     local[0].register(OTHER, 'claude', 'owner/repo', 1, local[0].session(SID)['cwd'])
     state = row(local[0])
-    assert (state['lease_until'], state['worker_pid'], state['terminal_notice']) == (0, None, 0)
+    assert state['owner_session'] == SID
+    assert state['lease_until'] > time.time()
+    assert (state['worker_pid'], state['terminal_notice']) == (123, 1)
 
 
 def test_closed_pr_informs_active_engineering_owner_once_without_queue(local):

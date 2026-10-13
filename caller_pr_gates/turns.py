@@ -7,7 +7,7 @@ import time
 import uuid
 
 
-_MACHINE = re.compile(r'^\s*(?:Durable\b|<heartbeat\b|<hook_prompt\b|\[automated\b|'
+_MACHINE = re.compile(r'^\s*(?:<!-- pr-work-event:|Automated PR hook\b|Durable\b|<heartbeat\b|<hook_prompt\b|\[automated\b|'
                       r'(?:PR_NOT_DRAFT|CI_FAILED|CI_PENDING|REVIEW_HANDLED|REVIEW_CONCLUDED|'
                       r'PRD_FOLLOWUP|SLICE_SCOPE|PR_GATE|OWNED_PR_PROGRESS)\b)', re.I)
 _ACTION_WORDS = r'(?:fix|repair|implement|build|create|make|add|edit|change|update|modify|remove|delete|'

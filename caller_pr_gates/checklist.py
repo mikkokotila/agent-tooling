@@ -1,8 +1,6 @@
 """One PR-only native message; verification and durable receipts stay in the CLI."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import time
 
 from .prompts import render_prompt
@@ -67,6 +65,8 @@ def handle(event, store=None):
                 db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
             return {'continue': False, 'stopReason': ''}
         # The queue already contains the one checklist. Do not inject it twice.
+        with store._connect() as db:
+            db.execute('INSERT INTO watch_sessions VALUES(?,1,?) ON CONFLICT(session_id) DO UPDATE SET busy=1,updated_at=excluded.updated_at', (sid, time.time()))
         return None
 
     if name == 'UserPromptSubmit':

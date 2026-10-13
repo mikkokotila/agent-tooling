@@ -20,7 +20,7 @@ All prompt text remains in one annotated catalogue. Edit the live `~/.local/shar
 
 Installation preserves valid local prompt edits when repository text has not changed. If both have changed since the previous deployment, installation stops before activation and asks the operator to reconcile those actual file differences. It never silently discards local text. Invalid current text also stops installation; the existing running loader remains responsible for its last-good fallback.
 
-Managed global instruction sections mirror this same selected catalogue. Already-loaded conversation context still needs a reread/new run; the installer cannot rewrite an agent's existing context.
+The single managed PR instruction block mirrors `[prompts.pr_checklist]` from this selected catalogue. Upgrade from the previous catalogue adds only this new section and preserves valid local edits. Legacy templates remain available to CLI diagnostics, with no automatic issue/document or formatting messages. Already-loaded conversation context still needs a reread/new run; the installer cannot rewrite an agent's existing context.
 
 ## Boundaries
 

@@ -148,8 +148,9 @@ def actionable(snapshot, gates, *, checklist=False):
         from .policy import _latest_checks, _outcome
         from .copilot import is_service_check
         names = sorted({str(c.get('name') or c.get('key')) for c in _latest_checks(snapshot.get('checks') or [])
-                        if not is_service_check(c) and _outcome(c) == 'failed'})
-        items.append(render_prompt('monitor_ci_failed', check_names=', '.join(names[:5])))
+                        if not is_service_check(c) and _outcome(c) == 'failed' and (not checklist or genuine_failure(c))})
+        if names:
+            items.append(render_prompt('monitor_ci_failed', check_names=', '.join(names[:5])))
     if {'REVIEW_HANDLED', 'REVIEW_CONCLUDED'} & failures.keys():
         obligations = (failures.get('REVIEW_HANDLED') or failures.get('REVIEW_CONCLUDED'))['evidence'].get('obligations', [])
         outstanding = [o for o in obligations if not o.get('handled') or not o.get('concluded')]
@@ -200,9 +201,19 @@ def quiet_hold(store, sid, snapshot, gates):
     return current_hold(store, sid, snapshot, usable)
 
 
-def identity(snapshot, gates, previous_branch=None, previous_closure=None):
+def genuine_failure(check):
+    return str(check.get('conclusion') or check.get('status') or '').lower() in {'failure', 'error', 'failed'}
+
+
+def identity(snapshot, gates, previous_branch=None, previous_closure=None, *, checklist=False):
     from .handoff import evidence_fingerprint
     local = json.dumps(snapshot.get('local_failures') or [], sort_keys=True)
+    if checklist:
+        # Availability, pending checks and interrupted-CI reruns belong outside
+        # chat repair. They must not replay an already-delivered source failure.
+        snapshot = dict(snapshot, checks=[c for c in snapshot.get('checks') or [] if genuine_failure(c)], component_errors={})
+        gates = [g for g in gates if g['status'] == 'FAIL' and g['gate'] != 'ISSUE_CLOSURE'
+                 and (g['gate'] != 'CI_FAILED' or snapshot['checks'])]
     return hashlib.sha256((evidence_fingerprint(snapshot, gates, previous_branch, previous_closure) + str(snapshot.get('mergeable')) + local).encode()).hexdigest()
 
 
@@ -257,7 +268,7 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
             previous_closure = json.loads(row['closure_identity']) if row.get('closure_identity') else None
             link_proof = closure_identity(snapshot, gates, previous_closure)
             active_gates = [g for g in gates if g['gate'] != 'ISSUE_CLOSURE'] if checklist else gates
-            fingerprint = identity(snapshot, active_gates, previous_branch, None if checklist else previous_closure)
+            fingerprint = identity(snapshot, active_gates, previous_branch, None if checklist else previous_closure, checklist=checklist)
             items = actionable(snapshot, gates, checklist=checklist)
             if quiet_hold(store, row['owner_session'], snapshot, gates):
                 items = [i for i in items if i.startswith('Background local')]
@@ -423,6 +434,8 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
             if row['delivery_state'] != 'pending' or row['retry_at'] <= time.time()]
     if event_id and not any(r['event_id'] == event_id for r in rows):
         return None
+    if checklist:
+        rows = [r for r in rows if not event_id or r['event_id'] == event_id][:1]
     if not full:
         rows.sort(key=lambda row: row['event_id'] != event_id)
         rows = rows[:3]  # Native prompt hooks have a ten-second budget.
@@ -609,7 +622,7 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
         # Each queued message has one PR, one receipt and one source checkout.
         with store._connect() as db:
             for other in reserved[1:]:
-                db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0 WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (sid, other['event_id']))
+                db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0,worker_pid=NULL WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (sid, other['event_id']))
         reserved = reserved[:1]
     rows = await revalidate(store, reserved, reader, collector, checklist=checklist)
     if not rows:
@@ -662,7 +675,7 @@ async def serve(store, *, execute=True, sleeper=asyncio.sleep, clock=time.monoto
         prompt_error = None
         try:
             from .prompts import refresh
-            refresh(checklist=checklist)
+            refresh(**({'checklist': True} if checklist else {}))
         except Exception as exc:
             prompt_error = f'{type(exc).__name__}: {str(exc)[:300]}'
         try:

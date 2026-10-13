@@ -122,14 +122,8 @@ def handle(event: dict,state_dir=None):
 
 
 def main():
-    event={}
-    try:
-        event=json.load(sys.stdin)
-        if not isinstance(event,dict):raise ValueError('Expected a hook event object')
-        result=handle(event)
-    except Exception:
-        # Advisory availability is never a permission or completion gate.
-        return
-    if result:print(json.dumps(result))
+    # Retired even for native clients still holding the previous callback config.
+    # Helpers remain available for evidence compatibility; no chat injection.
+    return
 
 if __name__=='__main__':main()
