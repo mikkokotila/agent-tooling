@@ -44,15 +44,6 @@
             "timeout": 10
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env CALLER_HOOK_CLIENT=claude CALLER_PR_GATES_STATE_DIR=${HOME}/.local/state/caller-pr-gates PYTHONPATH=${HOME}/.local/share/caller-pr-gates ${HOME}/.local/share/caller-pr-stop-gate/bin/python -m caller_pr_gates.troubleshooting",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "UserPromptSubmit": [
@@ -62,15 +53,6 @@
             "type": "command",
             "command": "/usr/bin/env CALLER_HOOK_CLIENT=claude CALLER_PR_GATES_STATE_DIR=${HOME}/.local/state/caller-pr-gates PYTHONPATH=${HOME}/.local/share/caller-pr-gates PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin ${HOME}/.local/share/caller-pr-stop-gate/bin/python -m caller_pr_gates.hook",
             "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/env CALLER_HOOK_CLIENT=claude CALLER_PR_GATES_STATE_DIR=${HOME}/.local/state/caller-pr-gates PYTHONPATH=${HOME}/.local/share/caller-pr-gates ${HOME}/.local/share/caller-pr-stop-gate/bin/python -m caller_pr_gates.troubleshooting",
-            "timeout": 5
           }
         ]
       }

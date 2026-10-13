@@ -1,6 +1,7 @@
 {
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
+    "caller_pr_gates/checklist.py": "23f4a210ae02ed364681f4824579974a3351ed71c49bf6b8933f99c04fd86513",
     "caller_pr_gates/cli.py": "5e069378288eff5db845864edb269f7ecfd13a502c420499792b0e5879c359ca",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "843cbe80a139861e5f0bfb72e992acf97ae8d1ea870e56025c02dcf89146d895",
@@ -10,12 +11,12 @@
     "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
     "caller_pr_gates/github.py": "bc03c5017cef060346bda5b53ec049ad4f17f8ee1f42ae1bc8bcb1f43d000384",
     "caller_pr_gates/handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
-    "caller_pr_gates/hook.py": "9cf045c0a145b8da245c3851ce2e207c63539cf8abd9cbaa73e13db21f62a666",
-    "caller_pr_gates/monitor.py": "6bfd67df279eb8c5d87ffa08a4f65258b1405e3bcca7efbe0b99494b0ca10e71",
+    "caller_pr_gates/hook.py": "a0b1bc96d16952b5316d1d984281f1c8daa0f2270945bc3b099518ce4b977861",
+    "caller_pr_gates/monitor.py": "3e568796bcc7948cda3db3bfec1fbd9042674b05e85234c55404b8bb71b10943",
     "caller_pr_gates/policy.py": "3e2bae93a94e6cdc71fbb6ead0558e4d5e7b14f453ef5d1cf9c3fab737b1187b",
     "caller_pr_gates/progress.py": "243d1273633dd5ab7c3b7915a24fe48f27c58a4dc16dcc4b26d70c09ee2309c1",
-    "caller_pr_gates/prompt-defaults.json": "d924ca347d6fb90783afbd57303f86bf63045f45a12ea85f4873d88beba4a4be",
-    "caller_pr_gates/prompts.py": "da0ffa8a0ec106f80ed33004e843eb5a20f00db423593b067271db35c02cf622",
+    "caller_pr_gates/prompt-defaults.json": "a19395be8db0dcdbc9fa550f9e56d45eb22ab37ea3bcd025e1490402c4c74f7b",
+    "caller_pr_gates/prompts.py": "6b1ef309e1e994a3835b5b29dfd7c3fcc1e36dab27ec435fcc1de050615199ff",
     "caller_pr_gates/publication.py": "db3adc76039fa42710b65ac0721e5b08159f76850f4bf5ef4c17ec83a885eab8",
     "caller_pr_gates/quota.py": "94088f3848e77e5d5649fa760c2e0465bc92b6367e7415298b6068176d16ba3a",
     "caller_pr_gates/store.py": "213ced660be7929c3770f25efdf247963241120df70f880c95ac679d8ede6bd7",
@@ -26,6 +27,6 @@
     "caller_pr_gates/workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf"
   },
   "known_defects": [],
-  "runtime_version": "1.7.7",
-  "version": "0.1.7"
+  "runtime_version": "1.7.8",
+  "version": "0.1.8"
 }

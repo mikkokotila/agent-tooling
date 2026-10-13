@@ -454,3 +454,22 @@ text = '''Dispatch ID: ${dispatch_id}.
 # Runtime: closure.py:177
 [prompts.issue_closeout_gate]
 text = '''PR #${number} merged; verify the implemented fix and close its existing issue ${issue_url}'''
+
+
+# ACTIVE NATIVE PROMPT: the only chat message in release 0.1.8.
+# Trigger: new actionable evidence on a PR owned by the exact recorded chat.
+# Pending/unchanged/unavailable evidence stays silent; merge/closure cancels delivery.
+# The older sections above are retained for CLI diagnostics and compatibility, not native delivery.
+[prompts.pr_checklist]
+text = """Automated PR hook — ${pr_urls}. Owned by this chat.
+
+Can you verify yes to every question?
+
+1. Is the agreed implementation complete, within scope, and fully pushed to this non-draft PR?
+2. Does its head contain the latest live target-branch commit, with no merge conflicts?
+3. Have all required local checks passed for the published code and current inputs?
+4. Have required CI checks passed on the current head, with no genuine failure left unfixed?
+5. Has every review finding—including outdated and Copilot feedback—received an evidenced fix or justified nonfix, a public reply, and resolution of handled inline threads?
+
+Do not stand down before all five are verified. Fix remaining authorized work and push before local checks. While only external checks or unavailable evidence remain, yield truthfully incomplete; monitoring continues. Leave review execution, approval, interrupted-CI reruns and merging to Poise.
+"""

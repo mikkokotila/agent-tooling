@@ -165,7 +165,7 @@ def render_prompt(key, **values):
     return TOKENS.sub(lambda match: str(values[match[1]]), texts[key])
 
 
-def sync_instruction_files(targets=None):
+def sync_instruction_files(targets=None, *, checklist=False):
     """Mirror only our three marked blocks, preserving every unrelated byte."""
     if targets is None:
         if ROOT != Path.home() / '.local/share/caller-pr-gates':
@@ -184,15 +184,20 @@ def sync_instruction_files(targets=None):
                       'pr-progress': texts['global_progress'],
                       'troubleshooting-report': TOKENS.sub(
                           lambda match: texts[match[1]], texts['global_communication'])}
+            if checklist:
+                from .checklist import instructions
+                blocks = {'caller-pr-gates': instructions(texts), 'pr-progress': None, 'troubleshooting-report': None}
             for path in targets:
                 original = path.read_bytes()
                 value = original.decode('utf-8')
                 for marker, text in blocks.items():
                     begin, end = '<!-- ' + marker + ':begin -->', '<!-- ' + marker + ':end -->'
+                    if text is None and begin not in value and end not in value:
+                        continue
                     if value.count(begin) != 1 or value.count(end) != 1:
                         raise ValueError(str(path) + ': managed instruction markers missing/duplicated')
                     pattern = re.escape(begin) + r'[\s\S]*?' + re.escape(end)
-                    value, count = re.subn(pattern, lambda _match: begin + '\n' + text + end, value)
+                    value, count = re.subn(pattern, lambda _match: begin + '\n' + text + end if text is not None else '', value)
                     if count != 1: raise ValueError(str(path) + ': managed marker order invalid')
                 originals[path] = original
                 updates[path] = value.encode()
@@ -224,10 +229,10 @@ def sync_instruction_files(targets=None):
     return result
 
 
-def refresh():
+def refresh(*, checklist=False):
     """Existing monitor heartbeat refreshes prose; no GitHub or queue operations."""
     load_catalogue()
-    return sync_instruction_files()
+    return sync_instruction_files(checklist=checklist)
 
 
 def main():
