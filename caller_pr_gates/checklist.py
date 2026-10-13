@@ -48,6 +48,9 @@ def handle(event, store=None):
     session = store.session(sid)
     root = session['root_session']
     prompt = str(event.get('prompt') or '')
+    if name == 'SubagentStart' and event.get('agent_id'):
+        store.record_session(str(event['agent_id']), hook._client(), hook._cwd(event), sid)
+        return None
 
     # Already queued legacy document/issue prompts cannot become human authority.
     if name == 'UserPromptSubmit' and (prompt.startswith('<!-- issue-closeout:') or hook.DURABLE_FOLLOWUP.match(prompt)):
@@ -71,7 +74,7 @@ def handle(event, store=None):
 
     if name == 'UserPromptSubmit':
         turns.start_turn(store, event, sid)
-    if name in {'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'Interrupt', 'SessionEnd', 'StopFailure'}:
+    if sid == root and name in {'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'Interrupt', 'SessionEnd', 'StopFailure'}:
         busy = name in {'PreToolUse', 'PostToolUse', 'UserPromptSubmit'}
         with store._connect() as db:
             db.execute('INSERT INTO watch_sessions VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET busy=excluded.busy,updated_at=excluded.updated_at',
@@ -99,6 +102,7 @@ def handle(event, store=None):
 
 
 def failure(event, error, store=None):
+    event = event if isinstance(event, dict) else {}
     store = store or Store()
     sid = str(event.get('session_id') or '')
     store.audit('checklist_native_error', {'session_id': sid, 'error': f'{type(error).__name__}: {str(error)[:300]}'})

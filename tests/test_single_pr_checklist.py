@@ -77,6 +77,31 @@ def test_owner_and_first_checkout_cannot_be_replaced(local, tmp_path):
     assert monitor.consume(store, OTHER, event_id=row(store)['event_id'], checklist=True) is None
 
 
+def test_subagent_inherits_chat_and_cannot_mark_parent_idle(local):
+    store = local[0]
+    cwd = row(store)['cwd']
+    checklist.handle(dict(hook_event_name='PreToolUse', session_id=SID, cwd=cwd), store)
+    assert checklist.handle(dict(hook_event_name='SubagentStart', session_id=SID, cwd=cwd, agent_id=OTHER), store) is None
+    assert store.session(OTHER)['root_session'] == SID
+    assert checklist.handle(dict(hook_event_name='Stop', session_id=OTHER, cwd=cwd), store) is None
+    with store._connect() as db:
+        assert db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (SID,)).fetchone()[0] == 1
+
+
+def test_validation_guard_is_bound_to_canonical_owner_checkout_and_branch(local):
+    store = local[0]
+    cwd = row(store)['cwd']
+    store.register(OTHER, 'codex', 'owner/repo', 1, cwd)
+    event = dict(hook_event_name='PreToolUse', session_id=OTHER, cwd=cwd, tool_name='Bash', tool_input={'command':'pytest tests'})
+    with patch.object(hook, '_git_context', return_value=(cwd, 'owner/repo', 'feature')):
+        assert checklist.handle(event, store) is None
+        assert checklist.handle(dict(event, session_id=SID), store)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    data = local[1]; data['head_ref'] = 'feature'
+    store.set_snapshot('owner/repo', 1, data, [])
+    with patch.object(hook, '_git_context', return_value=(cwd, 'owner/repo', 'main')):
+        assert checklist.handle(dict(event, session_id=SID), store) is None
+
+
 def test_delivery_uses_registered_checkout_after_chat_changes_cwd(local, tmp_path):
     tick(local, execute=True, spawn=lambda _: None)
     store, _, _, reader, collector = local

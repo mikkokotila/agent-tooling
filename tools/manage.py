@@ -116,7 +116,7 @@ def catalogue_texts(data, defaults):
         if set(row) != {'text'} or not isinstance(text,str) or not text.strip(): raise RuntimeError('Invalid prompt text: ' + key)
         if set(re.findall(r'\$\{([a-zA-Z_][a-zA-Z_0-9]*)\}', text)) != set(spec['parameters']): raise RuntimeError('Invalid placeholders: ' + key)
         if spec['protected_prefix'] and not text.startswith(spec['protected_prefix']): raise RuntimeError('Invalid routing prefix: ' + key)
-        if (key.startswith('global_') or key == 'communication') and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
+        if (key.startswith('global_') or key in {'communication','pr_checklist'}) and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
             raise RuntimeError('Invalid managed instruction marker: ' + key)
         result[key] = text
     return result

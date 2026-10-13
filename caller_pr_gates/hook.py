@@ -498,10 +498,16 @@ def _local_validation_guard(event, store, sid):
         root, repository, _branch = context
         for row in rows:
             if row['repository'].lower() != repository.lower(): continue
-            if event.get('checklist_only') and Path(row['cwd']).resolve() != Path(root).resolve(): continue
+            if event.get('checklist_only'):
+                with store._connect() as db:
+                    watch = db.execute("SELECT owner_session,cwd,state FROM pr_watch WHERE repository=? AND number=?", (row['repository'], row['number'])).fetchone()
+                if (not watch or watch['state'] != 'open' or watch['owner_session'] != store.session(sid)['root_session']
+                        or Path(watch['cwd']).resolve() != Path(root).resolve()):
+                    continue
             cached = store.snapshot(row['repository'], row['number']) or {}
             snapshot = cached.get('snapshot') or {}
             if snapshot.get('state') == 'closed': continue
+            if event.get('checklist_only') and snapshot.get('head_ref') and snapshot['head_ref'] != _branch: continue
             url = f"https://github.com/{row['repository']}/pull/{row['number']}"
             return _deny(render_prompt('local_validation_guard', cli=CLI, session_id=sid, pr_url=url, repo_root=root))
     return None
