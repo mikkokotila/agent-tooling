@@ -33,11 +33,29 @@ def test_exact_published_root_preserves_edits_and_other_worktrees(local,tmp_path
 def test_unknown_head_owner_and_source_mismatch_retain_publication(local):
     store,root,snap,_=local;branch=git(root,'branch','--show-current');add(store,root,branch)
     proof={**snap,'head_ref':branch,'head_repository':'Owner/Repo','base_sha_after':None}
-    for changed in [{'head_sha_after':'b'*40},{'head_repository':'Other/Repo'},{'head_ref':'different'},{'state':None}]:
+    for changed in [{'head_sha_after':'b'*40},{'head_repository':'Other/Repo'},{'head_ref':None},{'state':None}]:
         reconcile(store,'Owner/Repo',1,{**proof,**changed});assert count(store,root)==1
     store.record_session('new','claude',str(root))
     with store._connect() as db:db.execute("UPDATE pr_watch SET owner_session='new' WHERE repository='Owner/Repo' AND number=1")
     reconcile(store,'Owner/Repo',1,proof);assert count(store,root)==1
+
+
+def test_renamed_published_branch_retires_only_its_exact_owned_tip(local):
+    store,root,snap,_=local
+    branch=git(root,'branch','--show-current');add(store,root,branch)
+    git(root,'branch','unfinished')
+    git(root,'switch','-q','unfinished')
+    (root/'src.txt').write_text('unpublished source')
+    git(root,'add','src.txt');git(root,'commit','-qm','Unpublished change')
+    add(store,root,'unfinished');git(root,'switch','-q',branch)
+    original=store.snapshot('Owner/Repo',1)
+    proof={**snap,'head_ref':'renamed-pr-branch','head_repository':'Owner/Repo','base_sha_after':None}
+    reconcile(store,'Owner/Repo',1,proof)
+    with store._connect() as db:
+        assert [r['branch'] for r in db.execute('SELECT * FROM unpublished_work')]==['unfinished']
+        evidence=json.loads(db.execute("SELECT fields FROM audit WHERE event='publication_reconciled'").fetchone()[0])
+    assert evidence['proof']=='live_pr_commit' and evidence['completion'] is False
+    assert store.snapshot('Owner/Repo',1)==original
 
 
 @pytest.fixture

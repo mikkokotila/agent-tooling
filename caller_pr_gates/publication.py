@@ -86,7 +86,9 @@ def reconcile(store,repository,number,evidence):
     for row in candidates:
         local=branch_source(row['cwd'], row['branch'])
         if not exact_source(row, local):continue
-        published_head = row['branch'] == branch and local['branch_head'] in published
+        # Branch names can change when an owned task moves to a worktree.
+        # The exact recorded tip in the live PR's commits proves publication.
+        published_head = local['branch_head'] in published
         delivered_base = on_base(row['cwd'], local['branch_head'], base)
         if not published_head and not delivered_base:continue
         matched=any(o['status'] != 'misattributed_read_only' and store._root(o['session_id'],parents)==store._root(row['session_id'],parents)
@@ -97,7 +99,7 @@ def reconcile(store,repository,number,evidence):
             current_watch=db.execute('SELECT owner_session FROM pr_watch WHERE repository=? AND number=?',(repository,number)).fetchone()
             return actual == owners and dict(current_watch or {}) == dict(watch or {})
         retire_record(store, row, local, parents, authorized, dict(number=number,
-                      proof='live_default_ancestry' if delivered_base else 'live_pr_head', base_sha=base))
+                      proof='live_default_ancestry' if delivered_base else 'live_pr_commit', base_sha=base))
 
 
 async def refresh(store, session_id, *, cwd=None, client=None):
