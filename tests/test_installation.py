@@ -112,6 +112,34 @@ def test_invalid_local_prompt_is_rejected_without_overwriting(installed):
     with pytest.raises((RuntimeError,ValueError)):manage.deploy(home,service)
     assert original_bytes(home)==before and service.stops==0
 
+def test_pristine_legacy_catalogue_migrates_to_exact_source_bytes(installed):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    legacy=(ROOT/'prompts.toml').read_bytes().split(b'[prompts.pr_checklist]')[0]
+    prompt.write_bytes(legacy)
+    current={'source_prompt_hash':manage.sha(legacy)}
+    assets=manage.desired_assets(home,current)
+    assert assets[str(prompt)]==(ROOT/'prompts.toml').read_bytes()
+
+@pytest.mark.parametrize('human_edit',[False,True])
+def test_old_machine_migration_is_pristine_but_human_edits_still_conflict(installed,monkeypatch,human_edit):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    old=(ROOT/'prompts.toml').read_bytes()
+    generated=b'# Prior machine migration\n'+old
+    prompt.write_bytes(generated+(b'\n# Human edit' if human_edit else b''))
+    deployment=home/'previous-deployment';deployment.mkdir()
+    prior_hash=manage.sha(b'old pristine 58-section catalogue')
+    manage.dump(deployment/'journal.json',{'files':{str(prompt):{'before':prior_hash,'after':manage.sha(generated)}}})
+    current={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':{'source_prompt_hash':prior_hash},'deployment':str(deployment)}
+    new=old.replace(b'Can you verify yes to every question?',b'Can you verify yes to every question? Updated wording.')
+    original=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda p: new if p==ROOT/'prompts.toml' else original(p))
+    if human_edit:
+        with pytest.raises(RuntimeError,match='both changed'):manage.desired_assets(home,current)
+    else:
+        assert manage.desired_assets(home,current)[str(prompt)]==new
+
 def test_old_catalogue_upgrade_keeps_human_edits_and_removes_legacy_callbacks(installed):
     home,service=installed
     prompt=home/'.local/share/caller-pr-gates/prompts.toml'

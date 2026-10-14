@@ -464,6 +464,8 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
     if checklist:
         rows = [r for r in rows if (not event_id or r['event_id'] == event_id)
                 and (cwd is None or checkout(r['cwd']) == checkout(cwd))][:1]
+    if not rows:
+        return None
     if not full:
         rows.sort(key=lambda row: row['event_id'] != event_id)
         rows = rows[:3]  # Native prompt hooks have a ten-second budget.
