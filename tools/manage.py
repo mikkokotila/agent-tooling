@@ -123,6 +123,16 @@ def catalogue_texts(data, defaults):
 
 def merge_instructions(original, texts):
     value = original.decode()
+    # Retire only the exact separately appended rules approved for migration.
+    # The deployment journal retains the whole original file for rollback.
+    for row in json.loads((ROOT/'release/retired-instructions.json').read_text()):
+        heading = row['heading']
+        if heading not in value: continue
+        if value.count(heading) != 1: raise RuntimeError('Duplicated unmanaged completion rules; reconcile before installation')
+        prefix, suffix = value.split(heading, 1)
+        if sha((heading+suffix).encode()) != row['sha256']:
+            raise RuntimeError('Unmanaged completion rules changed; reconcile before installation')
+        value = prefix
     sys.path.insert(0, str(ROOT))
     from caller_pr_gates.checklist import instructions
     blocks = {'caller-pr-gates':instructions(texts), 'troubleshooting-report':None, 'pr-progress':None}

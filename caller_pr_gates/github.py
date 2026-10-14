@@ -26,7 +26,7 @@ ISSUE_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {
 
 SUMMARY_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
-    headRefOid baseRefName baseRef { branchProtectionRule { requiredStatusCheckContexts } }
+    headRefOid mergeStateStatus reviewDecision baseRefName baseRef { branchProtectionRule { requiredStatusCheckContexts } }
   } }
 }"""
 THREAD_QUERY = """query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
@@ -435,6 +435,9 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     return {"repository": repository, "number": number, "url": raw.get("html_url"),
         "state": raw["state"], "merged": raw["merged"], "draft": raw["draft"],
         "mergeable": after.get('mergeable'),
+        "merge_state_status": summary.get('mergeStateStatus'),
+        **({'review_decision': summary['reviewDecision']} if 'reviewDecision' in summary else {}),
+        "merge_readiness_head_sha": summary['headRefOid'],
         "head_sha": head, "head_sha_after": after_head, "head_ref": (raw.get("head") or {}).get("ref"), "head_repository": ((raw.get("head") or {}).get("repo") or {}).get("full_name"), "author_login": author,
         "actor_login": actor_login, "collected_at": time.time(), "checks": checks,
         "expected_checks": sorted(set(expected)) if rule_error is None or rules_absent_on_plan else None,
@@ -497,7 +500,7 @@ BATCH_QUERY = '''query($owner:String!, $repo:String!, $number:Int!) {
  viewer { login }
  repository(owner:$owner,name:$repo) { defaultBranchRef { name }
   pullRequest(number:$number) {
-   headRefOid baseRefName state merged baseRef { branchProtectionRule { requiredStatusCheckContexts } }
+   headRefOid mergeStateStatus reviewDecision baseRefName state merged baseRef { branchProtectionRule { requiredStatusCheckContexts } }
    closingIssuesReferences(first:100) { nodes { number url state repository { nameWithOwner } } pageInfo { hasNextPage endCursor } }
    reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) { nodes {
     id databaseId fullDatabaseId body url createdAt updatedAt author { login }

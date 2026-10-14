@@ -180,12 +180,13 @@ def actionable(snapshot, gates, *, checklist=False):
         obligations = (failures.get('REVIEW_HANDLED') or failures.get('REVIEW_CONCLUDED'))['evidence'].get('obligations', [])
         outstanding = [o for o in obligations if not o.get('handled') or not o.get('concluded')]
         items.append(render_prompt('monitor_review_comments', comment_count=len(outstanding)))
-    if snapshot.get('mergeable') is False:
+    merge_state = (failures.get('MERGE_READY', {}).get('evidence') or {}).get('merge_state_status')
+    if snapshot.get('mergeable') is False or merge_state == 'DIRTY':
         items.append(render_prompt('monitor_conflict'))
-    if 'BRANCH_UP_TO_DATE' in failures:
+    if 'BRANCH_UP_TO_DATE' in failures or merge_state == 'BEHIND':
         ref = snapshot.get('base_ref') or 'target branch'
         items.append(render_prompt('monitor_branch_behind', target_branch=ref))
-    if 'PR_NOT_DRAFT' in failures:
+    if 'PR_NOT_DRAFT' in failures or merge_state == 'DRAFT':
         items.append(render_prompt('monitor_draft'))
     if 'ISSUE_CLOSURE' in failures and not checklist:
         items.append(render_prompt('monitor_issue_closure'))
