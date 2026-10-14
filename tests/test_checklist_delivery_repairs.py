@@ -61,6 +61,19 @@ def test_changed_queued_body_is_terminal_without_new_authority(local):
     assert row(store)['delivery_state']=='failed'
 
 
+def test_callback_exception_cancels_queued_work_and_records_failure(local):
+    prompt=queued(local);store=local[0]
+    event=dict(hook_event_name='UserPromptSubmit',session_id=SID,prompt=prompt)
+    assert checklist.failure(event,RuntimeError('failed revalidation'),store)=={'continue':False,'stopReason':''}
+    assert row(store)['delivery_state']=='failed'
+
+
+def test_store_failure_cannot_start_an_unverified_queued_turn():
+    event=dict(hook_event_name='UserPromptSubmit',session_id=SID,prompt='<!-- pr-work-event:unverified-->\nAutomated PR hook')
+    with patch.object(checklist,'Store',side_effect=RuntimeError('store unavailable')):
+        assert checklist.failure(event,RuntimeError('callback failed'))=={'continue':False,'stopReason':''}
+
+
 def test_posttool_in_another_checkout_does_not_acknowledge_old_work(local,tmp_path):
     tick(local)
     store=local[0]

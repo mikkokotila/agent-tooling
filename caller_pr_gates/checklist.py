@@ -110,10 +110,24 @@ def handle(event, store=None):
 
 def failure(event, error, store=None):
     event = event if isinstance(event, dict) else {}
-    store = store or Store()
     sid = str(event.get('session_id') or '')
-    store.audit('checklist_native_error', {'session_id': sid, 'error': f'{type(error).__name__}: {str(error)[:300]}'})
+    prompt = str(event.get('prompt') or '')
+    queued = event.get('hook_event_name') == 'UserPromptSubmit' and prompt.startswith('<!-- pr-work-event:')
+    try:
+        store = store or Store()
+        store.audit('checklist_native_error', {'session_id': sid, 'error': f'{type(error).__name__}: {str(error)[:300]}'})
+        if queued:
+            from .monitor import reject_queued, MARKER
+            reject_queued(store, sid, prompt[len(MARKER):].split('-->', 1)[0].strip(), 'Queued checklist callback failed; explicit retry required')
+    except Exception:
+        pass  # Cancellation must survive failure of the local evidence store.
+    if queued:
+        return {'continue': False, 'stopReason': ''}
     if event.get('hook_event_name') == 'PreToolUse':
         from .hook import _deny
-        return _deny(message(owned_rows(store, sid)))
+        try:
+            rows = owned_rows(store, sid)
+        except Exception:
+            rows = []
+        return _deny(message(rows))
     return None
