@@ -29,7 +29,8 @@ def eligible(gates: list[dict]) -> bool:
     expected = {'PR_NOT_DRAFT', 'CI_FAILED', 'CI_PENDING', 'REVIEW_HANDLED', 'REVIEW_CONCLUDED'}
     return (expected.issubset({g.get('gate') for g in gates})
             and {g.get('gate') for g in gates}.issubset(expected | {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'})
-            and all(g.get('status') == ('FAIL' if g.get('gate') == 'CI_FAILED' else 'PASS') for g in gates))
+            and all(g.get('status') in ({'PASS','WAIT'} if g.get('gate') == 'MERGE_READY'
+                    else {'FAIL'} if g.get('gate') == 'CI_FAILED' else {'PASS'}) for g in gates))
 
 
 def current_hold(store, sid: str, snapshot: dict, gates: list[dict]) -> dict | None:

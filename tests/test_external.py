@@ -53,6 +53,20 @@ def test_verified_quota_is_unresolved_not_passing_or_complete(state):
     assert hold(state) == result
 
 
+@pytest.mark.parametrize('merge_state,decision', [('UNSTABLE',None),('BLOCKED',None),('BLOCKED','CHANGES_REQUESTED')])
+def test_verified_quota_stays_quiet_while_merge_readiness_waits(state,merge_state,decision):
+    store,snap,_=state
+    from test_policy import fresh_branch
+    snap.update(state='open',merged=False,mergeable=True,merge_state_status=merge_state,
+                review_decision=decision,merge_readiness_head_sha=HEAD,**fresh_branch(HEAD))
+    gates=evaluate_pr(snap,[]);store.set_snapshot('o/r',508,snap,gates)
+    result=hold((store,snap,gates))
+    assert result['status']=='held'
+    assert external.current_hold(store,SID,snap,gates)==result
+    assert next(g for g in gates if g['gate']=='MERGE_READY')['status']=='WAIT'
+    assert next(g for g in gates if g['gate']=='CI_FAILED')['status']=='FAIL'
+
+
 @pytest.mark.parametrize('change', ['head', 'unrelated_failure', 'pending', 'draft', 'reviews', 'quota_words_only', 'wrong_job'])
 def test_hold_cannot_cover_unproved_or_actionable_failures(state, change):
     store, snap, gates = state
