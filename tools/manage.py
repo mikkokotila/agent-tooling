@@ -256,10 +256,29 @@ def prepare_runtime(base):
         if not runtime_matches(python): raise RuntimeError('Rebuilt environment differs from captured dependency files')
     return target
 
+def prompt_baseline(home, current):
+    current=current or {}
+    prior=current.get('pristine_prompt_hash',current.get('source_prompt_hash',CAPTURE['prompt_sha256']))
+    if current.get('version')=='0.1.8' and current.get('deployment') and 'pristine_prompt_hash' not in current:
+        # The first checklist release generated different catalogue bytes. Its
+        # journal proves a pristine migration only when the original was pristine.
+        try:
+            journal=json.loads((Path(current['deployment'])/'journal.json').read_text())
+            row=journal['files'][str(home/'.local/share/caller-pr-gates/prompts.toml')]
+            previous=current.get('previous_pointer') or {}
+            if row['before']==previous.get('source_prompt_hash',CAPTURE['prompt_sha256']):
+                return row['after']
+        except (OSError,ValueError,KeyError,TypeError):
+            pass
+    return prior
+
+
 def desired_assets(home, current):
     live=home/'.local/share/caller-pr-gates'
     path=live/'prompts.toml';incoming=(ROOT/'prompts.toml').read_bytes();existing=path.read_bytes() if path.exists() else None
     prior=(current or {}).get('source_prompt_hash',CAPTURE['prompt_sha256'])
+    local_changed=existing is not None and sha(existing)!=prompt_baseline(home,current)
+    repository_changed=sha(incoming)!=prior
     defaults=json.loads((ROOT/'caller_pr_gates/prompt-defaults.json').read_text())
     migrated=False
     if existing is not None and 'pr_checklist' not in tomllib.loads(existing.decode()).get('prompts', {}):
@@ -272,9 +291,9 @@ def desired_assets(home, current):
                   b'# One global PR block is mirrored. Older sections/comments describe retained CLI compatibility.\n'
                   +existing+b'\n\n# Active native PR-only checklist. Older sections are retained CLI diagnostics.\n'+section)
         migrated=True
-    if not migrated and existing is not None and sha(existing) != prior and sha(incoming) != prior and existing != incoming:
+    if not migrated and local_changed and repository_changed and existing != incoming:
         raise RuntimeError('Local prompts and repository prompts both changed. Reconcile them before installation; live text was preserved.')
-    data=existing if migrated or existing is not None and sha(existing) != prior else incoming
+    data=existing if existing is not None and (local_changed or not migrated and not repository_changed) else incoming
     texts=catalogue_texts(data,defaults)
     assets={str(path):data, str(home/'.local/bin/caller-pr-gates'):render('launcher.sh',home),
             str(home/'Library/LaunchAgents/local.caller-pr-monitor.plist'):render('monitor.plist',home)}
@@ -425,6 +444,7 @@ def deploy(home=None, service=None, verified_fingerprint=None):
             if not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'): raise RuntimeError('Post-install runtime differs')
             native_smoke(home/'.local/share/caller-pr-stop-gate/bin/python',home)
             pointer_value={'schema':2,'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
+                'pristine_prompt_hash':sha(assets[str(live/'prompts.toml')]) if asset_before[str(live/'prompts.toml')] is None or sha(asset_before[str(live/'prompts.toml')])==prompt_baseline(home,current) else sha((ROOT/'prompts.toml').read_bytes()),
                 'runtime_inventory':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
             dump(pointer,pointer_value);journal['committed']=True;dump(deployment/'journal.json',journal)
             pending.unlink()

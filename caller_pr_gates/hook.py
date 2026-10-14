@@ -499,10 +499,11 @@ def _local_validation_guard(event, store, sid):
         for row in rows:
             if row['repository'].lower() != repository.lower(): continue
             if event.get('checklist_only'):
+                from .monitor import checkout
                 with store._connect() as db:
                     watch = db.execute("SELECT owner_session,cwd,state FROM pr_watch WHERE repository=? AND number=?", (row['repository'], row['number'])).fetchone()
                 if (not watch or watch['state'] != 'open' or watch['owner_session'] != store.session(sid)['root_session']
-                        or Path(watch['cwd']).resolve() != Path(root).resolve()):
+                        or checkout(watch['cwd']) != checkout(root)):
                     continue
             cached = store.snapshot(row['repository'], row['number']) or {}
             snapshot = cached.get('snapshot') or {}

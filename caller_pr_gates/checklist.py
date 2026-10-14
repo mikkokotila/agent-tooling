@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 
 from .prompts import render_prompt
 from .store import Store
@@ -60,12 +62,15 @@ def handle(event, store=None):
     if name == 'UserPromptSubmit' and prompt.startswith(monitor.MARKER):
         token = prompt[len(monitor.MARKER):].split('-->', 1)[0].strip()
         rows = [r for r in monitor.pending(store, root) if r['event_id'] == token]
-        if root != sid or not rows or prompt.split('-->\n', 1)[-1] != message(rows):
+        body = prompt.split('-->\n', 1)[-1]
+        expected = json.loads(rows[0]['payload']).get('queued_body_hash') if rows else None
+        authentic = hashlib.sha256(body.encode()).hexdigest() == expected if expected else bool(rows and body == message(rows))
+        if root != sid or not rows or not authentic or monitor.checkout(rows[0]['cwd']) != monitor.checkout(hook._cwd(event)):
+            monitor.reject_queued(store, sid, token, 'Queued checklist body, owner or checkout is unverified; explicit retry required')
             return {'continue': False, 'stopReason': ''}
-        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True)
+        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True, cwd=hook._cwd(event))
         if not text:
-            with store._connect() as db:
-                db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
+            monitor.reject_queued(store, sid, token, 'Queued checklist evidence is stale or unavailable; explicit retry required')
             return {'continue': False, 'stopReason': ''}
         # The queue already contains the one checklist. Do not inject it twice.
         with store._connect() as db:
@@ -94,7 +99,7 @@ def handle(event, store=None):
             turns.note_mutation(store, event, sid)
         if sid != root:
             return None
-        text = monitor.consume(store, sid, full=False, checklist=True)
+        text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._cwd(event))
         if text:
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}
     # Stop is not a second poller and cannot initiate recursive continuations.

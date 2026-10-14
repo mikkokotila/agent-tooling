@@ -1,7 +1,7 @@
 {
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
-    "caller_pr_gates/checklist.py": "3f204acb9f65ae0af705b675583b0ecf16fca5cfdb91f175c0553c2a89734e12",
+    "caller_pr_gates/checklist.py": "c9aaf2cfdbe693433b225dd6710c1252d2f661567f957478fd040eed2fd3e202",
     "caller_pr_gates/cli.py": "5e069378288eff5db845864edb269f7ecfd13a502c420499792b0e5879c359ca",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "843cbe80a139861e5f0bfb72e992acf97ae8d1ea870e56025c02dcf89146d895",
@@ -11,8 +11,8 @@
     "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
     "caller_pr_gates/github.py": "bc03c5017cef060346bda5b53ec049ad4f17f8ee1f42ae1bc8bcb1f43d000384",
     "caller_pr_gates/handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
-    "caller_pr_gates/hook.py": "0775413baede418e4d04ab1d97ed04a762968558b8b575cc11453fd27aef6176",
-    "caller_pr_gates/monitor.py": "47472102d68238f8047680c474541ad9589f179026bc9feba3e9ee48f0f12ecc",
+    "caller_pr_gates/hook.py": "29d473001097eddd58f2c75ae1fced041be44738ca0bdcaa644df7ea065dd4fb",
+    "caller_pr_gates/monitor.py": "237f65723eeec28a2917c1e8ca5fcda6621318ddd83e1c0f2de81c29befaa148",
     "caller_pr_gates/policy.py": "3e2bae93a94e6cdc71fbb6ead0558e4d5e7b14f453ef5d1cf9c3fab737b1187b",
     "caller_pr_gates/progress.py": "243d1273633dd5ab7c3b7915a24fe48f27c58a4dc16dcc4b26d70c09ee2309c1",
     "caller_pr_gates/prompt-defaults.json": "a19395be8db0dcdbc9fa550f9e56d45eb22ab37ea3bcd025e1490402c4c74f7b",
@@ -20,13 +20,13 @@
     "caller_pr_gates/publication.py": "bd4789e62edf750cf9d9723404da6762643f46e55845f9f541653f006af09537",
     "caller_pr_gates/quota.py": "94088f3848e77e5d5649fa760c2e0465bc92b6367e7415298b6068176d16ba3a",
     "caller_pr_gates/store.py": "213ced660be7929c3770f25efdf247963241120df70f880c95ac679d8ede6bd7",
-    "caller_pr_gates/supervisor.py": "bec29df4c50a8153bdbabef3ea44953f4f30acf064e051b94baec22bb9d1cb9f",
+    "caller_pr_gates/supervisor.py": "612c39fa6897564405fd3f3aa8b36583aa8044dc22ae3a131025dd3e91af92db",
     "caller_pr_gates/transport.py": "35269b7c4e1ff47745cd56066c3371d73aa99d3b5838cc5b497f376ae9e2bb47",
     "caller_pr_gates/troubleshooting.py": "23c0be4b5d71f9021ce5b4ade351e88b09289a3bb78552f1d8375dd445805f1d",
     "caller_pr_gates/turns.py": "08f5af03f48dc977d0d0486726445c9dd646b9c44a31aa66e8802ebf5946833e",
     "caller_pr_gates/workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf"
   },
   "known_defects": [],
-  "runtime_version": "1.7.8",
-  "version": "0.1.8"
+  "runtime_version": "1.7.9",
+  "version": "0.1.9"
 }
