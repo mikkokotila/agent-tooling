@@ -223,7 +223,7 @@ def quiet_hold(store, sid, snapshot, gates):
     from .external import current_hold
     # GitHub computes mergeability asynchronously. An unknown conflict state
     # cannot invalidate independently proved, unchanged account-quota evidence.
-    usable = [g for g in gates if not (g['gate'] in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE'} and g['status'] == 'UNKNOWN')]
+    usable = [g for g in gates if not (g['gate'] in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'} and g['status'] == 'UNKNOWN')]
     return current_hold(store, sid, snapshot, usable)
 
 
