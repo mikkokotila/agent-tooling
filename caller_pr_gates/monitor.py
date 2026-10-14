@@ -462,8 +462,9 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
     if event_id and not any(r['event_id'] == event_id for r in rows):
         return None
     if checklist:
+        contexts = set(map(checkout, cwd if isinstance(cwd, (list, tuple)) else [cwd])) if cwd is not None else None
         rows = [r for r in rows if (not event_id or r['event_id'] == event_id)
-                and (cwd is None or checkout(r['cwd']) == checkout(cwd))][:1]
+                and (contexts is None or checkout(r['cwd']) in contexts)][:1]
     if not rows:
         return None
     if not full:

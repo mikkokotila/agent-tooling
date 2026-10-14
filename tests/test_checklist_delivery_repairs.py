@@ -38,7 +38,7 @@ def test_rejected_queue_releases_other_pr_without_replaying_failure(local):
     assert row(store)['delivery_state']=='failed'
 
 
-def test_live_wording_edit_accepts_authentic_already_queued_body(local,catalogue):
+def test_live_wording_edit_accepts_authentic_already_queued_body(local,catalogue,tmp_path):
     prompt=queued(local)
     store,_,_,reader,collector=local
     edit(catalogue,'pr_checklist',prompts.baseline_text('pr_checklist')+' New human wording.')
@@ -46,7 +46,9 @@ def test_live_wording_edit_accepts_authentic_already_queued_body(local,catalogue
     def consume(*args,**kwargs):
         return original(*args,**dict(kwargs,reader=reader,collector=collector))
     with patch.object(monitor,'consume',side_effect=consume):
-        assert checklist.handle(dict(hook_event_name='UserPromptSubmit',session_id=SID,cwd=row(store)['cwd'],prompt=prompt),store) is None
+        # Codex desktop retains the chat launch directory on a queued resume.
+        launch=tmp_path/'launch';launch.mkdir()
+        assert checklist.handle(dict(hook_event_name='UserPromptSubmit',session_id=SID,cwd=str(launch),prompt=prompt),store) is None
     assert row(store)['delivery_state']=='consumed'
     assert 'New human wording.' not in prompt
 

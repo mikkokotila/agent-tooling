@@ -65,10 +65,12 @@ def handle(event, store=None):
         body = prompt.split('-->\n', 1)[-1]
         expected = json.loads(rows[0]['payload']).get('queued_body_hash') if rows else None
         authentic = hashlib.sha256(body.encode()).hexdigest() == expected if expected else bool(rows and body == message(rows))
-        if root != sid or not rows or not authentic or monitor.checkout(rows[0]['cwd']) != monitor.checkout(hook._cwd(event)):
+        # A queued resume already binds its checkout in the producer/receipt.
+        # Desktop callbacks can report the chat's original launch directory.
+        if root != sid or not rows or not authentic:
             monitor.reject_queued(store, sid, token, 'Queued checklist body, owner or checkout is unverified; explicit retry required')
             return {'continue': False, 'stopReason': ''}
-        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True, cwd=hook._cwd(event))
+        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True)
         if not text:
             monitor.reject_queued(store, sid, token, 'Queued checklist evidence is stale or unavailable; explicit retry required')
             return {'continue': False, 'stopReason': ''}
@@ -99,7 +101,7 @@ def handle(event, store=None):
             turns.note_mutation(store, event, sid)
         if sid != root:
             return None
-        text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._cwd(event))
+        text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._candidate_dirs(event))
         if text:
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}
     # Stop is not a second poller and cannot initiate recursive continuations.
