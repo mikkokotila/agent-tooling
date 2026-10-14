@@ -274,10 +274,13 @@ def prompt_baseline(home, current):
         # journal proves a pristine migration only when the original was pristine.
         try:
             journal=json.loads((Path(current['deployment'])/'journal.json').read_text())
-            row=journal['files'][str(home/'.local/share/caller-pr-gates/prompts.toml')]
             previous=current.get('previous_pointer') or {}
-            if row['before']==previous.get('source_prompt_hash',CAPTURE['prompt_sha256']):
+            baseline=prompt_baseline(home,previous)
+            row=journal['files'].get(str(home/'.local/share/caller-pr-gates/prompts.toml'))
+            if row and row['before']==baseline:
                 return row['after']
+            if row is None and prior==previous.get('source_prompt_hash',CAPTURE['prompt_sha256']):
+                return baseline  # Reinstallation did not replace the catalogue.
         except (OSError,ValueError,KeyError,TypeError):
             pass
     return prior

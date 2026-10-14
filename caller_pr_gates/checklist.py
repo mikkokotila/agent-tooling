@@ -113,6 +113,8 @@ def failure(event, error, store=None):
     sid = str(event.get('session_id') or '')
     prompt = str(event.get('prompt') or '')
     queued = event.get('hook_event_name') == 'UserPromptSubmit' and prompt.startswith('<!-- pr-work-event:')
+    from .hook import DURABLE_FOLLOWUP
+    retired = event.get('hook_event_name') == 'UserPromptSubmit' and (prompt.startswith('<!-- issue-closeout:') or bool(DURABLE_FOLLOWUP.match(prompt)))
     try:
         store = store or Store()
         store.audit('checklist_native_error', {'session_id': sid, 'error': f'{type(error).__name__}: {str(error)[:300]}'})
@@ -121,7 +123,7 @@ def failure(event, error, store=None):
             reject_queued(store, sid, prompt[len(MARKER):].split('-->', 1)[0].strip(), 'Queued checklist callback failed; explicit retry required')
     except Exception:
         pass  # Cancellation must survive failure of the local evidence store.
-    if queued:
+    if queued or retired:
         return {'continue': False, 'stopReason': ''}
     if event.get('hook_event_name') == 'PreToolUse':
         from .hook import _deny

@@ -692,7 +692,7 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
             payload = json.loads(row['payload'])
             if checklist:
                 payload['queued_body_hash'] = hashlib.sha256(body.encode()).hexdigest()
-            db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint,payload=? WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (json.dumps(payload), sid, row['event_id']))
+            db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint,payload=?,worker_pid=COALESCE(worker_pid,?) WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (json.dumps(payload), os.getpid(), sid, row['event_id']))
     # The human-visible message contains actual work, never API JSON or a polling reminder.
     prompt = MARKER + rows[0]['event_id'] + '-->\n' + body
     args, stdin = resume_command(owner['client'], sid, prompt)
@@ -766,7 +766,7 @@ def main():
             asyncio.run(deliver(store, args.session, checklist=True))
         except Exception as exc:
             with store._connect() as db:
-                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND (worker_pid=? OR worker_pid IS NULL) AND delivery_state IN ('reserved','queued','consumed')", (str(exc)[:300], args.session, os.getpid()))
+                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND ((worker_pid=? AND delivery_state IN ('reserved','queued','consumed')) OR (worker_pid IS NULL AND delivery_state IN ('reserved','queued')))", (str(exc)[:300], args.session, os.getpid()))
         finally:
             with store._connect() as db:
                 db.execute('UPDATE pr_watch SET lease_until=0,worker_pid=NULL WHERE owner_session=? AND worker_pid=?', (args.session, os.getpid()))

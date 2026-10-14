@@ -75,6 +75,16 @@ def test_store_failure_cannot_start_an_unverified_queued_turn():
         assert checklist.failure(event,RuntimeError('callback failed'))=={'continue':False,'stopReason':''}
 
 
+@pytest.mark.parametrize('prompt', [
+    '<!-- issue-closeout:retired-->\nOld issue automation',
+    'Durable prd review followup 11111111-1111-4111-8111-111111111111. The 30-minute check is due.\nOld document automation',
+])
+def test_store_failure_still_cancels_retired_native_prompts(prompt):
+    event=dict(hook_event_name='UserPromptSubmit',session_id=SID,prompt=prompt)
+    with patch.object(checklist,'Store',side_effect=RuntimeError('store unavailable')):
+        assert checklist.failure(event,RuntimeError('callback failed'))=={'continue':False,'stopReason':''}
+
+
 def test_posttool_in_another_checkout_does_not_acknowledge_old_work(local,tmp_path):
     tick(local)
     store=local[0]
@@ -165,3 +175,31 @@ def test_worker_error_after_consumption_is_recorded_and_does_not_replay(local):
     assert row(store)['delivery_state']=='failed' and row(store)['error']=='OAuth execution failed'
     assert row(store)['worker_pid'] is None and row(store)['lease_until']==0
     assert tick(local,1300)['events']==0
+
+
+def test_worker_error_preserves_another_prs_successful_consumption(local):
+    store=local[0];tick(local)
+    store.register(SID,'codex','owner/repo',2,row(store)['cwd'])
+    with store._connect() as db:
+        db.execute("UPDATE pr_watch SET delivery_state='consumed',worker_pid=NULL,lease_until=0 WHERE number=1")
+        db.execute("UPDATE pr_watch SET delivery_state='consumed',worker_pid=?,lease_until=? WHERE number=2",(os.getpid(),9999999999))
+    async def failed(*a,**k):raise RuntimeError('Current execution failed')
+    with patch('sys.argv',['monitor','deliver','--session',SID]),patch('caller_pr_gates.store.Store',return_value=store),patch.object(monitor,'deliver',side_effect=failed):
+        monitor.main()
+    assert row(store)['delivery_state']=='consumed' and row(store)['error'] is None
+    assert row(store,2)['delivery_state']=='failed' and row(store,2)['worker_pid'] is None
+
+
+def test_worker_claims_pid_before_fast_consumption_and_error(local):
+    store,_,_,reader,collector=local;tick(local)
+    tick(local,1001,execute=True,spawn=lambda _:None)
+    async_deliver=monitor.deliver
+    def runner(*a,**k):
+        with store._connect() as db:
+            db.execute("UPDATE pr_watch SET delivery_state='consumed' WHERE number=1")
+        return {'returncode':1}
+    async def failed(*a,**k):
+        return await async_deliver(store,SID,reader=reader,collector=collector,runner=runner,checklist=True)
+    with patch('sys.argv',['monitor','deliver','--session',SID]),patch('caller_pr_gates.store.Store',return_value=store),patch.object(monitor,'deliver',side_effect=failed):
+        monitor.main()
+    assert row(store)['delivery_state']=='failed' and row(store)['lease_until']==0

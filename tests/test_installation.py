@@ -140,6 +140,29 @@ def test_old_machine_migration_is_pristine_but_human_edits_still_conflict(instal
     else:
         assert manage.desired_assets(home,current)[str(prompt)]==new
 
+@pytest.mark.parametrize('catalogue_replaced',[False,True])
+@pytest.mark.parametrize('human_edit',[False,True])
+def test_reinstalled_machine_migration_retains_proven_pristine_baseline(installed,monkeypatch,catalogue_replaced,human_edit):
+    home,_=installed;prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    old=(ROOT/'prompts.toml').read_bytes();generated=b'# Prior machine migration\n'+old
+    prompt.write_bytes(generated+(b'\n# Human edit' if human_edit else b''))
+    first=home/'first-deployment';first.mkdir()
+    prior_hash=manage.sha(b'old pristine 58-section catalogue')
+    manage.dump(first/'journal.json',{'files':{str(prompt):{'before':prior_hash,'after':manage.sha(generated)}}})
+    previous={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':{'source_prompt_hash':prior_hash},'deployment':str(first)}
+    second=home/'second-deployment';second.mkdir()
+    rows={str(prompt):{'before':manage.sha(generated),'after':manage.sha(generated)}} if catalogue_replaced else {}
+    manage.dump(second/'journal.json',{'files':rows})
+    current={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':previous,'deployment':str(second)}
+    new=old.replace(b'Can you verify yes to every question?',b'Can you verify yes to every question? Updated wording.')
+    read_bytes=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda p:new if p==ROOT/'prompts.toml' else read_bytes(p))
+    if human_edit:
+        with pytest.raises(RuntimeError,match='both changed'):manage.desired_assets(home,current)
+    else:
+        assert manage.desired_assets(home,current)[str(prompt)]==new
+
+
 def test_old_catalogue_upgrade_keeps_human_edits_and_removes_legacy_callbacks(installed):
     home,service=installed
     prompt=home/'.local/share/caller-pr-gates/prompts.toml'
