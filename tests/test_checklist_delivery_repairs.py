@@ -76,7 +76,7 @@ def test_registration_subdirectory_preserves_checkout_validation_guard(git_local
     store=Store(tmp_path/'subdir-state')
     store.register(SID,'codex','Owner/Repo',3,str(sub))
     with store._connect() as db:
-        assert db.execute('SELECT cwd FROM pr_watch').fetchone()[0]==str(root.resolve())
+        assert monitor.checkout(db.execute('SELECT cwd FROM pr_watch').fetchone()[0])==str(root.resolve())
         # Also admit genuine older receipts that stored the accepted subdirectory.
         db.execute('UPDATE pr_watch SET cwd=?',(str(sub),))
     result=checklist.handle(dict(hook_event_name='PreToolUse',session_id=SID,cwd=str(root),tool_name='Bash',tool_input={'command':'pytest tests'}),store)
@@ -109,7 +109,9 @@ def test_unavailable_first_claude_pr_cannot_starve_eligible_second(local,tmp_pat
     second=tmp_path/'second';second.mkdir()
     store.record_session(SID,'claude',str(second))
     store.register(SID,'claude','owner/repo',2,str(second))
-    with store._connect() as db:db.execute("UPDATE pr_watch SET client='claude'")
+    with store._connect() as db:
+        db.execute("UPDATE pr_watch SET client='claude'")
+        db.execute("UPDATE sessions SET client='claude' WHERE session_id=?",(SID,))
     tick(local,execute=True,spawn=lambda _:None)
     calls.clear();launched=[]
     def availability(sid,cwd):return 'idle' if cwd==str(second) else 'unknown'
@@ -123,6 +125,7 @@ def test_unavailable_first_claude_pr_cannot_starve_eligible_second(local,tmp_pat
 
 def test_unavailable_claude_checkout_never_spends_github_reads(local):
     store=local[0];store.record_session(SID,'claude',row(store)['cwd'])
+    with store._connect() as db:db.execute("UPDATE sessions SET client='claude' WHERE session_id=?",(SID,))
     tick(local,execute=True,spawn=lambda _:None)
     async def never(*args):pytest.fail('unavailable local checkout must not fetch GitHub')
     assert not asyncio.run(monitor.deliver(store,SID,reader=never,collector=never,availability=lambda *a:'unknown',checklist=True))

@@ -58,7 +58,7 @@ def checkout(cwd):
     """A checkout includes its subdirectories, but never another worktree."""
     try:
         result = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'], capture_output=True, text=True, timeout=3)
-        if result.returncode == 0:
+        if result.returncode == 0 and isinstance(result.stdout, str) and result.stdout.strip():
             return str(Path(result.stdout.strip()).resolve())
     except (OSError, subprocess.SubprocessError):
         pass
@@ -89,7 +89,7 @@ def arm(db, sid, client, repository, number, cwd, *, armed=True):
                   armed=excluded.armed,state='open',next_check_at=0,fingerprint=NULL,
                   delivered_fingerprint=NULL,event_id=NULL,payload=NULL,delivery_state=NULL,error=NULL,
                   retry_at=0,worker_pid=NULL,lease_until=0,terminal_notice=0,branch=NULL,branch_identity=NULL,closure_identity=NULL,
-                  updated_at=excluded.updated_at''', (repository, number, sid, client, checkout(cwd), int(armed), now))
+                  updated_at=excluded.updated_at''', (repository, number, sid, client, str(cwd), int(armed), now))
 
 
 def bootstrap(store):
