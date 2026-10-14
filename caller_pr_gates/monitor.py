@@ -697,7 +697,14 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
     args, stdin = resume_command(owner['client'], sid, prompt)
     result = await asyncio.to_thread(runner or run_process, args, cwd=cwd, input_text=stdin,
                                     timeout=20 if owner['client'] == 'codex' else 2700)
-    if result.get('returncode') != 0:
+    execution_error = False
+    if owner['client'] == 'claude':
+        try:
+            response = json.loads(result.get('stdout') or '')
+            execution_error = isinstance(response, dict) and response.get('is_error') is True
+        except (ValueError, TypeError):
+            pass
+    if result.get('returncode') != 0 or execution_error:
         raise RuntimeError('Owner delivery failed; explicit retry is required')
     with store._connect() as db:
         db.execute('UPDATE pr_watch SET lease_until=0 WHERE owner_session=? AND worker_pid=?', (sid, os.getpid()))
@@ -758,7 +765,7 @@ def main():
             asyncio.run(deliver(store, args.session, checklist=True))
         except Exception as exc:
             with store._connect() as db:
-                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND delivery_state IN ('reserved','queued')", (str(exc)[:300], args.session))
+                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND (worker_pid=? OR worker_pid IS NULL) AND delivery_state IN ('reserved','queued','consumed')", (str(exc)[:300], args.session, os.getpid()))
         finally:
             with store._connect() as db:
                 db.execute('UPDATE pr_watch SET lease_until=0,worker_pid=NULL WHERE owner_session=? AND worker_pid=?', (args.session, os.getpid()))

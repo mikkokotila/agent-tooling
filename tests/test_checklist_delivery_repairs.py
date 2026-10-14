@@ -1,6 +1,7 @@
 """Regressions from PR #12 and the live Claude desktop/worktree mismatch."""
 import asyncio
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -143,3 +144,24 @@ def test_unavailable_claude_checkout_never_spends_github_reads(local):
     async def never(*args):pytest.fail('unavailable local checkout must not fetch GitHub')
     assert not asyncio.run(monitor.deliver(store,SID,reader=never,collector=never,availability=lambda *a:'unknown',checklist=True))
     assert row(store)['delivery_state']=='pending'
+
+
+def test_claude_execution_error_cannot_count_as_successful_delivery(local):
+    store,_,_,reader,collector=local
+    with store._connect() as db:db.execute("UPDATE sessions SET client='claude' WHERE session_id=?",(SID,))
+    tick(local,execute=True,spawn=lambda _:None)
+    with pytest.raises(RuntimeError,match='Owner delivery failed'):
+        asyncio.run(monitor.deliver(store,SID,reader=reader,collector=collector,availability=lambda *a:'idle',
+            runner=lambda *a,**k:{'returncode':0,'stdout':json.dumps({'is_error':True,'result':'OAuth expired'})},checklist=True))
+
+
+def test_worker_error_after_consumption_is_recorded_and_does_not_replay(local):
+    store=local[0];tick(local)
+    with store._connect() as db:
+        db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,worker_pid=?,lease_until=?",(os.getpid(),9999999999))
+    async def failed(*a,**k):raise RuntimeError('OAuth execution failed')
+    with patch('sys.argv',['monitor','deliver','--session',SID]),patch('caller_pr_gates.store.Store',return_value=store),patch.object(monitor,'deliver',side_effect=failed):
+        monitor.main()
+    assert row(store)['delivery_state']=='failed' and row(store)['error']=='OAuth execution failed'
+    assert row(store)['worker_pid'] is None and row(store)['lease_until']==0
+    assert tick(local,1300)['events']==0
