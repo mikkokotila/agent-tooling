@@ -20,7 +20,7 @@ def gate_fingerprint(snapshot: dict, gates: list[dict]) -> str:
                                    'resolved': c.get('is_resolved')} for c in snapshot.get('comments') or []], key=lambda c: str(c['id'])),
              'gates': sorted([{'gate': gate.get('gate'), 'status': gate.get('status'),
                                'details': sorted(gate.get('details') or [], key=str)} for gate in gates
-                              if gate.get('gate') not in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE'} or gate.get('status') == 'FAIL'], key=lambda g: str(g['gate'])),
+                              if gate.get('gate') not in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'} or gate.get('status') == 'FAIL'], key=lambda g: str(g['gate'])),
              'failed_checks': sorted(checks, key=lambda c: (str(c['kind']), str(c['id'])))}
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -28,8 +28,9 @@ def gate_fingerprint(snapshot: dict, gates: list[dict]) -> str:
 def eligible(gates: list[dict]) -> bool:
     expected = {'PR_NOT_DRAFT', 'CI_FAILED', 'CI_PENDING', 'REVIEW_HANDLED', 'REVIEW_CONCLUDED'}
     return (expected.issubset({g.get('gate') for g in gates})
-            and {g.get('gate') for g in gates}.issubset(expected | {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE'})
-            and all(g.get('status') == ('FAIL' if g.get('gate') == 'CI_FAILED' else 'PASS') for g in gates))
+            and {g.get('gate') for g in gates}.issubset(expected | {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'})
+            and all(g.get('status') in ({'PASS','WAIT'} if g.get('gate') == 'MERGE_READY'
+                    else {'FAIL'} if g.get('gate') == 'CI_FAILED' else {'PASS'}) for g in gates))
 
 
 def current_hold(store, sid: str, snapshot: dict, gates: list[dict]) -> dict | None:

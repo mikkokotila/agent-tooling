@@ -20,7 +20,7 @@ All prompt text remains in one annotated catalogue. Edit the live `~/.local/shar
 
 Installation preserves valid local prompt edits when repository text has not changed. If both have changed since the previous deployment, installation stops before activation and asks the operator to reconcile those actual file differences. It never silently discards local text. Invalid current text also stops installation; the existing running loader remains responsible for its last-good fallback.
 
-Managed global instruction sections mirror this same selected catalogue. Already-loaded conversation context still needs a reread/new run; the installer cannot rewrite an agent's existing context.
+The single managed PR instruction block mirrors `[prompts.pr_checklist]` from this selected catalogue. Upgrade from the previous catalogue adds only this new section and preserves valid local edits. Legacy templates remain available to CLI diagnostics, with no automatic issue/document or formatting messages. Already-loaded conversation context still needs a reread/new run; the installer cannot rewrite an agent's existing context.
 
 ## Boundaries
 
@@ -37,3 +37,7 @@ Issue #3 was installed in order: stable identity (0.1.1 / 1.7.1), coordinated co
 
 
 Deployment pointer schema 2 records `runtime_inventory` instead of the legacy `gate_hashes` field. The original v0.1.0 installer therefore falls back to its captured inventory and refuses a newer runtime. Current installers also reject version downgrade before activation; intentional rollback uses `make rollback`. Tests execute the actual v0.1.0 installer against the new pointer and verify refusal with no writes.
+
+Release 0.1.8 also preserves the reviewed local exact-tip publication fix across branch renames/worktree moves. Its complete observed 1.7.7 inventory is admitted only against the recorded prior commit/version; any further drift still refuses installation. Rollback restores that actual prior code and retains all current evidence.
+
+Release 0.1.9 records the pristine deployed catalogue hash separately from the repository source hash. It recognizes the prior pristine machine migration only through the original deployment journal. Human edits still remain protected and conflicting repository edits still stop installation.

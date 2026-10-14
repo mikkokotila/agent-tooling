@@ -121,24 +121,31 @@ async def test_strict_fresh_boundary_profiles_accounts_and_failure(tmp_path):
     assert await a.run('full','bad',produce)
 
 
-def child_collection(directory,start,queue):
+def child_collection(directory,start,queue,ready,boundary):
     async def task():
         co=Coordinator(directory);collection=Collections(co,'same')
         async def producer():
-            queue.put('request');await asyncio.sleep(.04);return {'complete':True}
-        start.wait();queue.put(await collection.run('full','target',producer))
+            observed=time.time()
+            queue.put('request');await asyncio.sleep(.04);return {'complete':True,'observed':observed}
+        ready.wait(timeout=5);start.wait()
+        queue.put(await collection.run('full','target',producer,boundary=boundary.value))
     asyncio.run(task())
 
-def test_actual_processes_coalesce_monitor_supervisor_and_stop_status(tmp_path):
+def test_actual_processes_share_evidence_for_the_same_freshness_boundary(tmp_path):
     ctx=multiprocessing.get_context('spawn');start=ctx.Event();queue=ctx.Queue()
-    # Precreate schema, then align entry into the explicit pending window.
+    # Both requests express one freshness boundary after startup. Separate
+    # implicit --fresh calls are tested above and cannot reuse a prior read.
     Collections(Coordinator(tmp_path),'same')
-    workers=[ctx.Process(target=child_collection,args=(str(tmp_path),start,queue)) for _ in range(2)]
+    ready=ctx.Barrier(3);boundary=ctx.Value('d',0)
+    workers=[ctx.Process(target=child_collection,args=(str(tmp_path),start,queue,ready,boundary)) for _ in range(2)]
     for worker in workers:worker.start()
+    ready.wait(timeout=5);boundary.value=time.time()
     start.set()
     for worker in workers:worker.join(5);assert worker.exitcode==0
     rows=[queue.get(timeout=1) for _ in range(3)]
-    assert rows.count('request')==1 and rows.count({'complete':True})==2
+    results=[r for r in rows if isinstance(r,dict)]
+    assert rows.count('request')==1 and len(results)==2
+    assert results[0]==results[1] and results[0]['observed']>=boundary.value
 
 from test_workflow import local,publish,git
 

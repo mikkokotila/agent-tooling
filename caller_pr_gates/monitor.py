@@ -54,13 +54,34 @@ def schema(db):
     closure_schema(db)
 
 
+def checkout(cwd):
+    """A checkout includes its subdirectories, but never another worktree."""
+    try:
+        result = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'], capture_output=True, text=True, timeout=3)
+        if result.returncode == 0 and isinstance(result.stdout, str) and result.stdout.strip():
+            return str(Path(result.stdout.strip()).resolve())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return str(Path(cwd).resolve())
+
+
+def reject_queued(store, sid, token, reason):
+    with store._connect() as db:
+        db.execute("UPDATE pr_watch SET delivery_state='failed',error=?,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE owner_session=? AND event_id=? AND delivery_state='queued'",
+                   (reason, sid, token))
+        db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
+
+
 def arm(db, sid, client, repository, number, cwd, *, armed=True):
     now = time.time()
     previous = db.execute('SELECT owner_session,state FROM pr_watch WHERE repository=? AND number=?',
                           (repository, number)).fetchone()
-    if previous and previous['owner_session'] == sid and previous['state'] == 'open':
-        db.execute("UPDATE pr_watch SET armed=MAX(armed,?),cwd=?,updated_at=? WHERE repository=? AND number=?",
-                   (int(armed), str(cwd), now, repository, number))
+    if previous and previous['state'] == 'open':
+        # Registration receipts are retained, but another root chat cannot steal
+        # the canonical owner or replace the first recorded source checkout.
+        if previous['owner_session'] == sid:
+            db.execute("UPDATE pr_watch SET armed=MAX(armed,?),updated_at=? WHERE repository=? AND number=?",
+                       (int(armed), now, repository, number))
         return
     db.execute('''INSERT INTO pr_watch(repository,number,owner_session,client,cwd,armed,updated_at)
                   VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository,number) DO UPDATE SET
@@ -110,7 +131,7 @@ def lifecycle(raw):
     return 'merged' if raw['merged'] else raw['state']
 
 
-def retire(store, repository, number, raw):
+def retire(store, repository, number, raw, *, checklist=False):
     state = lifecycle(raw)
     if state == 'open':
         return False
@@ -119,14 +140,14 @@ def retire(store, repository, number, raw):
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
         target = db.execute('SELECT owner_session FROM pr_watch WHERE repository=? AND number=?', (repository, number)).fetchone()
-        if target and state == 'merged':
+        if target and state == 'merged' and not checklist:
             cached = db.execute('SELECT snapshot FROM snapshots WHERE repository=? AND number=?', (repository, number)).fetchone()
             if cached:
                 from .closure import record
                 record(db, target['owner_session'], repository, number, json.loads(cached['snapshot']))
         busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (target['owner_session'],)).fetchone() if target else None
         mode = db.execute('SELECT mode FROM turn_modes WHERE session_id=?', (target['owner_session'],)).fetchone() if target else None
-        notice = int(bool(busy and busy['busy'] and mode and mode['mode'] == 'engineering'))
+        notice = int(not checklist and bool(busy and busy['busy'] and mode and mode['mode'] == 'engineering'))
         branch = raw['head'].get('ref')
         db.execute("UPDATE pr_watch SET state=?,branch=COALESCE(?,branch),event_id=NULL,payload=NULL,delivery_state=NULL,error=NULL,lease_until=0,terminal_notice=?,updated_at=? WHERE repository=? AND number=?",
                    (state, branch, notice, time.time(), repository, number))
@@ -138,27 +159,36 @@ def retire(store, repository, number, raw):
     return True
 
 
-def actionable(snapshot, gates):
+def actionable(snapshot, gates, *, checklist=False):
+    errors = snapshot.get('component_errors') or {}
+    unavailable = [error for component, error in errors.items() if not (
+        component == 'rules' and isinstance(error, dict) and error.get('kind') == 'feature_unavailable'
+        and (snapshot.get('component_status') or {}).get('rules') == 'not_available_on_plan'
+        and isinstance(snapshot.get('expected_checks'), list))]
+    if checklist and unavailable:
+        return []  # Partial API outages cannot authorize a chat continuation.
     failures = {g['gate']: g for g in gates if g.get('status') == 'FAIL'}
     items = []
     if 'CI_FAILED' in failures:
         from .policy import _latest_checks, _outcome
         from .copilot import is_service_check
         names = sorted({str(c.get('name') or c.get('key')) for c in _latest_checks(snapshot.get('checks') or [])
-                        if not is_service_check(c) and _outcome(c) == 'failed'})
-        items.append(render_prompt('monitor_ci_failed', check_names=', '.join(names[:5])))
+                        if not is_service_check(c) and _outcome(c) == 'failed' and (not checklist or genuine_failure(c))})
+        if names:
+            items.append(render_prompt('monitor_ci_failed', check_names=', '.join(names[:5])))
     if {'REVIEW_HANDLED', 'REVIEW_CONCLUDED'} & failures.keys():
         obligations = (failures.get('REVIEW_HANDLED') or failures.get('REVIEW_CONCLUDED'))['evidence'].get('obligations', [])
         outstanding = [o for o in obligations if not o.get('handled') or not o.get('concluded')]
         items.append(render_prompt('monitor_review_comments', comment_count=len(outstanding)))
-    if snapshot.get('mergeable') is False:
+    merge_state = (failures.get('MERGE_READY', {}).get('evidence') or {}).get('merge_state_status')
+    if snapshot.get('mergeable') is False or merge_state == 'DIRTY':
         items.append(render_prompt('monitor_conflict'))
-    if 'BRANCH_UP_TO_DATE' in failures:
+    if 'BRANCH_UP_TO_DATE' in failures or merge_state == 'BEHIND':
         ref = snapshot.get('base_ref') or 'target branch'
         items.append(render_prompt('monitor_branch_behind', target_branch=ref))
-    if 'PR_NOT_DRAFT' in failures:
+    if 'PR_NOT_DRAFT' in failures or merge_state == 'DRAFT':
         items.append(render_prompt('monitor_draft'))
-    if 'ISSUE_CLOSURE' in failures:
+    if 'ISSUE_CLOSURE' in failures and not checklist:
         items.append(render_prompt('monitor_issue_closure'))
     if snapshot.get('local_failures'):
         names = sorted({r['check_id'] for r in snapshot['local_failures']})
@@ -193,23 +223,35 @@ def quiet_hold(store, sid, snapshot, gates):
     from .external import current_hold
     # GitHub computes mergeability asynchronously. An unknown conflict state
     # cannot invalidate independently proved, unchanged account-quota evidence.
-    usable = [g for g in gates if not (g['gate'] in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE'} and g['status'] == 'UNKNOWN')]
+    usable = [g for g in gates if not (g['gate'] in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'} and g['status'] == 'UNKNOWN')]
     return current_hold(store, sid, snapshot, usable)
 
 
-def identity(snapshot, gates, previous_branch=None, previous_closure=None):
+def genuine_failure(check):
+    return str(check.get('conclusion') or check.get('status') or '').lower() in {'failure', 'error', 'failed'}
+
+
+def identity(snapshot, gates, previous_branch=None, previous_closure=None, *, checklist=False):
     from .handoff import evidence_fingerprint
     local = json.dumps(snapshot.get('local_failures') or [], sort_keys=True)
+    if checklist:
+        # Availability, pending checks and interrupted-CI reruns belong outside
+        # chat repair. They must not replay an already-delivered source failure.
+        snapshot = dict(snapshot, checks=[c for c in snapshot.get('checks') or [] if genuine_failure(c)], component_errors={})
+        gates = [g for g in gates if g['status'] == 'FAIL' and g['gate'] != 'ISSUE_CLOSURE'
+                 and (g['gate'] != 'CI_FAILED' or snapshot['checks'])]
     return hashlib.sha256((evidence_fingerprint(snapshot, gates, previous_branch, previous_closure) + str(snapshot.get('mergeable')) + local).encode()).hexdigest()
 
 
 def work_payload(store, row, snapshot, items):
     scope = store.pr_scope(row['owner_session'], row['repository'], row['number'])
+    previous = json.loads(row.get('payload') or '{}')
     return json.dumps({'head_sha': snapshot['head_sha'], 'items': items,
-                       'agreed_scope': (scope or {}).get('agreed_scope')})
+                       'agreed_scope': (scope or {}).get('agreed_scope'),
+                       **({'queued_body_hash': previous['queued_body_hash']} if previous.get('queued_body_hash') else {})})
 
 
-async def tick(store, *, execute=False, now=None, reader=probe, collector=None, spawn=None):
+async def tick(store, *, execute=False, now=None, reader=probe, collector=None, spawn=None, checklist=False):
     from .github import collect_pr
     from .policy import evaluate_pr
     collector = collector or collect_pr
@@ -236,7 +278,7 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
         try:
             async with semaphore:
                 raw = await asyncio.wait_for(reader(repository, number), 25)
-                if retire(store, repository, number, raw):
+                if retire(store, repository, number, raw, checklist=checklist):
                     result['retired'] += 1
                     return
                 snapshot = await asyncio.wait_for(collector(repository, number), 65)
@@ -253,8 +295,9 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
             branch_proof = branch_identity(snapshot, gates, previous_branch)
             previous_closure = json.loads(row['closure_identity']) if row.get('closure_identity') else None
             link_proof = closure_identity(snapshot, gates, previous_closure)
-            fingerprint = identity(snapshot, gates, previous_branch, previous_closure)
-            items = actionable(snapshot, gates)
+            active_gates = [g for g in gates if g['gate'] != 'ISSUE_CLOSURE'] if checklist else gates
+            fingerprint = identity(snapshot, active_gates, previous_branch, None if checklist else previous_closure, checklist=checklist)
+            items = actionable(snapshot, gates, checklist=checklist)
             if quiet_hold(store, row['owner_session'], snapshot, gates):
                 items = [i for i in items if i.startswith('Background local')]
             with store._connect() as db:
@@ -284,7 +327,7 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                                    (repository, number, row['owner_session'])).fetchone()
                 waiting = bool(saved and json.loads(saved['fields']).get('awaiting_validation'))
                 busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
-            if waiting and delivery == 'consumed' and not (busy and busy['busy']):
+            if not checklist and waiting and delivery == 'consumed' and not (busy and busy['busy']):
                 _idle_handoff(store, row['owner_session'], {}, None, retry_at=now)
             result['checked'] += 1
         except Exception as exc:
@@ -294,8 +337,9 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
             result['errors'] += 1  # Health data remains local; never queue an API-error prompt.
 
     await asyncio.gather(*(check(row) for row in rows))
-    from .closure import refresh as refresh_closeouts
-    await refresh_closeouts(store, now=now)
+    if not checklist:
+        from .closure import refresh as refresh_closeouts
+        await refresh_closeouts(store, now=now)
     if execute:
         with store._connect() as db:
             owners = [r[0] for r in db.execute("SELECT DISTINCT owner_session FROM pr_watch WHERE state='open' AND delivery_state='pending'")]
@@ -323,7 +367,7 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                 with store._connect() as db:
                     db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND delivery_state='reserved'", (str(exc)[:300], sid))
                 result['errors'] += 1
-    if execute:
+    if execute and not checklist:
         from .closure import dispatch
         result['closeout_workers'] = dispatch(store, now=now, spawn=spawn)
     return result
@@ -334,7 +378,10 @@ def pending(store, sid, states=('pending', 'reserved', 'queued')):
         return [dict(r) for r in db.execute('SELECT * FROM pr_watch WHERE owner_session=? AND state=\'open\' AND delivery_state IN (' + ','.join('?' for _ in states) + ')', (sid, *states))]
 
 
-def message(rows):
+def message(rows, *, checklist=False):
+    if checklist:
+        from .checklist import message as checklist_message
+        return checklist_message(rows)
     lines = []
     for row in rows:
         payload = json.loads(row['payload'])
@@ -344,7 +391,7 @@ def message(rows):
     return render_prompt('monitor_message', alert_lines='\n'.join(lines))
 
 
-async def revalidate(store, rows, reader=probe, collector=None, *, full=True, branch_reader=None):
+async def revalidate(store, rows, reader=probe, collector=None, *, full=True, branch_reader=None, checklist=False):
     from .github import collect_pr
     from .policy import evaluate_pr
     collector = collector or collect_pr
@@ -368,7 +415,7 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
                     asyncio.wait_for(branch_reader(row['repository'], ref), 2),
                     return_exceptions=True)
                 if isinstance(raw, Exception): raise raw
-            if retire(store, row['repository'], row['number'], raw):
+            if retire(store, row['repository'], row['number'], raw, checklist=checklist):
                 continue
             if raw['head']['sha'] != json.loads(row['payload'])['head_sha']:
                 with store._connect() as db:
@@ -394,7 +441,7 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
             if full:
                 store.set_snapshot(row['repository'], row['number'], snapshot, gates)
             snapshot['local_failures'] = local_failures(store, row['owner_session'], snapshot, full=full)
-            items = actionable(snapshot, gates)
+            items = actionable(snapshot, gates, checklist=checklist)
             if quiet_hold(store, row['owner_session'], snapshot, gates):
                 items = [i for i in items if i.startswith('Background local')]
             if not items:
@@ -410,15 +457,21 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
     return valid
 
 
-def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=True, branch_reader=None):
+def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=True, branch_reader=None, checklist=False, cwd=None):
     rows = [row for row in pending(store, sid)
             if row['delivery_state'] != 'pending' or row['retry_at'] <= time.time()]
     if event_id and not any(r['event_id'] == event_id for r in rows):
         return None
+    if checklist:
+        contexts = set(map(checkout, cwd if isinstance(cwd, (list, tuple)) else [cwd])) if cwd is not None else None
+        rows = [r for r in rows if (not event_id or r['event_id'] == event_id)
+                and (contexts is None or checkout(r['cwd']) in contexts)][:1]
+    if not rows:
+        return None
     if not full:
         rows.sort(key=lambda row: row['event_id'] != event_id)
         rows = rows[:3]  # Native prompt hooks have a ten-second budget.
-    rows = asyncio.run(revalidate(store, rows, reader, collector, full=full, branch_reader=branch_reader))
+    rows = asyncio.run(revalidate(store, rows, reader, collector, full=full, branch_reader=branch_reader, checklist=checklist))
     if not rows:
         return None
     with store._connect() as db:
@@ -426,7 +479,7 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
             db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=?",
                        (row['repository'], row['number'], sid, row['event_id']))
         store._audit(db, 'pr_monitor_consumed', {'session_id': sid, 'events': [r['event_id'] for r in rows]})
-    return message(rows)
+    return message(rows, checklist=checklist)
 
 
 def retry(store, sid, repository, number):
@@ -594,18 +647,33 @@ def native(event, store, result):
     return _idle_handoff(store, sid, event, result) if name == 'Stop' else result
 
 
-async def deliver(store, sid, *, reader=probe, collector=None, runner=None, availability=None):
+async def deliver(store, sid, *, reader=probe, collector=None, runner=None, availability=None, checklist=False):
     from .supervisor import resume_command, run_process, claude_availability
-    rows = await revalidate(store, pending(store, sid, ('reserved',)), reader, collector)
-    if not rows:
-        with store._connect() as db:
-            db.execute("UPDATE pr_watch SET delivery_state='pending',retry_at=next_check_at,lease_until=0 WHERE owner_session=? AND state='open' AND delivery_state='reserved'", (sid,))
-        return False
+    reserved = pending(store, sid, ('reserved',))
     owner = store.session(sid)
     if not owner or owner['root_session'] != sid:
         raise ValueError('Exact owner metadata is unavailable')
     uuid.UUID(sid)
-    cwd = owner['cwd']
+    if checklist and owner['client'] == 'claude':
+        eligible = next((r for r in reserved if (availability or claude_availability)(sid, r['cwd']) == 'idle'), None)
+        if eligible:
+            reserved = [eligible] + [r for r in reserved if r['event_id'] != eligible['event_id']]
+        else:
+            with store._connect() as db:
+                db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0,retry_at=next_check_at WHERE owner_session=? AND delivery_state='reserved'", (sid,))
+            return False
+    if checklist and len(reserved) > 1:
+        # Each queued message has one PR, one receipt and one source checkout.
+        with store._connect() as db:
+            for other in reserved[1:]:
+                db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0,worker_pid=NULL WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (sid, other['event_id']))
+        reserved = reserved[:1]
+    rows = await revalidate(store, reserved, reader, collector, checklist=checklist)
+    if not rows:
+        with store._connect() as db:
+            db.execute("UPDATE pr_watch SET delivery_state='pending',retry_at=next_check_at,lease_until=0 WHERE owner_session=? AND state='open' AND delivery_state='reserved'", (sid,))
+        return False
+    cwd = rows[0]['cwd']
     if not Path(cwd).is_dir():
         raise ValueError('Owner working directory is unavailable; no alternate chat is allowed')
     if owner['client'] == 'claude':
@@ -614,18 +682,30 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
             with store._connect() as db:
                 db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0 WHERE owner_session=? AND delivery_state='reserved'", (sid,))
             return False
+    body = message(rows, checklist=checklist)
     with store._connect() as db:
         busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (sid,)).fetchone()
         if busy and busy['busy']:
             db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0 WHERE owner_session=? AND delivery_state='reserved'", (sid,))
             return False
-        db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint WHERE owner_session=? AND delivery_state='reserved'", (sid,))
+        for row in rows:
+            payload = json.loads(row['payload'])
+            if checklist:
+                payload['queued_body_hash'] = hashlib.sha256(body.encode()).hexdigest()
+            db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint,payload=?,worker_pid=COALESCE(worker_pid,?) WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (json.dumps(payload), os.getpid(), sid, row['event_id']))
     # The human-visible message contains actual work, never API JSON or a polling reminder.
-    prompt = MARKER + rows[0]['event_id'] + '-->\n' + message(rows)
+    prompt = MARKER + rows[0]['event_id'] + '-->\n' + body
     args, stdin = resume_command(owner['client'], sid, prompt)
     result = await asyncio.to_thread(runner or run_process, args, cwd=cwd, input_text=stdin,
                                     timeout=20 if owner['client'] == 'codex' else 2700)
-    if result.get('returncode') != 0:
+    execution_error = False
+    if owner['client'] == 'claude':
+        try:
+            response = json.loads(result.get('stdout') or '')
+            execution_error = isinstance(response, dict) and response.get('is_error') is True
+        except (ValueError, TypeError):
+            pass
+    if result.get('returncode') != 0 or execution_error:
         raise RuntimeError('Owner delivery failed; explicit retry is required')
     with store._connect() as db:
         db.execute('UPDATE pr_watch SET lease_until=0 WHERE owner_session=? AND worker_pid=?', (sid, os.getpid()))
@@ -639,18 +719,18 @@ def write_health(store, result):
     temporary.replace(path)
 
 
-async def serve(store, *, execute=True, sleeper=asyncio.sleep, clock=time.monotonic):
+async def serve(store, *, execute=True, sleeper=asyncio.sleep, clock=time.monotonic, checklist=False):
     """A live supervised process avoids macOS deferring interval job launches."""
     while True:
         started = clock()
         prompt_error = None
         try:
             from .prompts import refresh
-            refresh()
+            refresh(**({'checklist': True} if checklist else {}))
         except Exception as exc:
             prompt_error = f'{type(exc).__name__}: {str(exc)[:300]}'
         try:
-            result = await tick(store, execute=execute)
+            result = await tick(store, execute=execute, **({'checklist': True} if checklist else {}))
         except Exception as exc:
             result = {'errors': 1, 'service_error': f'{type(exc).__name__}: {str(exc)[:300]}'}
         if prompt_error:
@@ -678,15 +758,18 @@ def main():
         except BlockingIOError:
             return
         if args.command == 'serve':
-            asyncio.run(serve(store, execute=args.execute))
+            asyncio.run(serve(store, execute=args.execute, checklist=True))
         else:
-            write_health(store, asyncio.run(tick(store, execute=args.execute)))
+            write_health(store, asyncio.run(tick(store, execute=args.execute, checklist=True)))
     else:
         try:
-            asyncio.run(deliver(store, args.session))
+            asyncio.run(deliver(store, args.session, checklist=True))
         except Exception as exc:
             with store._connect() as db:
-                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND delivery_state IN ('reserved','queued')", (str(exc)[:300], args.session))
+                db.execute("UPDATE pr_watch SET delivery_state='failed',lease_until=0,error=? WHERE owner_session=? AND ((worker_pid=? AND delivery_state IN ('reserved','queued','consumed')) OR (worker_pid IS NULL AND delivery_state IN ('reserved','queued')))", (str(exc)[:300], args.session, os.getpid()))
+        finally:
+            with store._connect() as db:
+                db.execute('UPDATE pr_watch SET lease_until=0,worker_pid=NULL WHERE owner_session=? AND worker_pid=?', (args.session, os.getpid()))
 
 
 if __name__ == '__main__':

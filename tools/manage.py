@@ -116,28 +116,42 @@ def catalogue_texts(data, defaults):
         if set(row) != {'text'} or not isinstance(text,str) or not text.strip(): raise RuntimeError('Invalid prompt text: ' + key)
         if set(re.findall(r'\$\{([a-zA-Z_][a-zA-Z_0-9]*)\}', text)) != set(spec['parameters']): raise RuntimeError('Invalid placeholders: ' + key)
         if spec['protected_prefix'] and not text.startswith(spec['protected_prefix']): raise RuntimeError('Invalid routing prefix: ' + key)
-        if (key.startswith('global_') or key == 'communication') and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
+        if (key.startswith('global_') or key in {'communication','pr_checklist'}) and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
             raise RuntimeError('Invalid managed instruction marker: ' + key)
         result[key] = text
     return result
 
 def merge_instructions(original, texts):
     value = original.decode()
-    blocks = {'caller-pr-gates':texts['global_pr_obligations'], 'troubleshooting-report':texts['global_communication'].replace('${communication}',texts['communication']), 'pr-progress':texts['global_progress']}
+    # Retire only the exact separately appended rules approved for migration.
+    # The deployment journal retains the whole original file for rollback.
+    for row in json.loads((ROOT/'release/retired-instructions.json').read_text()):
+        heading = row['heading']
+        if heading not in value: continue
+        if value.count(heading) != 1: raise RuntimeError('Duplicated unmanaged completion rules; reconcile before installation')
+        prefix, suffix = value.split(heading, 1)
+        if sha((heading+suffix).encode()) != row['sha256']:
+            raise RuntimeError('Unmanaged completion rules changed; reconcile before installation')
+        value = prefix
+    sys.path.insert(0, str(ROOT))
+    from caller_pr_gates.checklist import instructions
+    blocks = {'caller-pr-gates':instructions(texts), 'troubleshooting-report':None, 'pr-progress':None}
     for marker, text in blocks.items():
         begin, end = '<!-- '+marker+':begin -->', '<!-- '+marker+':end -->'
         if begin not in value and end not in value:
-            value += ('\n\n' if value and not value.endswith('\n\n') else '') + begin+'\n'+text+end+'\n'
+            if text is not None:
+                value += ('\n\n' if value and not value.endswith('\n\n') else '') + begin+'\n'+text+end+'\n'
         elif value.count(begin) != 1 or value.count(end) != 1 or value.index(begin) > value.index(end):
             raise RuntimeError('Invalid managed instruction boundaries: '+marker)
-        else: value = re.sub(re.escape(begin)+r'[\s\S]*?'+re.escape(end), lambda _:begin+'\n'+text+end, value)
+        else: value = re.sub(re.escape(begin)+r'[\s\S]*?'+re.escape(end), lambda _:begin+'\n'+text+end if text is not None else '', value)
     return value.encode()
 
 def merge_hooks(original, desired):
     document = json.loads(original) if original else {}
     # v0.1.0 owns its captured callback definitions; preserve unrelated hooks.
     hooks = document.setdefault('hooks', {})
-    for event, wanted in desired['hooks'].items():
+    for event in set(hooks) | set(desired['hooks']):
+        wanted = desired['hooks'].get(event, [])
         groups = hooks.get(event, [])
         foreign = []
         for group in groups:
@@ -167,9 +181,10 @@ def native_smoke(python, home):
                 env=dict(os.environ,CALLER_PR_GATES_PROMPTS_STATE_DIR=state,CALLER_PR_GATES_PROMPTS_FILE=str(home/'.local/share/caller-pr-gates/prompts.toml'))
                 result=run(argv,input=json.dumps(payload),capture_output=True,text=True,env=env,timeout=15)
                 if result.stderr: raise RuntimeError('Native hook produced stderr: '+result.stderr)
-                output=json.loads(result.stdout)
-                if event=='SessionStart' and not output.get('hookSpecificOutput',{}).get('additionalContext'): raise RuntimeError('Missing native context')
+                output=json.loads(result.stdout) if result.stdout.strip() else {}
+                if event=='SessionStart' and output: raise RuntimeError('Unowned chat received a hook message')
                 if event=='PreToolUse' and output.get('hookSpecificOutput',{}).get('permissionDecision')!='deny': raise RuntimeError('Native draft denial was lost')
+                if event=='PreToolUse' and 'Automated PR hook' not in output['hookSpecificOutput']['permissionDecisionReason']: raise RuntimeError('Native guard did not use the fixed checklist')
 
 def process_alive(pid):
     if type(pid) is not int or pid <= 0: return True
@@ -251,14 +266,48 @@ def prepare_runtime(base):
         if not runtime_matches(python): raise RuntimeError('Rebuilt environment differs from captured dependency files')
     return target
 
+def prompt_baseline(home, current):
+    current=current or {}
+    prior=current.get('pristine_prompt_hash',current.get('source_prompt_hash',CAPTURE['prompt_sha256']))
+    if current.get('version')=='0.1.8' and current.get('deployment') and 'pristine_prompt_hash' not in current:
+        # The first checklist release generated different catalogue bytes. Its
+        # journal proves a pristine migration only when the original was pristine.
+        try:
+            journal=json.loads((Path(current['deployment'])/'journal.json').read_text())
+            previous=current.get('previous_pointer') or {}
+            baseline=prompt_baseline(home,previous)
+            row=journal['files'].get(str(home/'.local/share/caller-pr-gates/prompts.toml'))
+            if row and row['before']==baseline:
+                return row['after']
+            if row is None and prior==previous.get('source_prompt_hash',CAPTURE['prompt_sha256']):
+                return baseline  # Reinstallation did not replace the catalogue.
+        except (OSError,ValueError,KeyError,TypeError):
+            pass
+    return prior
+
+
 def desired_assets(home, current):
     live=home/'.local/share/caller-pr-gates'
     path=live/'prompts.toml';incoming=(ROOT/'prompts.toml').read_bytes();existing=path.read_bytes() if path.exists() else None
     prior=(current or {}).get('source_prompt_hash',CAPTURE['prompt_sha256'])
-    if existing is not None and sha(existing) != prior and sha(incoming) != prior and existing != incoming:
+    local_changed=existing is not None and sha(existing)!=prompt_baseline(home,current)
+    repository_changed=sha(incoming)!=prior
+    defaults=json.loads((ROOT/'caller_pr_gates/prompt-defaults.json').read_text())
+    migrated=False
+    if existing is not None and 'pr_checklist' not in tomllib.loads(existing.decode()).get('prompts', {}):
+        # Only add the new active section. Preserve every existing human edit
+        # and retain the complete previous catalogue in the deployment journal.
+        legacy={'prompts':{k:v for k,v in defaults['prompts'].items() if k!='pr_checklist'}}
+        catalogue_texts(existing,legacy)
+        section=incoming[incoming.index(b'[prompts.pr_checklist]'):]
+        existing=(b'# v0.1.8: Only [prompts.pr_checklist] below drives native chat messages.\n'
+                  b'# One global PR block is mirrored. Older sections/comments describe retained CLI compatibility.\n'
+                  +existing+b'\n\n# Active native PR-only checklist. Older sections are retained CLI diagnostics.\n'+section)
+        migrated=True
+    if not migrated and local_changed and repository_changed and existing != incoming:
         raise RuntimeError('Local prompts and repository prompts both changed. Reconcile them before installation; live text was preserved.')
-    data=existing if existing is not None and sha(existing) != prior else incoming
-    texts=catalogue_texts(data,json.loads((ROOT/'caller_pr_gates/prompt-defaults.json').read_text()))
+    data=existing if existing is not None and (local_changed or not migrated and not repository_changed) else incoming
+    texts=catalogue_texts(data,defaults)
     assets={str(path):data, str(home/'.local/bin/caller-pr-gates'):render('launcher.sh',home),
             str(home/'Library/LaunchAgents/local.caller-pr-monitor.plist'):render('monitor.plist',home)}
     for client,name in [('codex','AGENTS.md'),('claude','CLAUDE.md')]:
@@ -408,6 +457,7 @@ def deploy(home=None, service=None, verified_fingerprint=None):
             if not runtime_matches(home/'.local/share/caller-pr-stop-gate/bin/python'): raise RuntimeError('Post-install runtime differs')
             native_smoke(home/'.local/share/caller-pr-stop-gate/bin/python',home)
             pointer_value={'schema':2,'version':VERSION,'commit':commit,'source_fingerprint':revision,'source_prompt_hash':sha((ROOT/'prompts.toml').read_bytes()),
+                'pristine_prompt_hash':sha(assets[str(live/'prompts.toml')]) if asset_before[str(live/'prompts.toml')] is None or sha(asset_before[str(live/'prompts.toml')])==prompt_baseline(home,current) else sha((ROOT/'prompts.toml').read_bytes()),
                 'runtime_inventory':{n:sha(v) for n,v in incoming.items()},'deployment':str(deployment),'previous_pointer':current}
             dump(pointer,pointer_value);journal['committed']=True;dump(deployment/'journal.json',journal)
             pending.unlink()

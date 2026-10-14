@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 from .copilot import SERVICE_CONTEXTS, is_service_check
 
-GATES = ("PR_NOT_DRAFT", "CI_FAILED", "CI_PENDING", "REVIEW_HANDLED", "REVIEW_CONCLUDED", "MERGE_CONFLICT", "BRANCH_UP_TO_DATE", "ISSUE_CLOSURE")
+GATES = ("PR_NOT_DRAFT", "CI_FAILED", "CI_PENDING", "REVIEW_HANDLED", "REVIEW_CONCLUDED", "MERGE_CONFLICT", "BRANCH_UP_TO_DATE", "ISSUE_CLOSURE", "MERGE_READY")
 FAILURES = {"failure", "failed", "error", "cancelled", "canceled", "timed_out", "action_required", "stale", "startup_failure"}
 SUCCESSES = {"success", "neutral", "skipped"}
 PENDING = {"queued", "pending", "in_progress", "requested", "waiting", "waiting_for_review", "waiting_for_resource", "waiting_for_approval"}
@@ -304,6 +304,32 @@ def branch_freshness_gate(snapshot: dict) -> dict:
     return _gate('BRANCH_UP_TO_DATE', 'PASS', [], evidence)
 
 
+def merge_readiness_gate(snapshot: dict, ci: list[dict]) -> dict:
+    evidence = {key: snapshot.get(key) for key in ('merge_state_status', 'review_decision', 'merge_readiness_head_sha')}
+    if snapshot.get('state') == 'closed':
+        return _gate('MERGE_READY', 'PASS', [], {'source_closed': True})
+    state, decision = snapshot.get('merge_state_status'), snapshot.get('review_decision')
+    if (snapshot.get('merge_readiness_head_sha') != snapshot.get('head_sha')
+            or 'review_decision' not in snapshot or decision not in {None, 'APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}
+            or state not in {'BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE'}):
+        return _gate('MERGE_READY', 'UNKNOWN', ['Current-head GitHub merge readiness is unavailable; do not claim completion'], evidence)
+    if state in {'BEHIND', 'DIRTY', 'DRAFT'}:
+        evidence['action_owner'] = 'chat'
+        return _gate('MERGE_READY', 'FAIL', [f'GitHub merge state is {state}; repair the branch or draft state'], evidence)
+    if state == 'UNKNOWN' or snapshot.get('mergeable') is None:
+        return _gate('MERGE_READY', 'UNKNOWN', ['GitHub is calculating merge readiness; do not claim completion'], evidence)
+    if decision in {'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}:
+        evidence['action_owner'] = 'poise'
+        return _gate('MERGE_READY', 'WAIT', [f'GitHub review decision is {decision}; handle actual findings, then await Poise approval'], evidence)
+    # UNSTABLE is mergeable. Only proven excluded service checks may account
+    # for its non-passing status; real failures remain independent CI gates.
+    services = ci[0]['evidence'].get('nonblocking_service_checks', [])
+    service_only = state == 'UNSTABLE' and all(g['status'] == 'PASS' for g in ci) and any(_outcome(c) != 'success' for c in services)
+    if snapshot.get('mergeable') is True and (state in {'CLEAN', 'HAS_HOOKS'} or service_only):
+        return _gate('MERGE_READY', 'PASS', [], evidence)
+    return _gate('MERGE_READY', 'WAIT', [f'GitHub merge state is {state}; do not claim completion or replay unchanged work'], evidence)
+
+
 def evaluate_pr(snapshot: dict, dispositions: list[dict], expected_checks: list[str] | None = None) -> list[dict]:
     if not isinstance(snapshot, dict):
         return unknown_gates("PR snapshot is unavailable")
@@ -328,4 +354,5 @@ def evaluate_pr(snapshot: dict, dispositions: list[dict], expected_checks: list[
     else:
         merge_gate = _gate('MERGE_CONFLICT', 'UNKNOWN', ['GitHub has not established mergeability; reread without claiming completion'])
     from .closure import gate as closure_gate
-    return [draft_gate, *_ci(snapshot, expected_checks), *evaluate_review(snapshot, dispositions), merge_gate, branch_freshness_gate(snapshot), closure_gate(snapshot)]
+    ci = _ci(snapshot, expected_checks)
+    return [draft_gate, *ci, *evaluate_review(snapshot, dispositions), merge_gate, branch_freshness_gate(snapshot), closure_gate(snapshot), merge_readiness_gate(snapshot, ci)]

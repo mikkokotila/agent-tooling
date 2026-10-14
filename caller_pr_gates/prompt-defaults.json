@@ -371,6 +371,13 @@
         "communication"
       ],
       "protected_prefix": ""
+    },
+    "pr_checklist": {
+      "text": "Automated PR hook \u2014 ${pr_urls}. Owned by this chat.\n\nCan you verify yes to every question?\n\n1. Is the agreed implementation complete, within scope, and fully pushed to this non-draft PR?\n2. Does its head contain the latest live target-branch commit, with no merge conflicts?\n3. Have all required local checks passed for the published code and current inputs?\n4. Have required CI checks passed on the current head, with no genuine failure left unfixed?\n5. Has every review finding\u2014including outdated and Copilot feedback\u2014received an evidenced fix or justified nonfix, a public reply, and resolution of handled inline threads?\n\nDo not stand down before all five are verified. Fix remaining authorized work and push before local checks. Wait in-session for CI to conclude; yield on pending CI only after a check exceeds 20 minutes, naming it. Re-read current-head reviews after CI concludes; fix, reply, resolve and re-verify. Re-check the live base before completion and after any base move; update the head unasked. Answer mid-task questions, then resume the PR in the same turn.\n\nBefore claiming completion, inspect fresh MERGE_READY evidence (mergeStateStatus, reviewDecision and mergeable). A blocked, behind, conflicting or changes-requested PR is incomplete even if individual findings are resolved. Leave review execution, approval, interrupted-CI reruns and merging to Poise; when only these or unavailable evidence remain, yield truthfully incomplete without asking the human to merge or dismiss a review. Monitoring continues quietly on unchanged evidence.\n\nBefore asking for human action, check whether you can do it yourself. If a credential or decision truly requires the human, provide a clickable link, exact steps and what you will do after their answer.\n",
+      "parameters": [
+        "pr_urls"
+      ],
+      "protected_prefix": "Automated PR hook"
     }
   }
 }

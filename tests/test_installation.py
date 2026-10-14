@@ -97,20 +97,95 @@ def test_valid_live_prompt_edit_is_preserved_and_mirrored(installed):
     # Establish the installed release baseline before applying a human edit.
     # Concurrent changes against the older capture must still be rejected.
     manage.deploy(home,service)
-    text=prompt.read_text();text=text.replace('Completion requires every separate gate to pass:', 'Completion requires every separate gate to pass:')
+    text=prompt.read_text()
     # Change a plain fragment while retaining required protected prefixes/tokens.
-    text=text.replace('Handle routine engineering and CI work autonomously', 'Handle routine engineering and CI work carefully and autonomously')
+    text=text.replace('Can you verify yes to every question?', 'Can you verify yes to every question? Human edit.')
     assert text!=prompt.read_text();prompt.write_text(text)
     manage.deploy(home,service)
     assert prompt.read_text()==text
     for p in [home/'.codex/AGENTS.md',home/'.claude/CLAUDE.md']:
-        assert 'carefully and autonomously' in p.read_text() and p.read_text().startswith('Personal prefix.') and p.read_text().endswith('Personal suffix.\n')
+        assert 'Human edit.' in p.read_text() and p.read_text().startswith('Personal prefix.') and p.read_text().endswith('Personal suffix.\n')
 
 def test_invalid_local_prompt_is_rejected_without_overwriting(installed):
     home,service=installed;prompt=home/'.local/share/caller-pr-gates/prompts.toml';prompt.write_text('invalid TOML')
     before=original_bytes(home)
     with pytest.raises((RuntimeError,ValueError)):manage.deploy(home,service)
     assert original_bytes(home)==before and service.stops==0
+
+def test_pristine_legacy_catalogue_migrates_to_exact_source_bytes(installed):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    legacy=(ROOT/'prompts.toml').read_bytes().split(b'[prompts.pr_checklist]')[0]
+    prompt.write_bytes(legacy)
+    current={'source_prompt_hash':manage.sha(legacy)}
+    assets=manage.desired_assets(home,current)
+    assert assets[str(prompt)]==(ROOT/'prompts.toml').read_bytes()
+
+@pytest.mark.parametrize('human_edit',[False,True])
+def test_old_machine_migration_is_pristine_but_human_edits_still_conflict(installed,monkeypatch,human_edit):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    old=(ROOT/'prompts.toml').read_bytes()
+    generated=b'# Prior machine migration\n'+old
+    prompt.write_bytes(generated+(b'\n# Human edit' if human_edit else b''))
+    deployment=home/'previous-deployment';deployment.mkdir()
+    prior_hash=manage.sha(b'old pristine 58-section catalogue')
+    manage.dump(deployment/'journal.json',{'files':{str(prompt):{'before':prior_hash,'after':manage.sha(generated)}}})
+    current={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':{'source_prompt_hash':prior_hash},'deployment':str(deployment)}
+    new=old.replace(b'Can you verify yes to every question?',b'Can you verify yes to every question? Updated wording.')
+    original=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda p: new if p==ROOT/'prompts.toml' else original(p))
+    if human_edit:
+        with pytest.raises(RuntimeError,match='both changed'):manage.desired_assets(home,current)
+    else:
+        assert manage.desired_assets(home,current)[str(prompt)]==new
+
+@pytest.mark.parametrize('catalogue_replaced',[False,True])
+@pytest.mark.parametrize('human_edit',[False,True])
+def test_reinstalled_machine_migration_retains_proven_pristine_baseline(installed,monkeypatch,catalogue_replaced,human_edit):
+    home,_=installed;prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    old=(ROOT/'prompts.toml').read_bytes();generated=b'# Prior machine migration\n'+old
+    prompt.write_bytes(generated+(b'\n# Human edit' if human_edit else b''))
+    first=home/'first-deployment';first.mkdir()
+    prior_hash=manage.sha(b'old pristine 58-section catalogue')
+    manage.dump(first/'journal.json',{'files':{str(prompt):{'before':prior_hash,'after':manage.sha(generated)}}})
+    previous={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':{'source_prompt_hash':prior_hash},'deployment':str(first)}
+    second=home/'second-deployment';second.mkdir()
+    rows={str(prompt):{'before':manage.sha(generated),'after':manage.sha(generated)}} if catalogue_replaced else {}
+    manage.dump(second/'journal.json',{'files':rows})
+    current={'version':'0.1.8','source_prompt_hash':manage.sha(old),'previous_pointer':previous,'deployment':str(second)}
+    new=old.replace(b'Can you verify yes to every question?',b'Can you verify yes to every question? Updated wording.')
+    read_bytes=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda p:new if p==ROOT/'prompts.toml' else read_bytes(p))
+    if human_edit:
+        with pytest.raises(RuntimeError,match='both changed'):manage.desired_assets(home,current)
+    else:
+        assert manage.desired_assets(home,current)[str(prompt)]==new
+
+
+def test_old_catalogue_upgrade_keeps_human_edits_and_removes_legacy_callbacks(installed):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    text=prompt.read_text().split('[prompts.pr_checklist]')[0]
+    text=text.replace('Handle routine engineering and CI work autonomously', 'Handle routine engineering and CI work precisely and autonomously')
+    prompt.write_text(text)
+    for client,name in [('codex','hooks.json'),('claude','settings.json')]:
+        config=home/('.'+client)/name
+        data=json.loads(config.read_text())
+        data['hooks']['SessionStart'].append({'hooks':[{'type':'command','command':'python -m caller_pr_gates.troubleshooting'}]})
+        data['hooks']['SessionStart'].append({'hooks':[{'type':'command','command':'foreign-callback'}]})
+        config.write_text(json.dumps(data))
+    manage.deploy(home,service)
+    assert text in prompt.read_text() and '[prompts.pr_checklist]' in prompt.read_text()
+    for client,name in [('codex','hooks.json'),('claude','settings.json')]:
+        data=json.loads((home/('.'+client)/name).read_text())
+        commands=[h['command'] for groups in data['hooks'].values() for g in groups for h in g['hooks']]
+        assert 'foreign-callback' in commands
+        assert not any('caller_pr_gates.troubleshooting' in c for c in commands)
+        value=(home/('.'+client)/('AGENTS.md' if client=='codex' else 'CLAUDE.md')).read_text()
+        assert '<!-- troubleshooting-report:' not in value and '<!-- pr-progress:' not in value
+    assert not manage.rollback(home,service)['state_restored']
+    assert prompt.read_text()==text
 
 def test_local_code_drift_refuses_deployment(installed):
     home,service=installed;path=home/'.local/share/caller-pr-gates/caller_pr_gates/hook.py';path.write_text('Local human edit')

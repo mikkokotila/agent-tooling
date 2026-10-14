@@ -498,9 +498,17 @@ def _local_validation_guard(event, store, sid):
         root, repository, _branch = context
         for row in rows:
             if row['repository'].lower() != repository.lower(): continue
+            if event.get('checklist_only'):
+                from .monitor import checkout
+                with store._connect() as db:
+                    watch = db.execute("SELECT owner_session,cwd,state FROM pr_watch WHERE repository=? AND number=?", (row['repository'], row['number'])).fetchone()
+                if (not watch or watch['state'] != 'open' or watch['owner_session'] != store.session(sid)['root_session']
+                        or checkout(watch['cwd']) != checkout(root)):
+                    continue
             cached = store.snapshot(row['repository'], row['number']) or {}
             snapshot = cached.get('snapshot') or {}
             if snapshot.get('state') == 'closed': continue
+            if event.get('checklist_only') and snapshot.get('head_ref') and snapshot['head_ref'] != _branch: continue
             url = f"https://github.com/{row['repository']}/pull/{row['number']}"
             return _deny(render_prompt('local_validation_guard', cli=CLI, session_id=sid, pr_url=url, repo_root=root))
     return None
@@ -803,13 +811,11 @@ def main():
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict): raise ValueError('Hook input must be an object')
-        result = handle(event)
-        from .monitor import native
-        result = native(event, Store(), result)
+        from .checklist import handle as checklist_handle
+        result = checklist_handle(event)
     except Exception as exc:
-        reason = render_prompt('unknown_error', exception_type=type(exc).__name__, exception_message=str(exc)[:900])
-        result = _deny(reason) if event.get('hook_event_name') == 'PreToolUse' else {
-            'systemMessage': render_prompt('unknown_error_handoff', reason=reason)}
+        from .checklist import failure
+        result = failure(event, exc)
     if result: print(json.dumps(result))
 
 if __name__ == '__main__': main()

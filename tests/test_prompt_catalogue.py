@@ -318,9 +318,9 @@ def test_actual_native_hook_command_uses_one_editable_catalogue(catalogue, tmp_p
         if part.startswith('CALLER_PR_GATES_STATE_DIR='): part = 'CALLER_PR_GATES_STATE_DIR=' + str(tmp_path / 'native-state')
         if part.endswith('/caller-pr-stop-gate/bin/python'): part = sys.executable
         args.append(part)
-    edit(catalogue, 'pr_rules', prompts.baseline_text('pr_rules') + ' Native editable catalogue verified.')
-    event = dict(hook_event_name='UserPromptSubmit', session_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd', cwd=str(tmp_path), prompt='Explain the current mechanism.')
+    edit(catalogue, 'pr_checklist', prompts.baseline_text('pr_checklist') + ' Native editable catalogue verified.')
+    event = dict(hook_event_name='PreToolUse', session_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd', cwd=str(tmp_path), tool_name='Bash', tool_input={'command':'gh pr create --draft --title example'})
     process = subprocess.run(args, input=json.dumps(event), text=True, capture_output=True, timeout=15, check=True)
     assert not process.stderr
     result = json.loads(process.stdout)
-    assert 'Native editable catalogue verified.' in result['hookSpecificOutput']['additionalContext']
+    assert 'Native editable catalogue verified.' in result['hookSpecificOutput']['permissionDecisionReason']

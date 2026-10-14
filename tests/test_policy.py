@@ -36,7 +36,8 @@ def closing_graphql(variables, head=SHA, merged=False):
 
 def snapshot():
     return {"repository": "owner/repo", "number": 1, "state": "open", "merged": False,
-        "draft": False, "mergeable": True, "head_sha": SHA, "head_sha_after": SHA, "actor_login": "agent",
+        "draft": False, "mergeable": True, "merge_state_status": "CLEAN", "review_decision": None, "merge_readiness_head_sha": SHA,
+        "head_sha": SHA, "head_sha_after": SHA, "actor_login": "agent",
         "author_login": "agent", "checks": [check()], "expected_checks": ["test"],
         "comments": [], "commit_shas": [SHA], "commit_dates": {SHA: FIXED}, **fresh_branch(), **closing_link()}
 

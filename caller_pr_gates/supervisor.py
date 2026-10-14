@@ -120,7 +120,17 @@ def claude_availability(session_id: str, cwd: str) -> str:
         for row in rows:
             if row.get("sessionId", row.get("session_id")) == session_id:
                 if os.path.realpath(row.get("cwd", "")) != os.path.realpath(cwd):
-                    return "unknown"
+                    # Desktop inventory reports the launch directory even while
+                    # the same session works in its explicitly registered worktree.
+                    def common(path):
+                        try:
+                            value = subprocess.run(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'], capture_output=True, text=True, timeout=3)
+                            return os.path.realpath(value.stdout.strip()) if value.returncode == 0 else None
+                        except (OSError, subprocess.SubprocessError):
+                            return None
+                    target = common(cwd)
+                    if not target or common(row.get('cwd') or '') != target:
+                        return "unknown"
                 return "idle" if row.get("status") in {"idle", "completed", "exited"} else "busy"
         return "idle"  # Detached transcript; resume errors remain durable failures.
     except (OSError, ValueError, TimeoutError):
