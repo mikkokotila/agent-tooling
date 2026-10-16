@@ -828,10 +828,12 @@ class Store:
             result[name] = json.loads(result[name])
         return result
 
-    def register_followup(self, session_id, repository, number, posted_at, scope, kind="prd", issue_number=None):
+    def register_followup(self, session_id, repository, number, posted_at, scope, kind="prd", issue_number=None, publication_notice=False):
         posted_at = _epoch(posted_at, "posted_at")
         if kind not in {"prd", "slice"}:
             raise ValueError("followup kind must be prd or slice")
+        if publication_notice and kind != 'prd':
+            raise ValueError('publication notice requires a PRD')
         if not repository or isinstance(number, bool) or not isinstance(number, int) or number < 1:
             raise ValueError("repository and a positive artifact number are required")
         if issue_number is not None and (isinstance(issue_number, bool) or not isinstance(issue_number, int) or issue_number < 1):
@@ -850,15 +852,46 @@ class Store:
                 raise ValueError("followup scope must match the immutable task baseline")
             now = time.time()
             identifier = str(uuid.uuid4())
+            fields = {}
+            if publication_notice:
+                owner = db.execute('SELECT client FROM sessions WHERE session_id=?', (root,)).fetchone()
+                if not owner or owner['client'] not in {'codex', 'claude'}:
+                    raise ValueError('PRD review notice requires a recorded root-chat client')
+                fields = {'prd_review_notice': {'client': owner['client'], 'state': 'pending'}}
             db.execute("""INSERT OR IGNORE INTO followups
-                (id, session_id, repository, number, issue_number, kind, posted_at, due_at, scope, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                (identifier, root, repository, number, issue_number, kind, posted_at, posted_at + 1800, _json(scope), now, now))
+                (id, session_id, repository, number, issue_number, kind, posted_at, due_at, scope, status, fields, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+                (identifier, root, repository, number, issue_number, kind, posted_at, posted_at + 1800, _json(scope), _json(fields), now, now))
             row = db.execute("SELECT * FROM followups WHERE session_id=? AND repository=? AND number=? AND kind=? AND posted_at=?", (root, repository, number, kind, posted_at)).fetchone()
             if row["scope"] != _json(scope) or row["issue_number"] != issue_number:
                 raise ValueError("existing followup identity cannot change its scope or artifact")
             self._audit(db, "followup_registered", {"id": row["id"], "session_id": root, "due_at": row["due_at"]})
             return self._followup(row)
+
+    def consume_prd_notices(self, session_id, client):
+        """Claim new gateway publication notices once, only in their root chat.
+
+        Old followups have no receipt. Neither retries nor document edits create
+        one. This is native additional context, never a background delivery job.
+        """
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            owner = db.execute('SELECT client FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            if not owner or owner['client'] != client or self._root(session_id, self._parents(db)) != session_id:
+                return []
+            result = []
+            for row in db.execute("SELECT * FROM followups WHERE session_id=? AND kind='prd' ORDER BY created_at,id", (session_id,)).fetchall():
+                fields = json.loads(row['fields'])
+                notice = fields.get('prd_review_notice') or {}
+                if notice.get('state') != 'pending':
+                    continue
+                # The recorded owner also repairs pending receipts created by
+                # the older gateway's default --client flag, without replay.
+                notice.update(client=client, state='emitted', emitted_at=time.time())
+                db.execute('UPDATE followups SET fields=?,updated_at=? WHERE id=?', (_json(fields), time.time(), row['id']))
+                self._audit(db, 'prd_review_notice_emitted', {'id': row['id'], 'session_id': session_id, 'client': client})
+                result.append(self._followup(row))
+            return result
 
     def followups(self, session_id=None, due_only=False):
         with self._connect() as db:

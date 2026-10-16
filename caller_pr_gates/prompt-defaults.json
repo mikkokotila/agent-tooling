@@ -378,6 +378,13 @@
         "pr_urls"
       ],
       "protected_prefix": "Automated PR hook"
+    },
+    "prd_review_checklist": {
+      "text": "Automated PRD review hook \u2014 ${prd_url}. Owned by this chat.\n\nCan you verify yes to every question?\n\n1. Are the PRD and every agreed slice published and linked?\n2. Have all scheduled reviews finished for the PRD and every linked slice?\n3. Has every review finding received a fix or justified nonfix and a public reply?\n4. Are the revised documents consistent with one another and the agreed scope?\n5. Have you re-read the comments after the final review finished and verified that nothing remains unhandled?\n\nKeep this turn active and poll every five minutes until all five are verified. Reviewers start approximately ten minutes after publication and may finish at different times. Address findings as they arrive. Silence or the first completed review does not establish completion.\n\nMinimal, clinical interventions all the way. Get in, get out, do the thing that actually has to be done, never expand it beyond that. Keep asking \"is this truly the cleanest and simplest and least intrusive way to get this done\" and do it that way and only that way. Don't let others come expand it, let them come make it cleaner.\n\nOnce all five are verified, end document-review polling and proceed with the agreed implementation and existing PR workflow.\n",
+      "parameters": [
+        "prd_url"
+      ],
+      "protected_prefix": "Automated PRD review hook"
     }
   }
 }

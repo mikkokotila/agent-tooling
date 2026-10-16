@@ -362,7 +362,8 @@ def gateway(args, store):
         if kind:
             from .github import collect_issue, collect_pr
             snapshot = asyncio.run(asyncio.wait_for((collect_issue if typ == 'issues' else collect_pr)(repository, number), 65))
-            followup = store.register_followup(sid, repository, number, _posted_at(snapshot), scope, kind=kind, issue_number=number if typ == 'issues' else None)
+            followup = store.register_followup(sid, repository, number, _posted_at(snapshot), scope, kind=kind,
+                issue_number=number if typ == 'issues' else None, publication_notice=args.kind == 'prd')
             if args.slice_id: store.update_followup(followup['id'], followup['status'], {'slice_id': args.slice_id})
         store.audit('github_mutation', {'session_id': sid, 'operation': argv[:2], 'repository': repository, 'number': number})
         return None
