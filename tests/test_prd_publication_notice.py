@@ -96,6 +96,15 @@ def test_reads_edits_and_references_do_not_signal_publication(published, tmp_pat
     assert callback(store, tmp_path) is None
 
 
+def test_title_matching_alone_cannot_emit_a_document_instruction(published, tmp_path):
+    store, _ = published
+    value = args(['issue','create','--title','Fix PRD publication detection','--body','Engineering tracking issue'])
+    value.session = SID
+    with patch('caller_pr_gates.cli.github_run', return_value=subprocess.CompletedProcess([],0,stdout='https://github.com/owner/repo/issues/42\n')), patch('caller_pr_gates.github.collect_issue', AsyncMock(return_value={'created_at':100})):
+        gateway(value, store)
+    assert callback(store, tmp_path) is None
+
+
 def test_concurrent_callbacks_and_legacy_retry_cannot_repeat_notice(published):
     store, _ = published
     publish(store)

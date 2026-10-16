@@ -480,7 +480,7 @@ Before claiming completion, inspect fresh MERGE_READY evidence (mergeStateStatus
 Before asking for human action, check whether you can do it yourself. If a credential or decision truly requires the human, provide a clickable link, exact steps and what you will do after their answer.
 """
 
-# ACTIVE PRD PROMPT: once after successful gateway creation and GitHub readback.
+# ACTIVE PRD PROMPT: once after explicit --kind prd gateway creation and GitHub readback.
 # Ownership: exact root chat and client; delivered as PostToolUse additional context.
 # Linked slice creation, reads, edits, references and retained legacy records stay silent.
 # The agent polls in-session every five minutes; no document background job is started.
