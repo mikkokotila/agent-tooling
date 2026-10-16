@@ -54,7 +54,7 @@ def _validate(document):
         prefix = expected['protected_prefix']
         if prefix and not text.startswith(prefix):
             raise ValueError(key + ': retain the protected routing prefix')
-        if (key.startswith('global_') or key in {'communication', 'pr_checklist'}) and re.search(
+        if (key.startswith('global_') or key in {'communication', 'pr_checklist', 'prd_review_checklist'}) and re.search(
                 r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->', text):
             raise ValueError(key + ': global instruction boundary markers are generated separately')
         result[key] = text

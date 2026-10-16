@@ -1,4 +1,4 @@
-"""One PR-only native message; verification and durable receipts stay in the CLI."""
+"""PR checklist and one publication-bound PRD notice, shared by both clients."""
 from __future__ import annotations
 
 import time
@@ -26,7 +26,10 @@ def instructions(texts):
         'Inspect evidence with status --session SESSION --fresh. CLI help describes evidenced review dispositions and resolution. '
         'The PR monitor checks one owned open PR every five minutes, or several every ten minutes. '
         'Unchanged results, pending CI and API outages do not restart chats. Merged/closed PRs cancel delivery without passing unresolved gates. '
-        'Existing issue/document evidence remains recorded; their automatic chat prompts are retired.\n'
+        'Legacy issue/document reminder loops remain retired. '
+        'Publish PRDs through the GitHub gateway with --kind prd; publish agreed slices with --kind slice --slice-id ID. '
+        'Record the agreed scope first with scope --file FILE. Confirmed PRD creation delivers one automated review checklist to this chat; '
+        'keep that turn active, poll every five minutes, address findings, and finish every scheduled document review before implementation.\n'
         'Copilot quota exhaustion, unavailability and review execution status never block work, completion or merge. '
         'Every actual Copilot review comment or change request requires the same evidenced disposition and public reply as other feedback.\n\n'
         + texts['pr_checklist'].replace('${pr_urls}', 'owned PRs in this chat') + '\n'
@@ -101,6 +104,11 @@ def handle(event, store=None):
             turns.note_mutation(store, event, sid)
         if sid != root:
             return None
+        notices = store.consume_prd_notices(sid, hook._client())
+        if notices:
+            text = '\n\n'.join(render_prompt('prd_review_checklist', prd_url=
+                f"https://github.com/{r['repository']}/{'issues' if r['issue_number'] else 'pull'}/{r['number']}") for r in notices)
+            return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}
         text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._candidate_dirs(event))
         if text:
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}

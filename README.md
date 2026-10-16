@@ -1,6 +1,6 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.10 installs runtime 1.7.10. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.14 installs runtime 1.7.14. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
 ```sh
 git pull --ff-only
@@ -9,7 +9,9 @@ make install
 
 Installation verifies the committed candidate offline and activates it transactionally. Updating Git alone never changes live hooks. `make verify`, `make build`, `make status` and `make rollback` are also available. Rollback keeps current PR state.
 
-Native chat delivery uses one **Automated PR hook** checklist from `[prompts.pr_checklist]`. It is bound to the first recorded owner chat and PR checkout; another chat in the same repository cannot steal either. Completion also requires fresh GitHub merge readiness. CI waits stay in-session for up to 20 minutes; reviews are re-read after CI. Approval and stale review decisions remain Poise work, visible as incomplete without waking chats. Stop is silent. Only changed actionable PR evidence can wake that owner; pending checks, outages and unchanged failures cannot. Merged/closed PRs cancel delivery, including queued messages. Automatic issue/document and formatting messages are retired. Local evidence and CLI diagnostics remain available.
+PR monitoring uses one **Automated PR hook** checklist from `[prompts.pr_checklist]`. It is bound to the first recorded owner chat and PR checkout; another chat in the same repository cannot steal either. Completion also requires fresh GitHub merge readiness. CI waits stay in-session for up to 20 minutes; reviews are re-read after CI. Approval and stale review decisions remain Poise work, visible as incomplete without waking chats. Stop is silent. Only changed actionable PR evidence can wake that owner; pending checks, outages and unchanged failures cannot. Merged/closed PRs cancel delivery, including queued messages. Legacy issue/document reminder loops and formatting messages remain retired. Local evidence and CLI diagnostics remain available.
+
+PRD publication adds one separate `[prompts.prd_review_checklist]` instruction. Record agreed scope with `scope --file FILE`, then publish through `github --kind prd -- issue create ...`; slices use `--kind slice --slice-id ID`. A successful creation and GitHub readback record a receipt. The next PostToolUse callback in the exact root chat and client consumes it once. Reads, edits, linked slices and old records cannot trigger it. The agent keeps the turn active, polls every five minutes, handles findings and waits for every scheduled review before implementation. This adds no background document scheduler or polling API calls. Review completion must be evidenced; elapsed time or the first review is insufficient.
 
 The checker retains separate CI, review, conflict, current target ancestry and linked-issue gates. It publishes before local validation, tracks exact owner chats and polls one open PR every five minutes or several every ten minutes. Unchanged errors never restart chats.
 

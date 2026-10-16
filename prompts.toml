@@ -456,7 +456,7 @@ text = '''Dispatch ID: ${dispatch_id}.
 text = '''PR #${number} merged; verify the implemented fix and close its existing issue ${issue_url}'''
 
 
-# ACTIVE NATIVE PROMPT: the only chat message; mirrored into both global instruction files.
+# ACTIVE PR PROMPT: mirrored into both global instruction files.
 # Trigger: new actionable evidence on a PR owned by the exact recorded chat.
 # Pending/unchanged/unavailable evidence stays silent; merge/closure cancels delivery.
 # The older sections above are retained for CLI diagnostics and compatibility, not native delivery.
@@ -479,3 +479,27 @@ Before claiming completion, inspect fresh MERGE_READY evidence (mergeStateStatus
 
 Before asking for human action, check whether you can do it yourself. If a credential or decision truly requires the human, provide a clickable link, exact steps and what you will do after their answer.
 """
+
+# ACTIVE PRD PROMPT: once after successful gateway creation and GitHub readback.
+# Ownership: exact root chat and client; delivered as PostToolUse additional context.
+# Linked slice creation, reads, edits, references and retained legacy records stay silent.
+# The agent polls in-session every five minutes; no document background job is started.
+# Completion requires all scheduled reviews, not silence, elapsed time or the first review.
+# Placeholders: ${prd_url}. Keep the minimal-intervention paragraph together and verbatim.
+[prompts.prd_review_checklist]
+text = '''Automated PRD review hook — ${prd_url}. Owned by this chat.
+
+Can you verify yes to every question?
+
+1. Are the PRD and every agreed slice published and linked?
+2. Have all scheduled reviews finished for the PRD and every linked slice?
+3. Has every review finding received a fix or justified nonfix and a public reply?
+4. Are the revised documents consistent with one another and the agreed scope?
+5. Have you re-read the comments after the final review finished and verified that nothing remains unhandled?
+
+Keep this turn active and poll every five minutes until all five are verified. Reviewers start approximately ten minutes after publication and may finish at different times. Address findings as they arrive. Silence or the first completed review does not establish completion.
+
+Minimal, clinical interventions all the way. Get in, get out, do the thing that actually has to be done, never expand it beyond that. Keep asking "is this truly the cleanest and simplest and least intrusive way to get this done" and do it that way and only that way. Don't let others come expand it, let them come make it cleaner.
+
+Once all five are verified, end document-review polling and proceed with the agreed implementation and existing PR workflow.
+'''

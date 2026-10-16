@@ -116,7 +116,7 @@ def catalogue_texts(data, defaults):
         if set(row) != {'text'} or not isinstance(text,str) or not text.strip(): raise RuntimeError('Invalid prompt text: ' + key)
         if set(re.findall(r'\$\{([a-zA-Z_][a-zA-Z_0-9]*)\}', text)) != set(spec['parameters']): raise RuntimeError('Invalid placeholders: ' + key)
         if spec['protected_prefix'] and not text.startswith(spec['protected_prefix']): raise RuntimeError('Invalid routing prefix: ' + key)
-        if (key.startswith('global_') or key in {'communication','pr_checklist'}) and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
+        if (key.startswith('global_') or key in {'communication','pr_checklist','prd_review_checklist'}) and re.search(r'<!-- (?:caller-pr-gates|troubleshooting-report|pr-progress):(?:begin|end) -->',text):
             raise RuntimeError('Invalid managed instruction marker: ' + key)
         result[key] = text
     return result
@@ -294,15 +294,17 @@ def desired_assets(home, current):
     repository_changed=sha(incoming)!=prior
     defaults=json.loads((ROOT/'caller_pr_gates/prompt-defaults.json').read_text())
     migrated=False
-    if existing is not None and 'pr_checklist' not in tomllib.loads(existing.decode()).get('prompts', {}):
+    sections=tomllib.loads(existing.decode()).get('prompts', {}) if existing is not None else {}
+    missing=set(defaults['prompts'])-set(sections)
+    if existing is not None and missing and missing <= {'pr_checklist','prd_review_checklist'}:
         # Only add the new active section. Preserve every existing human edit
         # and retain the complete previous catalogue in the deployment journal.
-        legacy={'prompts':{k:v for k,v in defaults['prompts'].items() if k!='pr_checklist'}}
+        legacy={'prompts':{k:v for k,v in defaults['prompts'].items() if k not in missing}}
         catalogue_texts(existing,legacy)
-        section=incoming[incoming.index(b'[prompts.pr_checklist]'):]
-        existing=(b'# v0.1.8: Only [prompts.pr_checklist] below drives native chat messages.\n'
-                  b'# One global PR block is mirrored. Older sections/comments describe retained CLI compatibility.\n'
-                  +existing+b'\n\n# Active native PR-only checklist. Older sections are retained CLI diagnostics.\n'+section)
+        for key in defaults['prompts']:
+            if key in missing:
+                section=incoming.split(('[prompts.'+key+']').encode(),1)[1].split(b'\n[prompts.',1)[0]
+                existing+=b'\n\n# Added native prompt; earlier text and human edits are preserved.\n'+('[prompts.'+key+']').encode()+section
         migrated=True
     if not migrated and local_changed and repository_changed and existing != incoming:
         raise RuntimeError('Local prompts and repository prompts both changed. Reconcile them before installation; live text was preserved.')

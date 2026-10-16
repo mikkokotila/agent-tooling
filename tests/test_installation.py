@@ -187,6 +187,20 @@ def test_old_catalogue_upgrade_keeps_human_edits_and_removes_legacy_callbacks(in
     assert not manage.rollback(home,service)['state_restored']
     assert prompt.read_text()==text
 
+
+def test_prd_prompt_addition_preserves_human_pr_checklist(installed):
+    home,service=installed
+    prompt=home/'.local/share/caller-pr-gates/prompts.toml'
+    old=(ROOT/'prompts.toml').read_bytes().split(b'[prompts.prd_review_checklist]')[0]
+    edited=old.replace(b'Can you verify yes to every question?', b'Can you verify yes to every question? Human PR edit.')
+    prompt.write_bytes(edited)
+    assets=manage.desired_assets(home,{'source_prompt_hash':manage.sha(old)})
+    value=assets[str(prompt)]
+    assert value.startswith(edited)
+    assert b'[prompts.prd_review_checklist]' in value
+    assert 'Human PR edit.' in assets[str(home/'.codex/AGENTS.md')].decode()
+    assert 'Human PR edit.' in assets[str(home/'.claude/CLAUDE.md')].decode()
+
 def test_local_code_drift_refuses_deployment(installed):
     home,service=installed;path=home/'.local/share/caller-pr-gates/caller_pr_gates/hook.py';path.write_text('Local human edit')
     before=original_bytes(home)
