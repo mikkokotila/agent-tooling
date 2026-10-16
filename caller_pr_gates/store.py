@@ -828,12 +828,12 @@ class Store:
             result[name] = json.loads(result[name])
         return result
 
-    def register_followup(self, session_id, repository, number, posted_at, scope, kind="prd", issue_number=None, publication_client=None):
+    def register_followup(self, session_id, repository, number, posted_at, scope, kind="prd", issue_number=None, publication_notice=False):
         posted_at = _epoch(posted_at, "posted_at")
         if kind not in {"prd", "slice"}:
             raise ValueError("followup kind must be prd or slice")
-        if publication_client is not None and (kind != 'prd' or publication_client not in {'codex', 'claude'}):
-            raise ValueError('publication notice requires a PRD and a supported client')
+        if publication_notice and kind != 'prd':
+            raise ValueError('publication notice requires a PRD')
         if not repository or isinstance(number, bool) or not isinstance(number, int) or number < 1:
             raise ValueError("repository and a positive artifact number are required")
         if issue_number is not None and (isinstance(issue_number, bool) or not isinstance(issue_number, int) or issue_number < 1):
@@ -852,7 +852,12 @@ class Store:
                 raise ValueError("followup scope must match the immutable task baseline")
             now = time.time()
             identifier = str(uuid.uuid4())
-            fields = {'prd_review_notice': {'client': publication_client, 'state': 'pending'}} if publication_client else {}
+            fields = {}
+            if publication_notice:
+                owner = db.execute('SELECT client FROM sessions WHERE session_id=?', (root,)).fetchone()
+                if not owner or owner['client'] not in {'codex', 'claude'}:
+                    raise ValueError('PRD review notice requires a recorded root-chat client')
+                fields = {'prd_review_notice': {'client': owner['client'], 'state': 'pending'}}
             db.execute("""INSERT OR IGNORE INTO followups
                 (id, session_id, repository, number, issue_number, kind, posted_at, due_at, scope, status, fields, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
@@ -871,15 +876,18 @@ class Store:
         """
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            if self._root(session_id, self._parents(db)) != session_id:
+            owner = db.execute('SELECT client FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            if not owner or owner['client'] != client or self._root(session_id, self._parents(db)) != session_id:
                 return []
             result = []
             for row in db.execute("SELECT * FROM followups WHERE session_id=? AND kind='prd' ORDER BY created_at,id", (session_id,)).fetchall():
                 fields = json.loads(row['fields'])
                 notice = fields.get('prd_review_notice') or {}
-                if notice.get('client') != client or notice.get('state') != 'pending':
+                if notice.get('state') != 'pending':
                     continue
-                notice.update(state='emitted', emitted_at=time.time())
+                # The recorded owner also repairs pending receipts created by
+                # the older gateway's default --client flag, without replay.
+                notice.update(client=client, state='emitted', emitted_at=time.time())
                 db.execute('UPDATE followups SET fields=?,updated_at=? WHERE id=?', (_json(fields), time.time(), row['id']))
                 self._audit(db, 'prd_review_notice_emitted', {'id': row['id'], 'session_id': session_id, 'client': client})
                 result.append(self._followup(row))

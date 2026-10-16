@@ -23,14 +23,18 @@ MINIMAL = ('Minimal, clinical interventions all the way. Get in, get out, do the
     'to get this done" and do it that way and only that way. Don\'t let others come expand it, let them come make it cleaner.')
 
 
-@pytest.fixture
-def published(tmp_path):
+def setup_store(tmp_path, client='codex'):
     store = Store(tmp_path / 'state')
-    store.record_session(SID, 'codex', str(tmp_path))
+    store.record_session(SID, client, str(tmp_path))
     scope = dict(agreed_scope='Agreed work', acceptance_criteria=['Requested outcome'],
         slice_count=1, slice_ids=['S1'], approved_at=1)
     store.record_scope(SID, scope)
     return store, scope
+
+
+@pytest.fixture
+def published(tmp_path):
+    return setup_store(tmp_path)
 
 
 def publish(store, *, client='codex', kind='prd', number=42, failure=None, readback_failure=False):
@@ -51,11 +55,12 @@ def callback(store, tmp_path, client='codex', sid=SID):
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude'])
-def test_confirmed_creation_emits_editable_prompt_once_in_owner_chat(published, tmp_path, catalogue, client):
-    store, _ = published
+def test_confirmed_creation_emits_editable_prompt_once_in_owner_chat(tmp_path, catalogue, client):
+    store, _ = setup_store(tmp_path, client)
     text = prompts.baseline_text('prd_review_checklist') + ' Human wording.'
     edit(catalogue, 'prd_review_checklist', text)
-    publish(store, client=client)
+    publish(store)  # Omitted --client defaults to codex even in a Claude chat.
+    assert store.followups(SID)[0]['fields']['prd_review_notice']['client'] == client
     assert callback(store, tmp_path, client, 'other-chat') is None
     assert callback(store, tmp_path, 'claude' if client == 'codex' else 'codex') is None
     store.record_session('child', client, str(tmp_path), SID)
@@ -119,9 +124,9 @@ def test_concurrent_callbacks_and_legacy_retry_cannot_repeat_notice(published):
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude'])
-def test_actual_native_posttool_command_delivers_once(published, tmp_path, catalogue, client):
-    store, _ = published
-    publish(store, client=client)
+def test_actual_native_posttool_command_delivers_once(tmp_path, catalogue, client):
+    store, _ = setup_store(tmp_path, client)
+    publish(store)
     data = json.loads((ROOT / 'config' / (client+'-hooks.json')).read_text().replace('${HOME}', str(Path.home())))
     command = data['hooks']['PostToolUse'][0]['hooks'][0]['command']
     argv = []
@@ -137,3 +142,16 @@ def test_actual_native_posttool_command_delivers_once(published, tmp_path, catal
     text = json.loads(outputs[0].stdout)['hookSpecificOutput']['additionalContext']
     assert text.startswith('Automated PRD review hook — https://github.com/owner/repo/issues/42.')
     assert MINIMAL in text and not outputs[1].stdout.strip()
+
+
+def test_root_client_repairs_only_pending_old_flag_receipts(tmp_path):
+    store, scope = setup_store(tmp_path, 'claude')
+    store.record_session('child', 'codex', str(tmp_path), SID)
+    job = store.register_followup('child', 'owner/repo', 42, 100, scope, issue_number=42, publication_notice=True)
+    assert job['fields']['prd_review_notice']['client'] == 'claude'
+    # Reproduce an older pending receipt; the immutable recorded owner wins.
+    store.update_followup(job['id'], job['status'], {'prd_review_notice':{'client':'codex','state':'pending'}})
+    assert store.consume_prd_notices('child', 'codex') == []
+    assert store.consume_prd_notices(SID, 'codex') == []
+    assert len(store.consume_prd_notices(SID, 'claude')) == 1
+    assert store.consume_prd_notices(SID, 'claude') == []
