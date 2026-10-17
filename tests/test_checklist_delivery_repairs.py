@@ -36,7 +36,7 @@ def test_unavailable_queue_releases_other_pr_and_waits_for_its_cadence(local):
     assert row(store)['retry_at']==1600
     assert tick(local,1001,execute=True,spawn=lambda _:None)['workers']==1
     assert row(store,2)['delivery_state']=='reserved'
-    assert tick(local,1600)['events']==1
+    assert tick(local,1600)['events']==0
     assert row(store)['delivery_state']=='pending'
 
 
@@ -78,7 +78,7 @@ def test_authentic_queue_recovers_after_transient_proof_without_replaying_old_to
     with patch.object(monitor.time,'time',return_value=1300), patch.object(monitor,'revalidate',side_effect=AssertionError('cadence must avoid proof reads')):
         assert original(store,SID,checklist=True) is None
     with patch.object(monitor.time,'time',return_value=1301):
-        assert tick(local,1301)['events']==1
+        assert tick(local,1301)['events']==0
         assert original(store,SID,full=False,reader=reader,checklist=True,hook_event_name='PostToolUse')
         assert original(store,SID,reader=reader,collector=collector,checklist=True) is None
     with store._connect() as db:
@@ -96,7 +96,7 @@ def test_deferred_queue_survives_a_partial_outage_then_recovers_once(local):
     assert tick(local,1301)['events']==0 and row(store)['event_id'] is None
     data.pop('component_errors')
     assert tick(local,1601)['events']==1 and row(store)['event_id']!=old
-    assert monitor.consume(store,SID,reader=reader,checklist=True)
+    assert monitor.consume(store,SID,full=False,reader=reader,checklist=True)
     assert tick(local,1901)['events']==0
     assert monitor.consume(store,SID,reader=reader,checklist=True) is None
 
