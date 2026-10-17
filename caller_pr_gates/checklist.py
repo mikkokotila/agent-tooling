@@ -74,9 +74,10 @@ def handle(event, store=None):
         if root != sid or not rows or not authentic:
             monitor.reject_queued(store, sid, token, 'Queued checklist body, owner or checkout is unverified; explicit retry required')
             return {'continue': False, 'stopReason': ''}
-        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True)
+        text = monitor.consume(store, sid, event_id=token, full=False, checklist=True, hook_event_name=name)
         if not text:
-            monitor.reject_queued(store, sid, token, 'Queued checklist evidence is stale or unavailable; explicit retry required')
+            if not monitor.defer_queued(store, sid, token):
+                monitor.reject_queued(store, sid, token, 'Queued checklist evidence is stale or unavailable; explicit retry required')
             return {'continue': False, 'stopReason': ''}
         # The queue already contains the one checklist. Do not inject it twice.
         with store._connect() as db:
@@ -118,7 +119,7 @@ def handle(event, store=None):
             text = '\n\n'.join(render_prompt('prd_review_checklist', prd_url=
                 f"https://github.com/{r['repository']}/{'issues' if r['issue_number'] else 'pull'}/{r['number']}") for r in notices)
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}
-        text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._candidate_dirs(event))
+        text = monitor.consume(store, sid, full=False, checklist=True, cwd=hook._candidate_dirs(event), hook_event_name=name)
         if text:
             return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': text}}
     # Stop is not a second poller and cannot initiate recursive continuations.

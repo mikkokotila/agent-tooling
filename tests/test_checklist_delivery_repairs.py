@@ -19,24 +19,104 @@ def queued(local):
     store, _, _, reader, collector = local
     messages=[]
     def runner(argv, **kwargs):
-        messages.append(argv[argv.index('--message')+1])
+        messages.append(argv[argv.index('--message')+1] if '--message' in argv else kwargs['input_text'])
         return {'returncode':0}
-    assert asyncio.run(monitor.deliver(store,SID,reader=reader,collector=collector,runner=runner,checklist=True))
+    assert asyncio.run(monitor.deliver(store,SID,reader=reader,collector=collector,runner=runner,availability=lambda *a:'idle',checklist=True))
     return messages[0]
 
 
-def test_rejected_queue_releases_other_pr_without_replaying_failure(local):
+def test_unavailable_queue_releases_other_pr_and_waits_for_its_cadence(local):
     store=local[0]
     store.register(SID,'codex','owner/repo',2,row(store)['cwd'])
     prompt=queued(local)
-    with patch.object(monitor,'consume',return_value=None):
+    with patch.object(monitor,'consume',return_value=None), patch.object(monitor.time,'time',return_value=1001):
         result=checklist.handle(dict(hook_event_name='UserPromptSubmit',session_id=SID,cwd=row(store)['cwd'],prompt=prompt),store)
     assert result=={'continue':False,'stopReason':''}
-    assert row(store)['delivery_state']=='failed' and row(store)['lease_until']==0
+    assert row(store)['delivery_state']=='pending' and row(store)['lease_until']==0
+    assert row(store)['retry_at']==1600
     assert tick(local,1001,execute=True,spawn=lambda _:None)['workers']==1
     assert row(store,2)['delivery_state']=='reserved'
     assert tick(local,1600)['events']==0
-    assert row(store)['delivery_state']=='failed'
+    assert row(store)['delivery_state']=='pending'
+
+
+@pytest.mark.parametrize('client', ['codex','claude'])
+def test_authentic_queue_recovers_after_transient_proof_without_replaying_old_token(local,client):
+    store,data,calls,reader,collector=local
+    data['collected_at']=1000
+    with store._connect() as db:
+        db.execute('UPDATE sessions SET client=? WHERE session_id=?',(client,SID))
+        db.execute('UPDATE pr_watch SET client=?',(client,))
+    tick(local,execute=True,spawn=lambda _:None)
+    old=row(store)['event_id'];original=monitor.consume;prompts=[]
+    async def unavailable(*args):raise TimeoutError('temporary GitHub failure')
+    def runner(argv,**kwargs):
+        if client=='claude':
+            assert '--print' in argv and '--resume' in argv and '--message' not in argv
+            prompt=kwargs['input_text']
+        else:
+            assert 'queue' in argv and '--thread' in argv
+            prompt=argv[argv.index('--message')+1]
+        prompts.append(prompt)
+        assert row(store)['lease_until']>1001 and row(store)['worker_pid']==os.getpid()
+        event=dict(hook_event_name='UserPromptSubmit',session_id=SID,cwd=row(store)['cwd'],prompt=prompt)
+        assert checklist.handle(event,store)=={'continue':False,'stopReason':''}
+        return {'returncode':0}
+    with patch.dict(os.environ,CALLER_HOOK_CLIENT=client), patch.object(monitor.time,'time',return_value=1001), patch.object(monitor,'consume',side_effect=lambda *a,**k:original(*a,**dict(k,reader=unavailable))):
+        assert asyncio.run(monitor.deliver(store,SID,reader=reader,collector=collector,runner=runner,availability=lambda *a:'idle',checklist=True))
+    assert len(prompts)==1
+    event=dict(hook_event_name='UserPromptSubmit',session_id=SID,cwd=row(store)['cwd'],prompt=prompts[0])
+    deferred=row(store)
+    assert deferred['delivery_state']=='pending' and deferred['event_id']!=old
+    assert deferred['retry_at']==1301 and deferred['lease_until']==0 and deferred['worker_pid'] is None
+    assert deferred['delivered_fingerprint'] is None
+    with store._connect() as db:
+        db.execute('INSERT INTO watch_sessions VALUES(?,1,1002) ON CONFLICT(session_id) DO UPDATE SET busy=1', (SID,))
+    # A delayed canceled callback cannot reject the replacement or mark a new turn idle.
+    with patch.dict(os.environ,CALLER_HOOK_CLIENT=client):assert checklist.handle(event,store)['continue'] is False
+    with store._connect() as db:assert db.execute('SELECT busy FROM watch_sessions WHERE session_id=?',(SID,)).fetchone()[0]==1
+    with patch.object(monitor.time,'time',return_value=1300), patch.object(monitor,'revalidate',side_effect=AssertionError('cadence must avoid proof reads')):
+        assert original(store,SID,checklist=True) is None
+    with patch.object(monitor.time,'time',return_value=1301):
+        assert tick(local,1301)['events']==0
+        assert original(store,SID,full=False,reader=reader,checklist=True,hook_event_name='PostToolUse')
+        assert original(store,SID,reader=reader,collector=collector,checklist=True) is None
+    with store._connect() as db:
+        receipts=db.execute("SELECT fields FROM audit WHERE event='pr_monitor_consumed'").fetchall()
+    assert len(receipts)==1 and json.loads(receipts[0][0])['client']==client
+    assert json.loads(receipts[0][0])['hook_event_name']=='PostToolUse'
+
+
+def test_deferred_queue_survives_a_partial_outage_then_recovers_once(local):
+    store,data,_,reader,_=local
+    prompt=queued(local);old=row(store)['event_id']
+    with patch.object(monitor,'consume',return_value=None), patch.object(monitor.time,'time',return_value=1001):
+        assert checklist.handle(dict(hook_event_name='UserPromptSubmit',session_id=SID,prompt=prompt),store)['continue'] is False
+    data['component_errors']={'reviews':{'kind':'transient','message':'temporary outage'}}
+    assert tick(local,1301)['events']==0 and row(store)['event_id'] is None
+    data.pop('component_errors')
+    assert tick(local,1601)['events']==1 and row(store)['event_id']!=old
+    assert monitor.consume(store,SID,full=False,reader=reader,checklist=True)
+    assert tick(local,1901)['events']==0
+    assert monitor.consume(store,SID,reader=reader,checklist=True) is None
+
+
+def test_unavailable_native_proof_backs_off_without_starving_another_pr(local):
+    store,data,calls,reader,collector=local
+    data['collected_at']=1000
+    store.register(SID,'codex','owner/repo',2,row(store)['cwd']);tick(local)
+    attempted=[]
+    async def proof(repo,number):
+        attempted.append(number)
+        if number==1:raise TimeoutError('temporary proof failure')
+        return await reader(repo,number)
+    with patch.object(monitor.time,'time',return_value=1001):
+        assert monitor.consume(store,SID,full=False,reader=proof,checklist=True) is None
+        assert monitor.consume(store,SID,full=False,reader=proof,checklist=True)
+        assert monitor.consume(store,SID,full=False,reader=proof,checklist=True) is None
+    assert attempted==[1,2]
+    assert row(store)['delivery_state']=='pending' and row(store)['retry_at']==1600
+    assert row(store,2)['delivery_state']=='consumed'
 
 
 def test_live_wording_edit_accepts_authentic_already_queued_body(local,catalogue,tmp_path):
