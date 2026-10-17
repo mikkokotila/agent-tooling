@@ -1,6 +1,5 @@
 """Scratch writes and historical receipts cannot adopt a different chat's PR."""
 import asyncio
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -11,21 +10,21 @@ from test_quiet_monitor import local, row, SID, OTHER
 
 @pytest.mark.parametrize('command,expected', [
     ("mkdir -p /private/tmp/scratch/mk && cd /private/tmp/scratch/mk && cat > render-sampler.mjs <<'EOF'\nconst text = 'image';\nEOF\nnode render-sampler.mjs", None),
-    ('cd /private/tmp && cd scratch && cat > output.txt', '/private/tmp/scratch'),
-    ('cd -- "/private/tmp/scratch space" && cat > output.txt', '/private/tmp/scratch space'),
-    ('cd -P /other-checkout && cat > output.txt', '/other-checkout'),
-    ('cd -L /other-checkout && cat > output.txt', '/other-checkout'),
-    ('cd -L -P -- /other-checkout && cat > output.txt', '/other-checkout'),
-    ('cd -- -P && cat > output.txt', '/repo/-P'),
+    ('cd /private/tmp && cd scratch && cat > output.txt', None),
+    ('cd -- "/private/tmp/scratch space" && cat > output.txt', None),
+    ('cd -P /other-checkout && cat > output.txt', None),
+    ('cd -L /other-checkout && cat > output.txt', None),
+    ('cd -L -P -- /other-checkout && cat > output.txt', None),
+    ('cd -- -P && cat > output.txt', None),
     ('cd -s /other-checkout && cat > output.txt', None),
     ('cd -P && cat > output.txt', None),
     ('cd&&cat > output.txt', None),
     ('cd && cat > output.txt', None),
-    ("cd '~' && cat > output.txt", '/repo/~'),
-    ('cd "~" && cat > output.txt', '/repo/~'),
-    (r'cd \~ && cat > output.txt', '/repo/~'),
-    ("cd -P -- '~' && cat > output.txt", '/repo/~'),
-    ('cd ~/scratch && cat > output.txt', str(Path.home() / 'scratch')),
+    ("cd '~' && cat > output.txt", None),
+    ('cd "~" && cat > output.txt', None),
+    (r'cd \~ && cat > output.txt', None),
+    ("cd -P -- '~' && cat > output.txt", None),
+    ('cd ~/scratch && cat > output.txt', None),
     ('cd ~"user"/scratch && cat > output.txt', None),
     ('command cd /tmp/scratch && cat > output.txt', None),
     ('command -p cd /tmp/scratch && cat > output.txt', None),
@@ -34,15 +33,24 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('cd ~- && cat > relative.txt && cat > /repo/output.txt', '/repo'),
     ('cd ~+ && cat > relative.txt', None),
     ('cd /other-checkout > output.txt', '/repo'),
-    ('cd /first && cd /second > output.txt', '/first'),
+    ('cd /first && cd /second > output.txt', None),
     ('command cd /other-checkout > output.txt', '/repo'),
-    (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
-    (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
-    (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
-    ('cd /private/tmp/scratch" space" && cat > output.txt', '/private/tmp/scratch space'),
-    ("printf 'x; cd /tmp/scratch ;' && cat > output.txt", '/repo'),
-    ('printf "x; cd /tmp/scratch ;" && cat > output.txt', '/repo'),
-    (r'printf x\; cd /tmp/scratch && cat > output.txt', '/repo'),
+    ("'cd' /tmp/scratch && cat > output.txt", None),
+    (r'printf x\;; cd /tmp/scratch && cat > output.txt', None),
+    ('cd /tmp/scratch-* && cat > output.txt', None),
+    ('CDPATH=/tmp && cd scratch && cat > output.txt', None),
+    ('cd /other-checkout && touch output.txt', None),
+    ('cd /other-checkout && touch /repo/output.txt', '/repo'),
+    ('cd /other-checkout && git commit -m fix', None),
+    ('git -C /repo commit -m fix', '/repo'),
+    ('cat > output.txt', '/repo'),
+    (r'cd /private/tmp/scratch\ space && cat > output.txt', None),
+    (r'cd /private/tmp/scratch\ space&&cat > output.txt', None),
+    (r'cd /private/tmp/scratch\;name && cat > output.txt', None),
+    ('cd /private/tmp/scratch" space" && cat > output.txt', None),
+    ("printf 'x; cd /tmp/scratch ;' && cat > output.txt", None),
+    ('printf "x; cd /tmp/scratch ;" && cat > output.txt', None),
+    (r'printf x\; cd /tmp/scratch && cat > output.txt', None),
     ('cd "$SCRATCH" && cat > /repo/output.txt', '/repo'),
     (r'cd "$SCRATCH" && cat > /repo/dir\ name/output.txt', '/repo/dir name'),
     ('cd "$SCRATCH" && cat > /repo/output.txt && cat > relative.txt', '/repo'),
@@ -54,7 +62,7 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('false && cd /tmp/scratch; cat > /repo/output.txt', '/repo'),
     ('cat > output.txt && cd /private/tmp', '/repo'),
 ])
-def test_redirect_uses_directory_when_write_occurs(command, expected):
+def test_shell_write_destination_is_exact_or_unknown(command, expected):
     event = dict(hook_event_name='PostToolUse', session_id=OTHER, cwd='/repo', tool_name='Bash',
                  tool_input={'command': command}, tool_response={'exit_code': 0})
     expected = [expected] if expected is not None else []
@@ -81,15 +89,15 @@ def test_unknown_tilde_user_preserves_later_absolute_write():
 
 
 @pytest.mark.parametrize('option', ['-L', '-P'])
-def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
+def test_symlink_directory_changes_require_explicit_registration(tmp_path, option):
     logical = tmp_path / 'logical'
     physical = tmp_path / 'physical'
     logical.mkdir(); (physical / 'child').mkdir(parents=True)
     (logical / 'link').symlink_to(physical / 'child', target_is_directory=True)
     command = f'cd {option} {logical}/link/.. && cat > output.txt'
-    event = dict(cwd='/repo', tool_name='Bash', tool_input={'command': command})
-    expected = physical.resolve() if option == '-P' else logical
-    assert hook._mutation_dirs(event) == [str(expected)]
+    event = dict(hook_event_name='PostToolUse', cwd='/repo', tool_name='Bash',
+                 tool_input={'command': command}, tool_response={'exit_code': 0})
+    assert hook._mutation_dirs(event) == []
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude'])
@@ -105,6 +113,10 @@ def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
     'command cd /tmp/scratch && cat > output.txt',
     'cd ~- && cat > relative.txt && cat > /repo/output.txt',
     'cd /other-checkout > output.txt',
+    "'cd' /tmp/scratch && cat > output.txt",
+    r'printf x\;; cd /tmp/scratch && cat > output.txt',
+    'cd /tmp/scratch-* && cat > output.txt',
+    'CDPATH=/tmp && cd scratch && cat > output.txt',
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]

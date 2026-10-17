@@ -252,53 +252,16 @@ def _mutation_dirs(event):
     if paths: return list(dict.fromkeys(paths))
     # Shell file writes own their actual destinations, rather than whatever
     # repository happened to be the caller's cwd (for example > /tmp/log).
-    def directory(raw, prefix=''):
-        if not raw or '$' in raw: return None
-        try: path = Path(raw).expanduser()
-        except (OSError, RuntimeError): return None
+    def directory(raw, prefix=None):
+        # Decoded shell words lose expansion/quoting context. Do not interpret
+        # them, or reconstruct cwd after a compound command; register explicitly.
+        if not raw or any(c in raw for c in '$`~*?[]{}'): return None
+        path = Path(raw)
         if path.is_absolute():
             return str(path if path.is_dir() else path.parent)
-        base = Path(cwd)
-        # Redirections run before their command. Only completed commands can
-        # have changed its directory; wrappers are outside this literal subset.
-        changes = [m for m in re.finditer(r'(?:^|[;&|()\n]+)\s*cd(?=\s|[;&|()\n]|$)\s*', prefix)
-                   if m.start() in unquoted]
-        wrappers = [m for m in re.finditer(r'(?:^|[;&|()\n]+)\s*(?:command|builtin|eval|source|\.)\s', prefix)
-                    if m.start() in unquoted]
-        if ambiguous_directory and (changes or wrappers): return None
-        end = max((i + 2 for i in range(len(prefix) - 1)
-                   if prefix[i:i + 2] == '&&' and i in unquoted and i + 1 in unquoted), default=0)
-        if any(m.end() <= end for m in wrappers): return None
-        prefix = prefix[:end]
-        # A relative redirect belongs to the shell directory at that point,
-        # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in changes:
-            if match.end() > end: continue  # This command's cd has not run yet.
-            lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
-            lexer.whitespace_split = True
-            def word():
-                raw = prefix[match.end() + lexer.instream.tell():].lstrip()
-                return next(lexer), raw
-            physical = False
-            try:
-                target, raw = word()
-                while target in {'-L', '-P'}:
-                    physical = target == '-P'
-                    target, raw = word()
-                if target == '--': target, raw = word()
-                elif target.startswith('-'): return None  # Unsupported cd syntax is not a path.
-            except (ValueError, StopIteration): return None
-            if '$' in target or '`' in target or target == '-' or all(c in ';&|()\n' for c in target): return None
-            target = Path(target)
-            if raw.startswith('~'):
-                if not re.match(r'~[A-Za-z0-9_.-]*(?:/|(?=\s|[;&|()\n]|$))', raw): return None
-                if target.parts[0] in {'~-', '~+'}: return None  # Shell environment, not a username.
-                try: target = target.expanduser()
-                except (OSError, RuntimeError): return None
-            target = target if target.is_absolute() else base / target
-            try: base = target.resolve() if physical else Path(os.path.normpath(target))
-            except (OSError, RuntimeError): return None
-        path = base / path
+        prefix = source if prefix is None else prefix
+        if any(prefix[i] in ';&|()\n' for i in unquoted if i < len(prefix)): return None
+        path = Path(cwd) / path
         return str(path if path.is_dir() else path.parent)
     write_paths = []
     source = _operation_command(command)
@@ -314,12 +277,6 @@ def _mutation_dirs(event):
         if character in {'"', "'", '`'}: quote = character; continue
         unquoted.add(index)
         if character == '>': redirects.append(index)
-    # Infer relative destinations only along a straight && chain. An independent
-    # command, alternative, pipeline or subshell can hide a skipped/failed cd.
-    ambiguous_directory = any(source[i] in ';\n|()' or
-        (source[i] == '&' and not ((i - 1 in unquoted and source[i - 1] == '&') or
-                                  (i + 1 in unquoted and source[i + 1] == '&')))
-        for i in unquoted)
     for index in redirects:
         suffix = source[index + 1:].lstrip('> \t')
         if suffix.startswith('&'): continue
@@ -352,13 +309,14 @@ def _mutation_dirs(event):
             if target: write_paths.append(target)
     if write_paths: return list(dict.fromkeys(write_paths))
     if _local_mutation(event) in {'filesystem_write', 'inplace_edit'}: return []
-    # An explicit shell working-directory target supersedes the caller cwd.
+    # Git writes may name an exact directory; compound shell cwd is unknown.
+    if any(source[i] in ';&|()\n' for i in unquoted): return []
     targeted = []
-    for match in re.finditer(r'(?:\bcd\s+|\bgit\s+-C\s+)("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
+    for match in re.finditer(r'\bgit\s+-C\s+("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
         try: raw = shlex.split(match.group(1))[0]
         except ValueError: continue
-        try: path = Path(raw).expanduser()
-        except (OSError, RuntimeError): continue
+        if any(c in raw for c in '$`~*?[]{}'): return []
+        path = Path(raw)
         if not path.is_absolute(): path = Path(cwd) / path
         targeted.append(str(path))
     return list(dict.fromkeys(targeted or [cwd]))
