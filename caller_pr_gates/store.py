@@ -52,6 +52,12 @@ class Store:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.state_dir / "registry.sqlite3"
         with self._connect() as db:
+            # Reopening the registry is a read, not another global migration.
+            # Native callbacks otherwise rebind every historical PR under the
+            # writer lock, competing with all other active chats.
+            if db.execute('PRAGMA user_version').fetchone()[0] >= 1:
+                self.path.chmod(0o600)
+                return
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -161,6 +167,7 @@ class Store:
                 if original:
                     db.execute('INSERT OR IGNORE INTO pr_scope_bindings VALUES(?,?,?,?)',
                                (root, pr['repository'], pr['number'], original['scope']))
+            db.execute('PRAGMA user_version=1')
         self.path.chmod(0o600)
 
     @contextmanager
@@ -317,7 +324,19 @@ class Store:
     def preflight(self,repository,number):
         with self._connect() as db:
             row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
-            return json.loads(row[0]) if row else None
+            payload=json.loads(row[0]) if row else None
+            if payload is not None and 'attempted_at' not in payload:
+                # A rolling older process can add an undated receipt after the
+                # one-time migration. Stamp only that row, preserving any newer
+                # concurrent preflight rather than reopening global migration.
+                db.execute('BEGIN IMMEDIATE')
+                row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
+                payload=json.loads(row[0]) if row else None
+                if payload is not None and 'attempted_at' not in payload:
+                    stamp=payload.get('collected_at')
+                    payload['attempted_at']=stamp if isinstance(stamp,(int,float)) and not isinstance(stamp,bool) else time.time()
+                    db.execute('UPDATE validation_preflights SET payload=? WHERE repository=? AND number=?',(_json(payload),repository,number))
+            return payload
 
     def snapshot(self, repository, number):
         with self._connect() as db:
@@ -875,6 +894,8 @@ class Store:
         one. This is native additional context, never a background delivery job.
         """
         with self._connect() as db:
+            if not db.execute("SELECT 1 FROM followups WHERE session_id=? AND kind='prd' AND json_extract(fields,'$.prd_review_notice.state')='pending' LIMIT 1", (session_id,)).fetchone():
+                return []
             db.execute('BEGIN IMMEDIATE')
             owner = db.execute('SELECT client FROM sessions WHERE session_id=?', (session_id,)).fetchone()
             if not owner or owner['client'] != client or self._root(session_id, self._parents(db)) != session_id:

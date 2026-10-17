@@ -51,6 +51,9 @@ class Coordinator:
         self.wall=wall or time.time;self.mono=monotonic or time.monotonic
         self.boot=boot or boot_identity();self.lease_seconds=lease_seconds
         with self.db() as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] >= 1:
+                self.path.chmod(0o600)
+                return
             db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''CREATE TABLE IF NOT EXISTS cooldowns (
               account TEXT,resource TEXT,epoch INTEGER NOT NULL DEFAULT 0,
@@ -63,6 +66,7 @@ class Coordinator:
               CREATE TABLE IF NOT EXISTS representations (
               account TEXT,key TEXT,etag TEXT,payload TEXT,observed REAL,
               PRIMARY KEY(account,key));''')
+            db.execute('PRAGMA user_version=1')
         self.path.chmod(0o600)
 
     @contextmanager

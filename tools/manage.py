@@ -89,7 +89,9 @@ def verify():
         env = dict(os.environ, PYTHONPATH=str(ROOT), CALLER_PR_GATES_STATE_DIR=state,
                    CALLER_PR_GATES_PROMPTS_STATE_DIR=state, CALLER_PR_GATES_PROMPTS_FILE=str(ROOT / 'prompts.toml'),
                    CODEX_CLI='codex',CLAUDE_CLI='claude')
-        run([python, '-m', 'pytest', '-q', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env)
+        # Concurrent native-process coverage can exceed the generic command
+        # budget on the same busy desktop whose delivery we are verifying.
+        run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=600)
     xml = ET.parse(BUILD / 'verification.xml')
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
     if len(expected) != len(RELEASE['known_defects']): raise RuntimeError('Known defect inventory changed')

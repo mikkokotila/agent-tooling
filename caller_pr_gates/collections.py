@@ -10,6 +10,8 @@ class Collections:
     def __init__(self, coordinator, account):
         self.coordinator=coordinator;self.account=account
         with coordinator.db() as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] >= 2:
+                return
             db.execute('BEGIN IMMEDIATE')
             db.executescript('''CREATE TABLE IF NOT EXISTS collections (
                 account TEXT,key TEXT,token TEXT,phase TEXT,boundary REAL,started REAL,
@@ -19,6 +21,7 @@ class Collections:
             db.execute('BEGIN IMMEDIATE')
             if 'started_mono' not in {r['name'] for r in db.execute('PRAGMA table_info(collections)')}:
                 db.execute('ALTER TABLE collections ADD COLUMN started_mono REAL')
+            db.execute('PRAGMA user_version=2')
 
     async def run(self, profile, target, producer, *, boundary=None, operation=None):
         implicit=boundary is None
@@ -36,6 +39,14 @@ class Collections:
             self.coordinator.audit(**metadata,outcome='cooldown',requests=0,http_requests=0)
             raise
         while True:
+            # Waiting for a running generation must not seize SQLite's sole
+            # writer lock at 100 Hz. Recheck under the lock only when joining
+            # admission or claiming the next strictly fresh generation.
+            with self.coordinator.db() as db:
+                observed=db.execute('SELECT phase,boot,lease FROM collections WHERE account=? AND key=?',(self.account,key)).fetchone()
+            if observed and observed['phase']=='reading' and observed['boot']==self.coordinator.boot and observed['lease']>time.monotonic():
+                await asyncio.sleep(.05)
+                continue
             with self.coordinator.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 row=db.execute('SELECT * FROM collections WHERE account=? AND key=?',(self.account,key)).fetchone()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 import hashlib
 import json
+import subprocess
 
 from .prompts import render_prompt
 from .store import Store
@@ -99,7 +100,15 @@ def handle(event, store=None):
         return None
     if name == 'PostToolUse':
         hook._register_urls(event, store)
-        hook.discover(event, store)
+        try:
+            hook.discover(event, store)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            # Discovery is independent of an already-owned PR's inbox.
+            from .errors import redact
+            try:
+                store.audit('checklist_discovery_error', {'session_id': sid, 'error': redact(str(exc))[:300]})
+            except Exception:
+                pass  # Optional diagnostics cannot discard an owned inbox.
         if hook._local_mutation(event):
             turns.note_mutation(store, event, sid)
         if sid != root:
