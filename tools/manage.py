@@ -242,8 +242,11 @@ class Service:
         return p.returncode == 0 and bool(re.search(r'\bpid = \d+',p.stdout))
     def stop(self): run(['launchctl','bootout',self.target],capture_output=True,timeout=10)
     def start(self):
-        p=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',self.plist],capture_output=True,text=True,timeout=10)
-        if p.returncode and not self.running(): raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
+        for attempt in range(3):
+            p=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',self.plist],capture_output=True,text=True,timeout=10)
+            if not p.returncode or self.running(): break
+            if attempt==2: raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
+            time.sleep(.25*(attempt+1))  # A just-removed launchd job can reject immediate bootstrap.
         run(['launchctl','kickstart','-p',self.target],capture_output=True,timeout=10)
         if not self.running(): raise RuntimeError('Monitor did not start')
 
