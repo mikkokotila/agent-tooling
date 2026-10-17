@@ -44,6 +44,13 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('cd /other-checkout && git commit -m fix', None),
     ('git -C /repo commit -m fix', '/repo'),
     ('cat > output.txt', '/repo'),
+    ('printf x > >(cat > /tmp/output.txt)', '/tmp'),
+    ('cd /tmp/scratch # \\\ncat > output.txt', None),
+    (r'git -C /tmp/other\ checkout commit -m fix', '/tmp/other checkout'),
+    ('git -C "/tmp/other checkout" commit -m fix', '/tmp/other checkout'),
+    ('git -C /tmp/other -C second commit -m fix', None),
+    ('printf x # > /repo/output.txt', None),
+    ('cat > output#name.txt', None),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', None),
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', None),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', None),
@@ -117,6 +124,9 @@ def test_symlink_directory_changes_require_explicit_registration(tmp_path, optio
     r'printf x\;; cd /tmp/scratch && cat > output.txt',
     'cd /tmp/scratch-* && cat > output.txt',
     'CDPATH=/tmp && cd scratch && cat > output.txt',
+    'printf x > >(cat > /tmp/output.txt)',
+    'cd /tmp/scratch # \\\ncat > output.txt',
+    r'git -C /tmp/other\ checkout commit -m fix',
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]
