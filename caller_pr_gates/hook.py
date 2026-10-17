@@ -257,8 +257,11 @@ def _mutation_dirs(event):
         base = Path(cwd)
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?("[^"]+"|\'[^\']+\'|[^\s;&|]+)', prefix):
-            target = shlex.split(match.group(1))[0]
+        for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?', prefix):
+            lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
+            lexer.whitespace_split = True
+            try: target = next(iter(lexer))
+            except (ValueError, StopIteration): return None
             if '$' in target or '`' in target or target == '-': return None
             target = Path(target).expanduser()
             base = target if target.is_absolute() else base / target

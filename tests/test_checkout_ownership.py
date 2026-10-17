@@ -12,6 +12,10 @@ from test_quiet_monitor import local, row, SID, OTHER
     ("mkdir -p /private/tmp/scratch/mk && cd /private/tmp/scratch/mk && cat > render-sampler.mjs <<'EOF'\nconst text = 'image';\nEOF\nnode render-sampler.mjs", '/private/tmp/scratch/mk'),
     ('cd /private/tmp && cd scratch && cat > output.txt', '/private/tmp/scratch'),
     ('cd -- "/private/tmp/scratch space" && cat > output.txt', '/private/tmp/scratch space'),
+    (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
+    (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
+    (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
+    ('cd /private/tmp/scratch" space" && cat > output.txt', '/private/tmp/scratch space'),
     ('cat > output.txt && cd /private/tmp', '/repo'),
 ])
 def test_redirect_uses_directory_when_write_occurs(command, expected):
@@ -29,6 +33,20 @@ def test_dynamic_cd_does_not_guess_caller_checkout():
     event = dict(hook_event_name='PostToolUse', cwd='/repo', tool_name='Bash',
                  tool_input={'command': 'cd "$SCRATCH" && cat > output.txt'}, tool_response={'exit_code': 0})
     assert hook._mutation_dirs(event) == []
+
+
+@pytest.mark.parametrize('client', ['codex', 'claude'])
+def test_escaped_space_scratch_redirect_completes_native_discovery(local, monkeypatch, client):
+    store = local[0]
+    monkeypatch.setenv('CALLER_HOOK_CLIENT', client)
+    event = dict(hook_event_name='PostToolUse', session_id=OTHER, cwd=row(store)['cwd'], tool_name='Bash',
+                 tool_input={'command': r'cd /private/tmp/scratch\ space && cat > output.txt'},
+                 tool_response={'exit_code': 0})
+    with patch.object(hook, '_git_context', return_value=None), patch.object(hook, 'discover_current_pr', side_effect=AssertionError('scratch work must not read GitHub')):
+        assert checklist.handle(event, store) is None
+    assert store.prs(OTHER) == []
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event IN ('checklist_discovery_error','checklist_native_error')").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude'])
