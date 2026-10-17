@@ -51,6 +51,9 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('git -C /tmp/other -C second commit -m fix', None),
     ('printf x # > /repo/output.txt', None),
     ('cat > output#name.txt', None),
+    ('printf x >| /tmp/output.txt', '/tmp'),
+    ("printf x > '|'", None),
+    ("cat > /tmp/script.sh <<'EOF'\ncat > /repo/output.txt\nEOF", '/tmp'),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', None),
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', None),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', None),
@@ -127,6 +130,8 @@ def test_symlink_directory_changes_require_explicit_registration(tmp_path, optio
     'printf x > >(cat > /tmp/output.txt)',
     'cd /tmp/scratch # \\\ncat > output.txt',
     r'git -C /tmp/other\ checkout commit -m fix',
+    'printf x >| /tmp/output.txt',
+    "cat > /tmp/script.sh <<'EOF'\ncat > /repo/output.txt\nEOF",
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]

@@ -255,7 +255,7 @@ def _mutation_dirs(event):
     def directory(raw, prefix=None):
         # Decoded shell words lose expansion/quoting context. Do not interpret
         # them, or reconstruct cwd after a compound command; register explicitly.
-        if not raw or any(c in raw for c in '$`~*?[]{}()#'): return None
+        if not raw or any(c in raw for c in '$`~*?[]{}()#;&|<>\n'): return None
         prefix = source if prefix is None else prefix
         if any(prefix[i] == '#' for i in unquoted if i < len(prefix)): return None
         path = Path(raw)
@@ -281,6 +281,7 @@ def _mutation_dirs(event):
     for index in redirects:
         suffix = source[index + 1:].lstrip('> \t')
         if suffix.startswith('&'): continue
+        if suffix.startswith('|'): suffix = suffix[1:].lstrip()  # >| is one redirection operator.
         try:
             lexer = shlex.shlex(suffix, posix=True, punctuation_chars=';&|()<>\n')
             lexer.commenters = ''
