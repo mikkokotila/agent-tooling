@@ -88,7 +88,7 @@ def test_authentic_queue_recovers_after_transient_proof_without_replaying_old_to
 
 
 def test_deferred_queue_survives_a_partial_outage_then_recovers_once(local):
-    store,data,_,reader,_=local
+    store,data,_,reader,collector=local
     prompt=queued(local);old=row(store)['event_id']
     with patch.object(monitor,'consume',return_value=None), patch.object(monitor.time,'time',return_value=1001):
         assert checklist.handle(dict(hook_event_name='UserPromptSubmit',session_id=SID,prompt=prompt),store)['continue'] is False
@@ -98,8 +98,8 @@ def test_deferred_queue_survives_a_partial_outage_then_recovers_once(local):
     assert tick(local,1601)['events']==1 and row(store)['event_id']!=old
     assert monitor.consume(store,SID,full=False,reader=reader,checklist=True)
     assert tick(local,1901)['events']==1
-    assert monitor.consume(store,SID,reader=reader,checklist=True)
-    assert monitor.consume(store,SID,reader=reader,checklist=True) is None
+    assert monitor.consume(store,SID,reader=reader,collector=collector,checklist=True)
+    assert monitor.consume(store,SID,reader=reader,collector=collector,checklist=True) is None
 
 
 def test_unavailable_native_proof_backs_off_without_starving_another_pr(local):

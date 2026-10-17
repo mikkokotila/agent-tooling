@@ -197,7 +197,7 @@ def test_unresolved_failure_returns_at_cadence_but_outages_stay_quiet(local):
     assert tick(local, 2200)['events'] == 1
 
 
-def test_losing_review_inventory_in_outage_never_replays_known_repairs(local):
+def test_review_work_returns_only_after_outage_recovery(local):
     store,data,_,reader,collector=local
     data['comments']=[comment()]
     tick(local)

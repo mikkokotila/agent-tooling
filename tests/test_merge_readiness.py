@@ -102,9 +102,11 @@ def test_edited_unmanaged_rules_fail_without_deleting_human_text(installed):
     assert original_bytes(home) == before
 
 
-def test_single_prompt_has_bounded_wait_and_poises_approval_boundary():
+def test_single_prompt_requires_repair_and_bounded_wait():
     text = prompts.baseline_text('pr_checklist')
     assert '20 minutes' in text and 'after CI concludes' in text
     assert 'MERGE_READY' in text and 'resume the PR in the same turn' in text
-    assert 'without asking the human to merge or dismiss a review' in text
+    assert 'an unchanged failure still needs repair' in text
+    assert 'An unchanged-input retry refusal requires diagnosis and a meaningful fix' in text
+    assert 'Receiving this checklist never discharges that work' in text
     assert 'clickable link, exact steps' in text

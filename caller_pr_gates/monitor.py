@@ -326,7 +326,8 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                 busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
                 # A delivery receipt acknowledges the message, not the repair.
                 # Retry only on this scheduled, fresh poll after the owner stops.
-                repeat = (checklist and delivery == 'consumed' and current['lease_until'] <= now
+                repeat = (checklist and delivery in {None, 'consumed'} and current['delivered_fingerprint'] is not None
+                          and current['lease_until'] <= now
                           and not (busy and busy['busy']))
                 # A changed passing/pending state cancels stale work. A first historical read is silent.
                 if not items:
