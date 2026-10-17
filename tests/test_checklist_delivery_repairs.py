@@ -54,7 +54,8 @@ def test_authentic_queue_recovers_after_transient_proof_without_replaying_old_to
     deferred=row(store)
     assert deferred['delivery_state']=='pending' and deferred['event_id']!=old
     assert deferred['retry_at']==1301 and deferred['lease_until']==0 and deferred['worker_pid'] is None
-    with store._connect() as db:db.execute('UPDATE watch_sessions SET busy=1 WHERE session_id=?',(SID,))
+    with store._connect() as db:
+        db.execute('INSERT INTO watch_sessions VALUES(?,1,1002) ON CONFLICT(session_id) DO UPDATE SET busy=1', (SID,))
     # A delayed canceled callback cannot reject the replacement or mark a new turn idle.
     with patch.dict(os.environ,CALLER_HOOK_CLIENT=client):assert checklist.handle(event,store)['continue'] is False
     with store._connect() as db:assert db.execute('SELECT busy FROM watch_sessions WHERE session_id=?',(SID,)).fetchone()[0]==1
