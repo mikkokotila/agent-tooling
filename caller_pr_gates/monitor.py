@@ -411,8 +411,8 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
                 # The PR object's embedded base SHA can lag the live branch tip.
                 # Parallel bounded reads fit the native hook's ten-second budget.
                 raw, branch = await asyncio.gather(
-                    asyncio.wait_for(reader(row['repository'], row['number']), 2),
-                    asyncio.wait_for(branch_reader(row['repository'], ref), 2),
+                    asyncio.wait_for(reader(row['repository'], row['number']), 5),
+                    asyncio.wait_for(branch_reader(row['repository'], ref), 5),
                     return_exceptions=True)
                 if isinstance(raw, Exception): raise raw
             if retire(store, row['repository'], row['number'], raw, checklist=checklist):
@@ -452,8 +452,11 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
                 latest = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (row['repository'], row['number'])).fetchone()
                 if latest['owner_session'] == row['owner_session'] and latest['event_id'] == row['event_id']:
                     valid.append(dict(row, payload=work_payload(store, row, snapshot, items)))
-        except Exception:
-            pass  # Unavailable evidence cannot authorize a wakeup.
+        except Exception as exc:
+            from .errors import redact
+            store.audit('pr_revalidation_deferred', {'session_id': row['owner_session'],
+                'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id'],
+                'full': full, 'error': type(exc).__name__ + ': ' + redact(str(exc))[:200]})
     return valid
 
 
@@ -474,12 +477,17 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
     rows = asyncio.run(revalidate(store, rows, reader, collector, full=full, branch_reader=branch_reader, checklist=checklist))
     if not rows:
         return None
+    claimed = []
     with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
         for row in rows:
-            db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=?",
-                       (row['repository'], row['number'], sid, row['event_id']))
-        store._audit(db, 'pr_monitor_consumed', {'session_id': sid, 'events': [r['event_id'] for r in rows]})
-    return message(rows, checklist=checklist)
+            changed = db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=? AND state='open' AND delivery_state IN ('pending','reserved','queued')",
+                       (row['repository'], row['number'], sid, row['event_id'])).rowcount
+            if changed:
+                claimed.append(row)
+        if claimed:
+            store._audit(db, 'pr_monitor_consumed', {'session_id': sid, 'events': [r['event_id'] for r in claimed]})
+    return message(claimed, checklist=checklist) if claimed else None
 
 
 def retry(store, sid, repository, number):

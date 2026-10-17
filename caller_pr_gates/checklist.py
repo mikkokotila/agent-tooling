@@ -99,7 +99,12 @@ def handle(event, store=None):
         return None
     if name == 'PostToolUse':
         hook._register_urls(event, store)
-        hook.discover(event, store)
+        try:
+            hook.discover(event, store)
+        except (OSError, RuntimeError, ValueError) as exc:
+            # Discovery is independent of an already-owned PR's inbox.
+            from .errors import redact
+            store.audit('checklist_discovery_error', {'session_id': sid, 'error': redact(str(exc))[:300]})
         if hook._local_mutation(event):
             turns.note_mutation(store, event, sid)
         if sid != root:
