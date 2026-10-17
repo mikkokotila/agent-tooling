@@ -252,10 +252,18 @@ def _mutation_dirs(event):
     if paths: return list(dict.fromkeys(paths))
     # Shell file writes own their actual destinations, rather than whatever
     # repository happened to be the caller's cwd (for example > /tmp/log).
-    def directory(raw):
+    def directory(raw, prefix=''):
         if not raw or '$' in raw: return None
+        base = Path(cwd)
+        # A relative redirect belongs to the shell directory at that point,
+        # not the chat's launch checkout. Never infer a dynamic cd target.
+        for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?("[^"]+"|\'[^\']+\'|[^\s;&|]+)', prefix):
+            target = shlex.split(match.group(1))[0]
+            if '$' in target or '`' in target or target == '-': return None
+            target = Path(target).expanduser()
+            base = target if target.is_absolute() else base / target
         path = Path(raw).expanduser()
-        if not path.is_absolute(): path = Path(cwd) / path
+        if not path.is_absolute(): path = base / path
         return str(path if path.is_dir() else path.parent)
     write_paths = []
     source = _operation_command(command)
@@ -275,7 +283,7 @@ def _mutation_dirs(event):
             lexer.whitespace_split = True
             raw = next(iter(lexer), '')
         except ValueError: continue
-        target = directory(raw)
+        target = directory(raw, source[:index])
         if target: write_paths.append(target)
     try:
         lexer = shlex.shlex(source, posix=True, punctuation_chars=';&|()\n')
@@ -380,6 +388,11 @@ def discover(event, store):
         try:
             found = discover_current_pr(repository, branch)
             if found.get('found'):
+                if hasattr(store, '_connect'):
+                    with store._connect() as db:
+                        owner = db.execute("SELECT owner_session FROM pr_watch WHERE repository=? AND number=? AND state='open'", (repository, int(found['pull_number']))).fetchone()
+                    if owner and owner['owner_session'] != store.session(sid)['root_session']:
+                        continue  # A shared checkout cannot adopt another chat's PR.
                 key = repository.lower() + '/' + str(found['pull_number'])
                 if key not in known:
                     store.register(sid, _client(), repository, int(found['pull_number']), root)

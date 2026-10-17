@@ -188,10 +188,24 @@ def _gateway_target(args, argv):
     return target, repository, number, issue
 
 
+def session_prs(store, sid=None):
+    """Legacy registration receipts never override the canonical chat owner."""
+    rows = store.prs(sid)
+    if sid is None:
+        return rows
+    session = store.session(sid)
+    if not session:
+        return []
+    with store._connect() as db:
+        owned = {(r['repository'], r['number']) for r in db.execute(
+            "SELECT repository,number FROM pr_watch WHERE owner_session=? AND state='open'", (session['root_session'],))}
+    return [r for r in rows if (r['repository'], r['number']) in owned]
+
+
 async def inspect(store, sid=None, url=None):
     from .github import collect_pr
     from .policy import evaluate_pr
-    rows = store.prs(sid)
+    rows = session_prs(store, sid)
     if url:
         repository, number, issue = reference(url)
         if issue: raise ValueError('inspect --pr needs a PR URL')
@@ -533,15 +547,16 @@ def main():
             output = {'followup_id': job['id'], 'review_read': receipt, 'comments': snap['comments'], 'scope': scope}
         elif args.command == 'status':
             sid = args.session or os.getenv('CODEX_THREAD_ID')
+            rows = session_prs(store, sid)
             if args.fresh:
                 from .closure import refresh
                 asyncio.run(refresh(store, sid, force=True))
                 output = {'prs': asyncio.run(inspect(store, sid, args.pr)), 'task_gates': task_gates(store, sid) if sid else []}
-            else: output = {'task_gates': task_gates(store, sid) if sid else [], 'prs': store.prs(sid), 'snapshots': [store.snapshot(p['repository'], p['number']) for p in store.prs(sid)], 'followups': store.followups(sid), 'scope': store.get_scope(sid) if sid else None}
+            else: output = {'task_gates': task_gates(store, sid) if sid else [], 'prs': rows, 'snapshots': [store.snapshot(p['repository'], p['number']) for p in rows], 'followups': store.followups(sid), 'scope': store.get_scope(sid) if sid else None}
             if sid:
-                output['external_blockers'] = [hold for p in store.prs(sid) if (hold := store.external_blocker(sid, p['repository'], p['number']))]
+                output['external_blockers'] = [hold for p in rows if (hold := store.external_blocker(sid, p['repository'], p['number']))]
                 output['continuations'] = [{k: receipt.get(k) for k in ('repository','number','idle_retry_outcome','awaiting_user_turn','awaiting_validation')}
-                                           for p in store.prs(sid) if (receipt := store.recovery(p['repository'], p['number'], sid))
+                                           for p in rows if (receipt := store.recovery(p['repository'], p['number'], sid))
                                            and (receipt.get('idle_retry_outcome') or receipt.get('awaiting_user_turn') or receipt.get('awaiting_validation'))]
                 if args.fresh:
                     from .publication import refresh as refresh_publication
