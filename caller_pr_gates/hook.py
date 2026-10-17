@@ -263,6 +263,8 @@ def _mutation_dirs(event):
         for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?', prefix):
             if match.start() not in unquoted:
                 continue  # Printed/quoted shell text cannot change the directory.
+            if ambiguous_directory:
+                return None  # A successful list does not prove this cd ran.
             lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
             lexer.whitespace_split = True
             try: target = next(iter(lexer))
@@ -275,6 +277,7 @@ def _mutation_dirs(event):
     write_paths = []
     source = _operation_command(command)
     unquoted = set()
+    redirects = []
     quote = None; escaped = False
     for index, character in enumerate(source):
         if escaped: escaped = False; continue
@@ -284,7 +287,14 @@ def _mutation_dirs(event):
             continue
         if character in {'"', "'", '`'}: quote = character; continue
         unquoted.add(index)
-        if character != '>': continue
+        if character == '>': redirects.append(index)
+    # Infer relative destinations only along a straight && chain. An independent
+    # command, alternative, pipeline or subshell can hide a skipped/failed cd.
+    ambiguous_directory = any(source[i] in ';\n|()' or
+        (source[i] == '&' and not ((i - 1 in unquoted and source[i - 1] == '&') or
+                                  (i + 1 in unquoted and source[i + 1] == '&')))
+        for i in unquoted)
+    for index in redirects:
         suffix = source[index + 1:].lstrip('> \t')
         if suffix.startswith('&'): continue
         try:

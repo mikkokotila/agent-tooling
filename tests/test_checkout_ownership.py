@@ -9,7 +9,7 @@ from test_quiet_monitor import local, row, SID, OTHER
 
 
 @pytest.mark.parametrize('command,expected', [
-    ("mkdir -p /private/tmp/scratch/mk && cd /private/tmp/scratch/mk && cat > render-sampler.mjs <<'EOF'\nconst text = 'image';\nEOF\nnode render-sampler.mjs", '/private/tmp/scratch/mk'),
+    ("mkdir -p /private/tmp/scratch/mk && cd /private/tmp/scratch/mk && cat > render-sampler.mjs <<'EOF'\nconst text = 'image';\nEOF\nnode render-sampler.mjs", None),
     ('cd /private/tmp && cd scratch && cat > output.txt', '/private/tmp/scratch'),
     ('cd -- "/private/tmp/scratch space" && cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
@@ -22,17 +22,23 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('cd "$SCRATCH" && cat > /repo/output.txt', '/repo'),
     (r'cd "$SCRATCH" && cat > /repo/dir\ name/output.txt', '/repo/dir name'),
     ('cd "$SCRATCH" && cat > /repo/output.txt && cat > relative.txt', '/repo'),
+    ('false && cd /tmp/scratch; cat > output.txt', None),
+    ('true || cd /tmp/scratch && cat > output.txt', None),
+    ('cd /tmp/scratch | cat && cat > output.txt', None),
+    ('cd /tmp/scratch && cat > output.txt; true', None),
+    ('false && cd /tmp/scratch; cat > /repo/output.txt', '/repo'),
     ('cat > output.txt && cd /private/tmp', '/repo'),
 ])
 def test_redirect_uses_directory_when_write_occurs(command, expected):
     event = dict(hook_event_name='PostToolUse', session_id=OTHER, cwd='/repo', tool_name='Bash',
                  tool_input={'command': command}, tool_response={'exit_code': 0})
-    assert hook._mutation_dirs(event) == [expected]
+    expected = [expected] if expected is not None else []
+    assert hook._mutation_dirs(event) == expected
     with patch.object(hook, '_git_context', return_value=None) as context, patch.object(hook, 'discover_current_pr', side_effect=AssertionError('scratch work must not read GitHub')):
         class NoPRs:
             def prs(self, sid): return []
         hook.discover(event, NoPRs())
-    assert [c.args[0] for c in context.call_args_list] == [expected]
+    assert [c.args[0] for c in context.call_args_list] == expected
 
 
 def test_dynamic_cd_does_not_guess_caller_checkout():
@@ -46,6 +52,7 @@ def test_dynamic_cd_does_not_guess_caller_checkout():
     r'cd /private/tmp/scratch\ space && cat > output.txt',
     "printf 'x; cd /tmp/scratch ;' && cat > output.txt",
     'cd "$SCRATCH" && cat > /repo/output.txt',
+    'false && cd /tmp/scratch; cat > output.txt',
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]
@@ -56,6 +63,8 @@ def test_redirect_completes_native_discovery(local, monkeypatch, client, command
     with patch.object(hook, '_git_context', return_value=None), patch.object(hook, 'discover_current_pr', side_effect=AssertionError('scratch work must not read GitHub')):
         assert checklist.handle(event, store) is None
     assert store.prs(OTHER) == []
+    assert row(store)['owner_session'] == SID
+    assert len(cli.session_prs(store, SID)) == 1
     with store._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM audit WHERE event IN ('checklist_discovery_error','checklist_native_error')").fetchone()[0] == 0
 
