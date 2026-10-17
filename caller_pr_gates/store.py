@@ -324,7 +324,19 @@ class Store:
     def preflight(self,repository,number):
         with self._connect() as db:
             row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
-            return json.loads(row[0]) if row else None
+            payload=json.loads(row[0]) if row else None
+            if payload is not None and 'attempted_at' not in payload:
+                # A rolling older process can add an undated receipt after the
+                # one-time migration. Stamp only that row, preserving any newer
+                # concurrent preflight rather than reopening global migration.
+                db.execute('BEGIN IMMEDIATE')
+                row=db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',(repository,number)).fetchone()
+                payload=json.loads(row[0]) if row else None
+                if payload is not None and 'attempted_at' not in payload:
+                    stamp=payload.get('collected_at')
+                    payload['attempted_at']=stamp if isinstance(stamp,(int,float)) and not isinstance(stamp,bool) else time.time()
+                    db.execute('UPDATE validation_preflights SET payload=? WHERE repository=? AND number=?',(_json(payload),repository,number))
+            return payload
 
     def snapshot(self, repository, number):
         with self._connect() as db:

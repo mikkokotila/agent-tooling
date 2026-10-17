@@ -35,11 +35,13 @@ def test_warm_registry_and_coordination_open_do_not_take_writer_locks(tmp_path):
     store = Store(tmp_path/'registry')
     co = Coordinator(tmp_path/'coordination')
     Collections(co, 'account')
+    store.set_preflight('owner/repo',1,{'profile':'validation','collected_at':None})
     statements = []
     with patch.object(Store, '_connect', traced(Store._connect, statements)), patch.object(Coordinator, 'db', traced(Coordinator.db, statements)):
         Store(tmp_path/'registry')
         Collections(Coordinator(tmp_path/'coordination'), 'account')
         assert store.consume_prd_notices('no-document-work', 'codex') == []
+        assert store.preflight('owner/repo',1)['attempted_at']
     assert not any(s.upper().startswith(('BEGIN IMMEDIATE','CREATE ','INSERT ','UPDATE ','ALTER ')) for s in statements)
     assert not any('FROM prs' in s for s in statements)
 
