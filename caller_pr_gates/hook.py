@@ -260,24 +260,30 @@ def _mutation_dirs(event):
         base = Path(cwd)
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd\s+', prefix):
+        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd(?=\s|[;&|()\n]|$)\s*', prefix):
             if match.start() not in unquoted:
                 continue  # Printed/quoted shell text cannot change the directory.
             if ambiguous_directory:
                 return None  # A successful list does not prove this cd ran.
             lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
             lexer.whitespace_split = True
+            def word():
+                raw = prefix[match.end() + lexer.instream.tell():].lstrip()
+                return next(lexer), raw
             physical = False
             try:
-                target = next(lexer)
+                target, raw = word()
                 while target in {'-L', '-P'}:
                     physical = target == '-P'
-                    target = next(lexer)
-                if target == '--': target = next(lexer)
+                    target, raw = word()
+                if target == '--': target, raw = word()
                 elif target.startswith('-'): return None  # Unsupported cd syntax is not a path.
             except (ValueError, StopIteration): return None
             if '$' in target or '`' in target or target == '-' or all(c in ';&|()\n' for c in target): return None
-            target = Path(target).expanduser()
+            target = Path(target)
+            if raw.startswith('~'):
+                if not re.match(r'~[A-Za-z0-9_.-]*(?:/|(?=\s|[;&|()\n]|$))', raw): return None
+                target = target.expanduser()
             target = target if target.is_absolute() else base / target
             try: base = target.resolve() if physical else Path(os.path.normpath(target))
             except (OSError, RuntimeError): return None

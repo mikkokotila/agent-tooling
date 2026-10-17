@@ -1,5 +1,6 @@
 """Scratch writes and historical receipts cannot adopt a different chat's PR."""
 import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,14 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('cd -- -P && cat > output.txt', '/repo/-P'),
     ('cd -s /other-checkout && cat > output.txt', None),
     ('cd -P && cat > output.txt', None),
+    ('cd&&cat > output.txt', None),
+    ('cd && cat > output.txt', None),
+    ("cd '~' && cat > output.txt", '/repo/~'),
+    ('cd "~" && cat > output.txt', '/repo/~'),
+    (r'cd \~ && cat > output.txt', '/repo/~'),
+    ("cd -P -- '~' && cat > output.txt", '/repo/~'),
+    ('cd ~/scratch && cat > output.txt', str(Path.home() / 'scratch')),
+    ('cd ~"user"/scratch && cat > output.txt', None),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
@@ -74,6 +83,8 @@ def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
     'false && cd /tmp/scratch; cat > output.txt',
     'cd -P /other-checkout && cat > output.txt',
     'cd -s /other-checkout && cat > output.txt',
+    'cd&&cat > output.txt',
+    "cd '~' && cat > output.txt",
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]
