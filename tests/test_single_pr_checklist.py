@@ -180,15 +180,19 @@ def test_pending_interruptions_and_issue_work_cannot_wake_chat(local):
     assert row(store)['event_id'] is None
 
 
-def test_unchanged_failure_and_unavailable_evidence_never_replay(local):
+def test_unresolved_failure_returns_at_cadence_but_outages_stay_quiet(local):
     tick(local)
     store, data, _, reader, collector = local
     assert monitor.consume(store, SID, reader=reader, collector=collector, checklist=True)
-    assert tick(local, 1300)['events'] == 0
+    first = row(store)['event_id']
+    assert tick(local, 1299)['checked'] == 0
+    assert tick(local, 1300)['events'] == 1
+    assert row(store)['event_id'] != first
+    assert monitor.consume(store, SID, reader=reader, collector=collector, checklist=True)
     data['component_errors'] = {'review':'GitHub 403 rate-limit request ID changes'}
     assert tick(local, 1600)['events'] == 0
     data['component_errors'] = {}
-    assert tick(local, 1900)['events'] == 0
+    assert tick(local, 1900)['events'] == 1
     data['comments'] = [comment()]
     assert tick(local, 2200)['events'] == 1
 
@@ -202,7 +206,7 @@ def test_losing_review_inventory_in_outage_never_replays_known_repairs(local):
     data['component_errors']={'review':'GitHub quota exhausted'}
     assert tick(local,1300)['events']==0 and row(store)['event_id'] is None
     data['comments']=[comment()];data['component_errors']={}
-    assert tick(local,1600)['events']==0
+    assert tick(local,1600)['events']==1
 
 
 def test_cached_retired_advisory_entrypoint_stays_silent():

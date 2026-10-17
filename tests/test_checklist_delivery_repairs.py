@@ -97,7 +97,8 @@ def test_deferred_queue_survives_a_partial_outage_then_recovers_once(local):
     data.pop('component_errors')
     assert tick(local,1601)['events']==1 and row(store)['event_id']!=old
     assert monitor.consume(store,SID,full=False,reader=reader,checklist=True)
-    assert tick(local,1901)['events']==0
+    assert tick(local,1901)['events']==1
+    assert monitor.consume(store,SID,reader=reader,checklist=True)
     assert monitor.consume(store,SID,reader=reader,checklist=True) is None
 
 

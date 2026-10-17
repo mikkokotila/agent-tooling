@@ -1,4 +1,4 @@
-"""Quiet PR polling. Only changed, actionable work reaches its exact owner."""
+"""PR polling. Unresolved actionable work returns to its idle, exact owner."""
 from __future__ import annotations
 from .prompts import render_prompt
 
@@ -323,11 +323,16 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                 event = current['event_id']
                 payload = current['payload']
                 delivery = current['delivery_state']
+                busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
+                # A delivery receipt acknowledges the message, not the repair.
+                # Retry only on this scheduled, fresh poll after the owner stops.
+                repeat = (checklist and delivery == 'consumed' and current['lease_until'] <= now
+                          and not (busy and busy['busy']))
                 # A changed passing/pending state cancels stale work. A first historical read is silent.
                 if not items:
                     event, payload, delivery = None, None, None
-                elif fingerprint != current['delivered_fingerprint'] and (current['armed'] or current['fingerprint'] is not None):
-                    if current['fingerprint'] != fingerprint or not event:
+                elif (fingerprint != current['delivered_fingerprint'] or repeat) and (current['armed'] or current['fingerprint'] is not None):
+                    if current['fingerprint'] != fingerprint or not event or repeat:
                         if delivery not in {'reserved', 'queued'} or not event:
                             event = str(uuid.uuid4())
                         payload = work_payload(store, row, snapshot, items)
@@ -340,7 +345,6 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                 saved = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?',
                                    (repository, number, row['owner_session'])).fetchone()
                 waiting = bool(saved and json.loads(saved['fields']).get('awaiting_validation'))
-                busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
             if not checklist and waiting and delivery == 'consumed' and not (busy and busy['busy']):
                 _idle_handoff(store, row['owner_session'], {}, None, retry_at=now)
             result['checked'] += 1
