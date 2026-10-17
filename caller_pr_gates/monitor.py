@@ -454,9 +454,12 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
                     valid.append(dict(row, payload=work_payload(store, row, snapshot, items)))
         except Exception as exc:
             from .errors import redact
-            store.audit('pr_revalidation_deferred', {'session_id': row['owner_session'],
-                'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id'],
-                'full': full, 'error': type(exc).__name__ + ': ' + redact(str(exc))[:200]})
+            try:
+                store.audit('pr_revalidation_deferred', {'session_id': row['owner_session'],
+                    'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id'],
+                    'full': full, 'error': type(exc).__name__ + ': ' + redact(str(exc))[:200]})
+            except Exception:
+                pass  # Retain this event and continue checking the other rows.
     return valid
 
 

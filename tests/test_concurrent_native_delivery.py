@@ -6,12 +6,15 @@ import json
 import os
 from pathlib import Path
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from unittest.mock import patch
+
+import pytest
 
 from caller_pr_gates import checklist, hook, monitor
 from caller_pr_gates.collections import Collections
@@ -67,16 +70,33 @@ def test_fifteen_collection_waiters_do_not_block_the_writer(tmp_path):
     asyncio.run(scenario())
 
 
-def test_discovery_failure_does_not_discard_an_owned_native_message(local):
+@pytest.mark.parametrize('error', [RuntimeError('GitHub discovery timed out'), subprocess.TimeoutExpired('git', 3)])
+@pytest.mark.parametrize('audit_fails', [False, True])
+def test_discovery_failure_does_not_discard_an_owned_native_message(local, error, audit_fails):
     tick(local);store,data,_,reader,_=local
     async def branch(*args):return {'commit':{'sha':data['base_sha']}}
     original=monitor.consume
-    with patch.object(hook,'discover',side_effect=RuntimeError('GitHub discovery timed out')), patch.object(monitor,'consume',side_effect=lambda *a,**k:original(*a,**dict(k,reader=reader,branch_reader=branch))):
+    audit = store.audit
+    with patch.object(store,'audit',side_effect=sqlite3.OperationalError('database is locked') if audit_fails else audit), patch.object(hook,'discover',side_effect=error), patch.object(monitor,'consume',side_effect=lambda *a,**k:original(*a,**dict(k,reader=reader,branch_reader=branch))):
         result=checklist.handle(dict(hook_event_name='PostToolUse',session_id=SID,cwd=row(store)['cwd'],tool_name='Read'),store)
     assert 'Automated PR hook' in result['hookSpecificOutput']['additionalContext']
     assert row(store)['delivery_state']=='consumed'
     with store._connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='checklist_discovery_error'").fetchone()[0]==1
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='checklist_discovery_error'").fetchone()[0]==int(not audit_fails)
+
+
+def test_failed_revalidation_diagnostics_do_not_discard_other_owned_work(local):
+    store,data,_,reader,_=local
+    store.register(SID,'codex','owner/repo',2,row(store)['cwd'])
+    tick(local)
+    async def proof(repo,number):
+        if number==1:raise TimeoutError('temporary proof failure')
+        return await reader(repo,number)
+    async def branch(*args):return {'commit':{'sha':data['base_sha']}}
+    with patch.object(store,'audit',side_effect=sqlite3.OperationalError('database is locked')):
+        text=monitor.consume(store,SID,full=False,reader=proof,branch_reader=branch)
+    assert 'pull/2' in text and 'pull/1' not in text
+    assert row(store)['delivery_state']=='pending' and row(store,2)['delivery_state']=='consumed'
 
 
 def test_overlapping_callbacks_consume_one_event_only_once(local):
