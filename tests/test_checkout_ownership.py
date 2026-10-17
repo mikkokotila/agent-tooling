@@ -27,6 +27,15 @@ from test_quiet_monitor import local, row, SID, OTHER
     ("cd -P -- '~' && cat > output.txt", '/repo/~'),
     ('cd ~/scratch && cat > output.txt', str(Path.home() / 'scratch')),
     ('cd ~"user"/scratch && cat > output.txt', None),
+    ('command cd /tmp/scratch && cat > output.txt', None),
+    ('command -p cd /tmp/scratch && cat > output.txt', None),
+    ("builtin 'cd' /tmp/scratch && cat > output.txt", None),
+    ('eval "cd /tmp/scratch" && cat > output.txt', None),
+    ('cd ~- && cat > relative.txt && cat > /repo/output.txt', '/repo'),
+    ('cd ~+ && cat > relative.txt', None),
+    ('cd /other-checkout > output.txt', '/repo'),
+    ('cd /first && cd /second > output.txt', '/first'),
+    ('command cd /other-checkout > output.txt', '/repo'),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
@@ -63,6 +72,14 @@ def test_dynamic_cd_does_not_guess_caller_checkout():
     assert hook._mutation_dirs(event) == []
 
 
+def test_unknown_tilde_user_preserves_later_absolute_write():
+    event = dict(hook_event_name='PostToolUse', cwd='/repo', tool_name='Bash',
+                 tool_input={'command': 'cd ~missing_user && cat > relative.txt && cat > /repo/output.txt'},
+                 tool_response={'exit_code': 0})
+    with patch('pwd.getpwnam', side_effect=KeyError('missing_user')):
+        assert hook._mutation_dirs(event) == ['/repo']
+
+
 @pytest.mark.parametrize('option', ['-L', '-P'])
 def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
     logical = tmp_path / 'logical'
@@ -85,6 +102,9 @@ def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
     'cd -s /other-checkout && cat > output.txt',
     'cd&&cat > output.txt',
     "cd '~' && cat > output.txt",
+    'command cd /tmp/scratch && cat > output.txt',
+    'cd ~- && cat > relative.txt && cat > /repo/output.txt',
+    'cd /other-checkout > output.txt',
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]

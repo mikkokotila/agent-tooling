@@ -254,17 +254,26 @@ def _mutation_dirs(event):
     # repository happened to be the caller's cwd (for example > /tmp/log).
     def directory(raw, prefix=''):
         if not raw or '$' in raw: return None
-        path = Path(raw).expanduser()
+        try: path = Path(raw).expanduser()
+        except (OSError, RuntimeError): return None
         if path.is_absolute():
             return str(path if path.is_dir() else path.parent)
         base = Path(cwd)
+        # Redirections run before their command. Only completed commands can
+        # have changed its directory; wrappers are outside this literal subset.
+        changes = [m for m in re.finditer(r'(?:^|[;&|()\n]+)\s*cd(?=\s|[;&|()\n]|$)\s*', prefix)
+                   if m.start() in unquoted]
+        wrappers = [m for m in re.finditer(r'(?:^|[;&|()\n]+)\s*(?:command|builtin|eval|source|\.)\s', prefix)
+                    if m.start() in unquoted]
+        if ambiguous_directory and (changes or wrappers): return None
+        end = max((i + 2 for i in range(len(prefix) - 1)
+                   if prefix[i:i + 2] == '&&' and i in unquoted and i + 1 in unquoted), default=0)
+        if any(m.end() <= end for m in wrappers): return None
+        prefix = prefix[:end]
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd(?=\s|[;&|()\n]|$)\s*', prefix):
-            if match.start() not in unquoted:
-                continue  # Printed/quoted shell text cannot change the directory.
-            if ambiguous_directory:
-                return None  # A successful list does not prove this cd ran.
+        for match in changes:
+            if match.end() > end: continue  # This command's cd has not run yet.
             lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
             lexer.whitespace_split = True
             def word():
@@ -283,7 +292,9 @@ def _mutation_dirs(event):
             target = Path(target)
             if raw.startswith('~'):
                 if not re.match(r'~[A-Za-z0-9_.-]*(?:/|(?=\s|[;&|()\n]|$))', raw): return None
-                target = target.expanduser()
+                if target.parts[0] in {'~-', '~+'}: return None  # Shell environment, not a username.
+                try: target = target.expanduser()
+                except (OSError, RuntimeError): return None
             target = target if target.is_absolute() else base / target
             try: base = target.resolve() if physical else Path(os.path.normpath(target))
             except (OSError, RuntimeError): return None

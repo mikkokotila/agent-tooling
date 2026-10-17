@@ -1,6 +1,6 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.24 installs runtime 1.7.24. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.25 installs runtime 1.7.25. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
 ```sh
 git pull --ff-only
