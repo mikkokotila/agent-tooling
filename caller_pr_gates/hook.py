@@ -357,7 +357,8 @@ def _mutation_dirs(event):
     for match in re.finditer(r'(?:\bcd\s+|\bgit\s+-C\s+)("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
         try: raw = shlex.split(match.group(1))[0]
         except ValueError: continue
-        path = Path(raw).expanduser()
+        try: path = Path(raw).expanduser()
+        except (OSError, RuntimeError): continue
         if not path.is_absolute(): path = Path(cwd) / path
         targeted.append(str(path))
     return list(dict.fromkeys(targeted or [cwd]))
@@ -370,7 +371,8 @@ def _candidate_dirs(event):
         for key in ('cwd', 'workdir', 'path', 'file_path', 'filePath'):
             value = args.get(key)
             if isinstance(value, str):
-                p = Path(value).expanduser()
+                try: p = Path(value).expanduser()
+                except (OSError, RuntimeError): continue
                 if not p.is_absolute(): p = Path(_cwd(event)) / p
                 result.append(str(p if p.is_dir() else p.parent))
     command = _command(event)
@@ -378,13 +380,15 @@ def _candidate_dirs(event):
     for nested in literal_exec_commands(_operation_command(command)):
         directory = nested.get('cwd')
         if isinstance(directory, str):
-            p = Path(directory).expanduser()
+            try: p = Path(directory).expanduser()
+            except (OSError, RuntimeError): continue
             if not p.is_absolute(): p = Path(_cwd(event)) / p
             result.append(str(p))
     for match in re.finditer(r'(?:\bcd\s+|\bgit\s+-C\s+)("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
         try: value = shlex.split(match.group(1))[0]
         except ValueError: continue
-        p = Path(value).expanduser()
+        try: p = Path(value).expanduser()
+        except (OSError, RuntimeError): continue
         if not p.is_absolute(): p = Path(_cwd(event)) / p
         result.append(str(p))
     return list(dict.fromkeys(result))[:32]
