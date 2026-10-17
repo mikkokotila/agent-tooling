@@ -24,6 +24,7 @@ from test_quiet_monitor import local, row, SID, OTHER
     ('cd "$SCRATCH" && cat > /repo/output.txt && cat > relative.txt', '/repo'),
     ('false && cd /tmp/scratch; cat > output.txt', None),
     ('true || cd /tmp/scratch && cat > output.txt', None),
+    ('false || cd /tmp/scratch && cat > output.txt', None),
     ('cd /tmp/scratch | cat && cat > output.txt', None),
     ('cd /tmp/scratch && cat > output.txt; true', None),
     ('false && cd /tmp/scratch; cat > /repo/output.txt', '/repo'),

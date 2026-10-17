@@ -260,7 +260,7 @@ def _mutation_dirs(event):
         base = Path(cwd)
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?', prefix):
+        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd\s+(?:--\s+)?', prefix):
             if match.start() not in unquoted:
                 continue  # Printed/quoted shell text cannot change the directory.
             if ambiguous_directory:
