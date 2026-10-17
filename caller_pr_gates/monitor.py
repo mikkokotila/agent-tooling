@@ -67,9 +67,23 @@ def checkout(cwd):
 
 def reject_queued(store, sid, token, reason):
     with store._connect() as db:
-        db.execute("UPDATE pr_watch SET delivery_state='failed',error=?,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE owner_session=? AND event_id=? AND delivery_state='queued'",
-                   (reason, sid, token))
-        db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
+        changed = db.execute("UPDATE pr_watch SET delivery_state='failed',error=?,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE owner_session=? AND event_id=? AND delivery_state='queued'",
+                   (reason, sid, token)).rowcount
+        if changed:
+            db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
+
+
+def defer_queued(store, sid, token):
+    """Keep authenticated but unverified work for the normal poll cadence."""
+    now = time.time()
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        changed = db.execute("UPDATE pr_watch SET delivery_state='pending',event_id=?,retry_at=MAX(next_check_at,?),lease_until=0,worker_pid=NULL,error='Queued proof unavailable; deferred to normal cadence' WHERE owner_session=? AND event_id=? AND state='open' AND delivery_state='queued'",
+                             (str(uuid.uuid4()), now + SINGLE_INTERVAL, sid, token)).rowcount
+        if changed:
+            db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
+            store._audit(db, 'pr_queue_deferred', {'session_id': sid, 'event_id': token})
+        return bool(changed)
 
 
 def arm(db, sid, client, repository, number, cwd, *, armed=True):
@@ -454,6 +468,10 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
                     valid.append(dict(row, payload=work_payload(store, row, snapshot, items)))
         except Exception as exc:
             from .errors import redact
+            if checklist and not full and row['delivery_state'] == 'pending':
+                with store._connect() as db:
+                    db.execute("UPDATE pr_watch SET retry_at=MAX(next_check_at,?) WHERE owner_session=? AND event_id=? AND state='open' AND delivery_state='pending'",
+                               (time.time() + SINGLE_INTERVAL, row['owner_session'], row['event_id']))
             try:
                 store.audit('pr_revalidation_deferred', {'session_id': row['owner_session'],
                     'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id'],
@@ -463,7 +481,7 @@ async def revalidate(store, rows, reader=probe, collector=None, *, full=True, br
     return valid
 
 
-def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=True, branch_reader=None, checklist=False, cwd=None):
+def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=True, branch_reader=None, checklist=False, cwd=None, hook_event_name=None):
     rows = [row for row in pending(store, sid)
             if row['delivery_state'] != 'pending' or row['retry_at'] <= time.time()]
     if event_id and not any(r['event_id'] == event_id for r in rows):
@@ -489,7 +507,8 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
             if changed:
                 claimed.append(row)
         if claimed:
-            store._audit(db, 'pr_monitor_consumed', {'session_id': sid, 'events': [r['event_id'] for r in claimed]})
+            store._audit(db, 'pr_monitor_consumed', {'session_id': sid, 'events': [r['event_id'] for r in claimed],
+                         'hook_event_name': hook_event_name, 'client': claimed[0]['client']})
     return message(claimed, checklist=checklist) if claimed else None
 
 

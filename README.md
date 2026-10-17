@@ -1,6 +1,6 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.15 installs runtime 1.7.15. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.16 installs runtime 1.7.16. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
 ```sh
 git pull --ff-only
@@ -15,7 +15,7 @@ PRD publication adds one separate `[prompts.prd_review_checklist]` instruction. 
 
 The checker retains separate CI, review, conflict, current target ancestry and linked-issue gates. It publishes before local validation, tracks exact owner chats and polls one open PR every five minutes or several every ten minutes. Unchanged errors never restart chats.
 
-Under concurrent chat load, registry and request-coordinator migrations run once rather than on every native callback. Collection waiters observe a running generation without taking the writer lock; strict freshness and lease fencing still apply. Owned inbox delivery survives independent discovery failures. Native lifecycle/base proof allows five seconds per parallel read, and temporary failures retain pending work with a local deferred-revalidation receipt. Overlapping callbacks consume an event atomically once. No polling cadence or completion gate changes.
+Under concurrent chat load, registry and request-coordinator migrations run once rather than on every native callback. Collection waiters observe a running generation without taking the writer lock; strict freshness and lease fencing still apply. Owned inbox delivery survives independent discovery failures. Native lifecycle/base proof allows five seconds per parallel read, and temporary failures retain pending work with a local deferred-revalidation receipt. Overlapping callbacks consume an event atomically once. Authenticated queued work with unavailable proof is deferred to the normal cadence with a new event token; the unverified turn is canceled. Failed native proof also backs off so another ready PR can proceed without repeated reads. Consumed receipts record client and hook event, distinguishing hidden context from queued resumes. No polling cadence or completion gate changes.
 
 Issue #3 adds stable quota blocker identity, durable shared request cooldown and freshness-bound collection sharing. Validation launch and execution each read live ancestry without reloading the whole CI/review inventory. Completion and merge still require full current evidence. Source, the editable PR checklist and 58 retained CLI templates, captured dependency wheels and client wiring are versioned here; tokens, personal settings and mutable task state remain local.
 

@@ -1,7 +1,7 @@
 {
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
-    "caller_pr_gates/checklist.py": "ba1d9754f35dc32bc5a4b3ab5160337b860543c190a9f53151fae38d6f4ad713",
+    "caller_pr_gates/checklist.py": "c19ce3484083ebbfb100bd3fc241f29ccd45bc056f5a830ef8b93c0f7cd545bb",
     "caller_pr_gates/cli.py": "e47e2b95e831ee07b6af2b45cf2268d3195b88d22a097ad33420ca4e757b1278",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "5fbdd87d38f43d8f6219f26c813865cbda742535de72b75acb9719aa105922bd",
@@ -12,7 +12,7 @@
     "caller_pr_gates/github.py": "f82b072dcfa7b5ce5860301bfd574787a5bb5e7e7bb995fd23f93a7f9013af10",
     "caller_pr_gates/handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
     "caller_pr_gates/hook.py": "29d473001097eddd58f2c75ae1fced041be44738ca0bdcaa644df7ea065dd4fb",
-    "caller_pr_gates/monitor.py": "8c1d156a4cb895f9a1170dd45e680efde237a837a9fbec08f28daea7b71c34b3",
+    "caller_pr_gates/monitor.py": "00551f08cfe3e03a4752f796ff9136da9d3cb96b22261e744920fbb2c7ffb033",
     "caller_pr_gates/policy.py": "1486a651a90eb54ada383313ec16cc0713d64fa10d3ce3af365fdfdaa1d3debf",
     "caller_pr_gates/progress.py": "243d1273633dd5ab7c3b7915a24fe48f27c58a4dc16dcc4b26d70c09ee2309c1",
     "caller_pr_gates/prompt-defaults.json": "0c39980965e3c8b4520dee700e99f08c17b1063072fe923cd4f6d4a270ae8ac1",
@@ -27,6 +27,6 @@
     "caller_pr_gates/workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf"
   },
   "known_defects": [],
-  "runtime_version": "1.7.15",
-  "version": "0.1.15"
+  "runtime_version": "1.7.16",
+  "version": "0.1.16"
 }

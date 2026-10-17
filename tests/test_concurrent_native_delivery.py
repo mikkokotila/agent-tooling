@@ -176,4 +176,5 @@ hook.main()
     assert all(not out.strip() for out,_ in batch())
     with store._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM audit WHERE event='pr_monitor_consumed'").fetchone()[0]==15
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='pr_monitor_consumed' AND json_extract(fields,'$.hook_event_name')='PostToolUse'").fetchone()[0]==15
         assert db.execute("SELECT COUNT(*) FROM audit WHERE event='checklist_native_error'").fetchone()[0]==0
