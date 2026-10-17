@@ -260,18 +260,27 @@ def _mutation_dirs(event):
         base = Path(cwd)
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
-        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd\s+(?:--\s+)?', prefix):
+        for match in re.finditer(r'(?:^|[;&|()\n]+)\s*cd\s+', prefix):
             if match.start() not in unquoted:
                 continue  # Printed/quoted shell text cannot change the directory.
             if ambiguous_directory:
                 return None  # A successful list does not prove this cd ran.
             lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
             lexer.whitespace_split = True
-            try: target = next(iter(lexer))
+            physical = False
+            try:
+                target = next(lexer)
+                while target in {'-L', '-P'}:
+                    physical = target == '-P'
+                    target = next(lexer)
+                if target == '--': target = next(lexer)
+                elif target.startswith('-'): return None  # Unsupported cd syntax is not a path.
             except (ValueError, StopIteration): return None
-            if '$' in target or '`' in target or target == '-': return None
+            if '$' in target or '`' in target or target == '-' or all(c in ';&|()\n' for c in target): return None
             target = Path(target).expanduser()
-            base = target if target.is_absolute() else base / target
+            target = target if target.is_absolute() else base / target
+            try: base = target.resolve() if physical else Path(os.path.normpath(target))
+            except (OSError, RuntimeError): return None
         path = base / path
         return str(path if path.is_dir() else path.parent)
     write_paths = []

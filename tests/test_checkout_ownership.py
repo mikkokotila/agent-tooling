@@ -12,6 +12,12 @@ from test_quiet_monitor import local, row, SID, OTHER
     ("mkdir -p /private/tmp/scratch/mk && cd /private/tmp/scratch/mk && cat > render-sampler.mjs <<'EOF'\nconst text = 'image';\nEOF\nnode render-sampler.mjs", None),
     ('cd /private/tmp && cd scratch && cat > output.txt', '/private/tmp/scratch'),
     ('cd -- "/private/tmp/scratch space" && cat > output.txt', '/private/tmp/scratch space'),
+    ('cd -P /other-checkout && cat > output.txt', '/other-checkout'),
+    ('cd -L /other-checkout && cat > output.txt', '/other-checkout'),
+    ('cd -L -P -- /other-checkout && cat > output.txt', '/other-checkout'),
+    ('cd -- -P && cat > output.txt', '/repo/-P'),
+    ('cd -s /other-checkout && cat > output.txt', None),
+    ('cd -P && cat > output.txt', None),
     (r'cd /private/tmp/scratch\ space && cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
@@ -48,12 +54,26 @@ def test_dynamic_cd_does_not_guess_caller_checkout():
     assert hook._mutation_dirs(event) == []
 
 
+@pytest.mark.parametrize('option', ['-L', '-P'])
+def test_cd_option_preserves_logical_or_physical_parent(tmp_path, option):
+    logical = tmp_path / 'logical'
+    physical = tmp_path / 'physical'
+    logical.mkdir(); (physical / 'child').mkdir(parents=True)
+    (logical / 'link').symlink_to(physical / 'child', target_is_directory=True)
+    command = f'cd {option} {logical}/link/.. && cat > output.txt'
+    event = dict(cwd='/repo', tool_name='Bash', tool_input={'command': command})
+    expected = physical.resolve() if option == '-P' else logical
+    assert hook._mutation_dirs(event) == [str(expected)]
+
+
 @pytest.mark.parametrize('client', ['codex', 'claude'])
 @pytest.mark.parametrize('command', [
     r'cd /private/tmp/scratch\ space && cat > output.txt',
     "printf 'x; cd /tmp/scratch ;' && cat > output.txt",
     'cd "$SCRATCH" && cat > /repo/output.txt',
     'false && cd /tmp/scratch; cat > output.txt',
+    'cd -P /other-checkout && cat > output.txt',
+    'cd -s /other-checkout && cat > output.txt',
 ])
 def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]
