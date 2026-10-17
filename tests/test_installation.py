@@ -9,6 +9,26 @@ import manage
 NATIVE=manage.native_smoke
 RUNTIME_MATCHES=manage.runtime_matches
 
+@pytest.mark.parametrize('recovers,already_running', [(True,False),(False,False),(True,True)])
+def test_monitor_activation_retries_are_bounded(tmp_path,monkeypatch,recovers,already_running):
+    from types import SimpleNamespace
+    service=manage.Service(tmp_path);calls=[];pauses=[]
+    def launch(argv,**kwargs):
+        calls.append(argv[1])
+        if argv[1]=='bootstrap':
+            success=recovers and calls.count('bootstrap')==3
+            return SimpleNamespace(returncode=0 if success else 5,stderr='Bootstrap failed: 5: Input/output error')
+        return SimpleNamespace(returncode=0,stderr='')
+    monkeypatch.setattr(manage.subprocess,'run',launch)
+    monkeypatch.setattr(manage.time,'sleep',pauses.append)
+    monkeypatch.setattr(service,'running',lambda: already_running or 'kickstart' in calls)
+    if recovers: service.start()
+    else:
+        with pytest.raises(RuntimeError,match='Monitor activation failed'): service.start()
+    assert calls.count('bootstrap')==(1 if already_running else 3)
+    assert calls.count('kickstart')==(1 if recovers else 0)
+    assert len(pauses)==(0 if already_running else 2) and sum(pauses)<=1
+
 class FakeService:
     def __init__(self,home):
         self.plist=home/'Library/LaunchAgents/local.caller-pr-monitor.plist'

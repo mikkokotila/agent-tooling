@@ -26,7 +26,7 @@ def instructions(texts):
         'Record required checks with validation-plan and run them with validate --background; actual results are required. '
         'Inspect evidence with status --session SESSION --fresh. CLI help describes evidenced review dispositions and resolution. '
         'The PR monitor checks one owned open PR every five minutes, or several every ten minutes. '
-        'Unchanged results, pending CI and API outages do not restart chats. Merged/closed PRs cancel delivery without passing unresolved gates. '
+        'Unresolved actionable work returns to the idle owner at that cadence, even when unchanged; receiving a message is not completion. Pending CI and API outages alone do not restart chats. Merged/closed PRs cancel delivery without passing unresolved gates. '
         'Legacy issue/document reminder loops remain retired. '
         'Publish PRDs through the GitHub gateway with --kind prd; publish agreed slices with --kind slice --slice-id ID. '
         'Record the agreed scope first with scope --file FILE. Confirmed PRD creation delivers one automated review checklist to this chat; '

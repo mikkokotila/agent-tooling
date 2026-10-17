@@ -252,13 +252,22 @@ def _mutation_dirs(event):
     if paths: return list(dict.fromkeys(paths))
     # Shell file writes own their actual destinations, rather than whatever
     # repository happened to be the caller's cwd (for example > /tmp/log).
-    def directory(raw):
-        if not raw or '$' in raw: return None
-        path = Path(raw).expanduser()
-        if not path.is_absolute(): path = Path(cwd) / path
+    def directory(raw, prefix=None):
+        # Decoded shell words lose expansion/quoting context. Do not interpret
+        # them, or reconstruct cwd after a compound command; register explicitly.
+        if not raw or any(c in raw for c in '$`~*?[]{}()#;&|<>\n'): return None
+        prefix = source if prefix is None else prefix
+        if any(prefix[i] == '#' for i in unquoted if i < len(prefix)): return None
+        path = Path(raw)
+        if path.is_absolute():
+            return str(path if path.is_dir() else path.parent)
+        if any(prefix[i] in ';&|()\n' for i in unquoted if i < len(prefix)): return None
+        path = Path(cwd) / path
         return str(path if path.is_dir() else path.parent)
     write_paths = []
     source = _operation_command(command)
+    unquoted = set()
+    redirects = []
     quote = None; escaped = False
     for index, character in enumerate(source):
         if escaped: escaped = False; continue
@@ -267,18 +276,23 @@ def _mutation_dirs(event):
             if character == quote: quote = None
             continue
         if character in {'"', "'", '`'}: quote = character; continue
-        if character != '>': continue
+        unquoted.add(index)
+        if character == '>': redirects.append(index)
+    for index in redirects:
         suffix = source[index + 1:].lstrip('> \t')
         if suffix.startswith('&'): continue
+        if suffix.startswith('|'): suffix = suffix[1:].lstrip()  # >| is one redirection operator.
         try:
             lexer = shlex.shlex(suffix, posix=True, punctuation_chars=';&|()<>\n')
+            lexer.commenters = ''
             lexer.whitespace_split = True
             raw = next(iter(lexer), '')
         except ValueError: continue
-        target = directory(raw)
+        target = directory(raw, source[:index])
         if target: write_paths.append(target)
     try:
         lexer = shlex.shlex(source, posix=True, punctuation_chars=';&|()\n')
+        lexer.commenters = ''
         lexer.whitespace = ' \t\r'; lexer.whitespace_split = True
         groups, group = [], []
         for value in lexer:
@@ -299,15 +313,17 @@ def _mutation_dirs(event):
             if target: write_paths.append(target)
     if write_paths: return list(dict.fromkeys(write_paths))
     if _local_mutation(event) in {'filesystem_write', 'inplace_edit'}: return []
-    # An explicit shell working-directory target supersedes the caller cwd.
-    targeted = []
-    for match in re.finditer(r'(?:\bcd\s+|\bgit\s+-C\s+)("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
-        try: raw = shlex.split(match.group(1))[0]
-        except ValueError: continue
-        path = Path(raw).expanduser()
-        if not path.is_absolute(): path = Path(cwd) / path
-        targeted.append(str(path))
-    return list(dict.fromkeys(targeted or [cwd]))
+    # Git writes may name an exact directory; compound shell cwd is unknown.
+    if any(source[i] in ';&|()\n#' for i in unquoted): return []
+    try: args = shlex.split(source)
+    except ValueError: return []
+    if not args or Path(args[0]).name != 'git': return []
+    if len(args) > 1 and not args[1].startswith('-'): return [cwd]
+    if len(args) < 4 or args[1] != '-C' or args[3].startswith('-'): return []
+    raw = args[2]
+    if any(c in raw for c in '$`~*?[]{}()#'): return []
+    path = Path(raw)
+    return [str(path if path.is_absolute() else Path(cwd) / path)]
 
 
 def _candidate_dirs(event):
@@ -317,7 +333,8 @@ def _candidate_dirs(event):
         for key in ('cwd', 'workdir', 'path', 'file_path', 'filePath'):
             value = args.get(key)
             if isinstance(value, str):
-                p = Path(value).expanduser()
+                try: p = Path(value).expanduser()
+                except (OSError, RuntimeError): continue
                 if not p.is_absolute(): p = Path(_cwd(event)) / p
                 result.append(str(p if p.is_dir() else p.parent))
     command = _command(event)
@@ -325,13 +342,15 @@ def _candidate_dirs(event):
     for nested in literal_exec_commands(_operation_command(command)):
         directory = nested.get('cwd')
         if isinstance(directory, str):
-            p = Path(directory).expanduser()
+            try: p = Path(directory).expanduser()
+            except (OSError, RuntimeError): continue
             if not p.is_absolute(): p = Path(_cwd(event)) / p
             result.append(str(p))
     for match in re.finditer(r'(?:\bcd\s+|\bgit\s+-C\s+)("[^"]+"|\'[^\']+\'|[^\s;&|]+)', command):
         try: value = shlex.split(match.group(1))[0]
         except ValueError: continue
-        p = Path(value).expanduser()
+        try: p = Path(value).expanduser()
+        except (OSError, RuntimeError): continue
         if not p.is_absolute(): p = Path(_cwd(event)) / p
         result.append(str(p))
     return list(dict.fromkeys(result))[:32]
@@ -380,6 +399,11 @@ def discover(event, store):
         try:
             found = discover_current_pr(repository, branch)
             if found.get('found'):
+                if hasattr(store, '_connect'):
+                    with store._connect() as db:
+                        owner = db.execute("SELECT owner_session FROM pr_watch WHERE repository=? AND number=? AND state='open'", (repository, int(found['pull_number']))).fetchone()
+                    if owner and owner['owner_session'] != store.session(sid)['root_session']:
+                        continue  # A shared checkout cannot adopt another chat's PR.
                 key = repository.lower() + '/' + str(found['pull_number'])
                 if key not in known:
                     store.register(sid, _client(), repository, int(found['pull_number']), root)
