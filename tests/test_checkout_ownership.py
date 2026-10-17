@@ -16,6 +16,12 @@ from test_quiet_monitor import local, row, SID, OTHER
     (r'cd /private/tmp/scratch\ space&&cat > output.txt', '/private/tmp/scratch space'),
     (r'cd /private/tmp/scratch\;name && cat > output.txt', '/private/tmp/scratch;name'),
     ('cd /private/tmp/scratch" space" && cat > output.txt', '/private/tmp/scratch space'),
+    ("printf 'x; cd /tmp/scratch ;' && cat > output.txt", '/repo'),
+    ('printf "x; cd /tmp/scratch ;" && cat > output.txt', '/repo'),
+    (r'printf x\; cd /tmp/scratch && cat > output.txt', '/repo'),
+    ('cd "$SCRATCH" && cat > /repo/output.txt', '/repo'),
+    (r'cd "$SCRATCH" && cat > /repo/dir\ name/output.txt', '/repo/dir name'),
+    ('cd "$SCRATCH" && cat > /repo/output.txt && cat > relative.txt', '/repo'),
     ('cat > output.txt && cd /private/tmp', '/repo'),
 ])
 def test_redirect_uses_directory_when_write_occurs(command, expected):
@@ -36,11 +42,16 @@ def test_dynamic_cd_does_not_guess_caller_checkout():
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude'])
-def test_escaped_space_scratch_redirect_completes_native_discovery(local, monkeypatch, client):
+@pytest.mark.parametrize('command', [
+    r'cd /private/tmp/scratch\ space && cat > output.txt',
+    "printf 'x; cd /tmp/scratch ;' && cat > output.txt",
+    'cd "$SCRATCH" && cat > /repo/output.txt',
+])
+def test_redirect_completes_native_discovery(local, monkeypatch, client, command):
     store = local[0]
     monkeypatch.setenv('CALLER_HOOK_CLIENT', client)
     event = dict(hook_event_name='PostToolUse', session_id=OTHER, cwd=row(store)['cwd'], tool_name='Bash',
-                 tool_input={'command': r'cd /private/tmp/scratch\ space && cat > output.txt'},
+                 tool_input={'command': command},
                  tool_response={'exit_code': 0})
     with patch.object(hook, '_git_context', return_value=None), patch.object(hook, 'discover_current_pr', side_effect=AssertionError('scratch work must not read GitHub')):
         assert checklist.handle(event, store) is None

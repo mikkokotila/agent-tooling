@@ -254,10 +254,15 @@ def _mutation_dirs(event):
     # repository happened to be the caller's cwd (for example > /tmp/log).
     def directory(raw, prefix=''):
         if not raw or '$' in raw: return None
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return str(path if path.is_dir() else path.parent)
         base = Path(cwd)
         # A relative redirect belongs to the shell directory at that point,
         # not the chat's launch checkout. Never infer a dynamic cd target.
         for match in re.finditer(r'(?:^|&&|;|\n)\s*cd\s+(?:--\s+)?', prefix):
+            if match.start() not in unquoted:
+                continue  # Printed/quoted shell text cannot change the directory.
             lexer = shlex.shlex(prefix[match.end():], posix=True, punctuation_chars=';&|()\n')
             lexer.whitespace_split = True
             try: target = next(iter(lexer))
@@ -265,11 +270,11 @@ def _mutation_dirs(event):
             if '$' in target or '`' in target or target == '-': return None
             target = Path(target).expanduser()
             base = target if target.is_absolute() else base / target
-        path = Path(raw).expanduser()
-        if not path.is_absolute(): path = base / path
+        path = base / path
         return str(path if path.is_dir() else path.parent)
     write_paths = []
     source = _operation_command(command)
+    unquoted = set()
     quote = None; escaped = False
     for index, character in enumerate(source):
         if escaped: escaped = False; continue
@@ -278,6 +283,7 @@ def _mutation_dirs(event):
             if character == quote: quote = None
             continue
         if character in {'"', "'", '`'}: quote = character; continue
+        unquoted.add(index)
         if character != '>': continue
         suffix = source[index + 1:].lstrip('> \t')
         if suffix.startswith('&'): continue
