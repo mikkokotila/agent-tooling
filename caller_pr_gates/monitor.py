@@ -78,7 +78,7 @@ def defer_queued(store, sid, token):
     now = time.time()
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        changed = db.execute("UPDATE pr_watch SET delivery_state='pending',event_id=?,retry_at=MAX(next_check_at,?),lease_until=0,worker_pid=NULL,error='Queued proof unavailable; deferred to normal cadence' WHERE owner_session=? AND event_id=? AND state='open' AND delivery_state='queued'",
+        changed = db.execute("UPDATE pr_watch SET delivery_state='pending',delivered_fingerprint=NULL,event_id=?,retry_at=MAX(next_check_at,?),lease_until=0,worker_pid=NULL,error='Queued proof unavailable; deferred to normal cadence' WHERE owner_session=? AND event_id=? AND state='open' AND delivery_state='queued'",
                              (str(uuid.uuid4()), now + SINGLE_INTERVAL, sid, token)).rowcount
         if changed:
             db.execute('UPDATE watch_sessions SET busy=0 WHERE session_id=?', (sid,))
