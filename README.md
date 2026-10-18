@@ -1,6 +1,6 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.27 installs runtime 1.7.27. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.28 installs runtime 1.7.28. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
 ```sh
 git pull --ff-only
@@ -26,3 +26,5 @@ Edit the annotated live `~/.local/share/caller-pr-gates/prompts.toml` to influen
 See [installation and rollback](docs/installation.md), [request coordination and budgets](docs/github-coordination.md), [operational inventory](docs/operations.md) and [defect history](docs/known-defects.md).
 
 The active checklist and completion rules live together in `[prompts.pr_checklist]` in the installed `~/.local/share/caller-pr-gates/prompts.toml`. Both clients mirror this text inside the managed markers. Installation retires only the exact known separately appended completion block, preserves its original bytes in the rollback journal, and rejects edited variants rather than deleting human text. Merge readiness adds scalar fields to the existing batched GraphQL read, without extra requests or automatic retries.
+
+Issue-review rereads use the current issue revision when no PR head is present, including an explicit null SHA. Changed issue revisions and mismatched real PR heads still fail verification.
