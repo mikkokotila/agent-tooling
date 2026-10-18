@@ -63,6 +63,30 @@ def test_health_without_a_due_pr_poll_adds_no_remote_reads(local):
     assert len(local[2]) == before
 
 
+def test_poll_outage_remains_visible_without_repeating_delivery_audits(local):
+    enqueue(local)
+    poll(local, 1300)
+    store, data, _, reader, collector = local
+
+    async def unavailable(*args):
+        raise RuntimeError('GitHub outage detail')
+
+    for now in [1600, 1900]:
+        result = asyncio.run(monitor.tick(store, now=now, execute=True, reader=unavailable,
+                            collector=collector, spawn=lambda _: None, checklist=True))
+        assert result['errors'] == 2 and result['workers'] == 0
+        assert row(store)['error'] == 'RuntimeError: GitHub outage detail'
+    # A new fingerprint rebuilds the work payload without resetting this
+    # queued event's deadline or its once-only diagnostic receipt.
+    data['head_sha'] = 'b' * 40
+    assert poll(local, 2200)['errors'] == 1
+    state = row(store)
+    assert state['error'].startswith(monitor.UNCONSUMED)
+    assert json.loads(state['payload'])['queue_deadline'] == 1300
+    with store._connect() as db:
+        assert db.execute("SELECT count(*) FROM audit WHERE event='pr_delivery_unconsumed'").fetchone()[0] == 1
+
+
 def test_late_native_receipt_clears_only_the_delivery_failure(local):
     enqueue(local)
     poll(local, 1300)

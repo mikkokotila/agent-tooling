@@ -265,8 +265,8 @@ def work_payload(store, row, snapshot, items):
     return json.dumps({'head_sha': snapshot['head_sha'], 'items': items,
                        'agreed_scope': (scope or {}).get('agreed_scope'),
                        **({'queued_body_hash': previous['queued_body_hash']} if previous.get('queued_body_hash') else {}),
-                       **({'queue_deadline': previous['queue_deadline']}
-                          if row.get('delivery_state') == 'queued' and previous.get('queue_deadline') else {})})
+                       **{key: previous[key] for key in ('queue_deadline', 'queue_failure_reported')
+                          if row.get('delivery_state') == 'queued' and key in previous}})
 
 
 def unconsumed_deliveries(store, now):
@@ -292,11 +292,15 @@ def unconsumed_deliveries(store, now):
             if deadline > now or (busy and busy['busy']):
                 continue
             error = UNCONSUMED + ' owner has not acknowledged the queued checklist'
-            if row['error'] != error:
-                db.execute("UPDATE pr_watch SET error=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
-                           (error, row['repository'], row['number'], row['event_id']))
+            if not payload.get('queue_failure_reported'):
+                payload['queue_failure_reported'] = True
+                db.execute("UPDATE pr_watch SET payload=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
+                           (json.dumps(payload), row['repository'], row['number'], row['event_id']))
                 store._audit(db, 'pr_delivery_unconsumed', {'session_id': row['owner_session'],
                              'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id']})
+            if row['error'] != error and (not row['error'] or str(row['error']).startswith(UNCONSUMED)):
+                db.execute("UPDATE pr_watch SET error=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
+                           (error, row['repository'], row['number'], row['event_id']))
             failures.append({'repository': row['repository'], 'number': row['number'],
                              'owner_session': row['owner_session'], 'event_id': row['event_id']})
     return failures
@@ -773,6 +777,7 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
                 payload['queued_body_hash'] = hashlib.sha256(body.encode()).hexdigest()
                 if owner['client'] == 'codex':
                     payload['queue_deadline'] = time.time() + DELIVERY_TIMEOUT
+                    payload.pop('queue_failure_reported', None)
             db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint,payload=?,worker_pid=COALESCE(worker_pid,?) WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (json.dumps(payload), os.getpid(), sid, row['event_id']))
     # The human-visible message contains actual work, never API JSON or a polling reminder.
     prompt = MARKER + rows[0]['event_id'] + '-->\n' + body
