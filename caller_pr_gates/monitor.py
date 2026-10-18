@@ -17,6 +17,8 @@ import uuid
 
 SINGLE_INTERVAL = 300
 MULTI_INTERVAL = 600
+DELIVERY_TIMEOUT = 300
+UNCONSUMED = 'Unconsumed Codex delivery:'
 MARKER = '<!-- pr-work-event:'
 RULE = (render_prompt('pr_rules'))
 
@@ -262,7 +264,46 @@ def work_payload(store, row, snapshot, items):
     previous = json.loads(row.get('payload') or '{}')
     return json.dumps({'head_sha': snapshot['head_sha'], 'items': items,
                        'agreed_scope': (scope or {}).get('agreed_scope'),
-                       **({'queued_body_hash': previous['queued_body_hash']} if previous.get('queued_body_hash') else {})})
+                       **({'queued_body_hash': previous['queued_body_hash']} if previous.get('queued_body_hash') else {}),
+                       **{key: previous[key] for key in ('queue_deadline', 'queue_failure_reported')
+                          if row.get('delivery_state') == 'queued' and key in previous}})
+
+
+def unconsumed_deliveries(store, now):
+    """Queue acceptance is not an owner receipt. Keep missing receipts visible.
+
+    This local guard neither requeues messages nor changes their authority:
+    an eventual native callback can still authenticate and consume the event.
+    Legacy queued records acquire one fixed grace period on first observation.
+    """
+    failures = []
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')  # A native receipt cannot race the failure audit.
+        rows = db.execute("SELECT * FROM pr_watch WHERE state='open' AND client='codex' AND delivery_state='queued'").fetchall()
+        for row in rows:
+            payload = json.loads(row['payload'] or '{}')
+            deadline = payload.get('queue_deadline')
+            if deadline is None:
+                payload['queue_deadline'] = now + DELIVERY_TIMEOUT
+                db.execute("UPDATE pr_watch SET payload=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
+                           (json.dumps(payload), row['repository'], row['number'], row['event_id']))
+                continue
+            busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (row['owner_session'],)).fetchone()
+            if deadline > now or (busy and busy['busy']):
+                continue
+            error = UNCONSUMED + ' owner has not acknowledged the queued checklist'
+            if not payload.get('queue_failure_reported'):
+                payload['queue_failure_reported'] = True
+                db.execute("UPDATE pr_watch SET payload=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
+                           (json.dumps(payload), row['repository'], row['number'], row['event_id']))
+                store._audit(db, 'pr_delivery_unconsumed', {'session_id': row['owner_session'],
+                             'repository': row['repository'], 'number': row['number'], 'event_id': row['event_id']})
+            if row['error'] != error and (not row['error'] or str(row['error']).startswith(UNCONSUMED)):
+                db.execute("UPDATE pr_watch SET error=? WHERE repository=? AND number=? AND event_id=? AND delivery_state='queued'",
+                           (error, row['repository'], row['number'], row['event_id']))
+            failures.append({'repository': row['repository'], 'number': row['number'],
+                             'owner_session': row['owner_session'], 'event_id': row['event_id']})
+    return failures
 
 
 async def tick(store, *, execute=False, now=None, reader=probe, collector=None, spawn=None, checklist=False):
@@ -340,9 +381,11 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                         if delivery not in {'reserved', 'queued'}:
                             delivery = 'pending'
                         result['events'] += 1
+                delivery_error = current['error'] if (delivery == 'queued' and current['client'] == 'codex'
+                                  and str(current['error'] or '').startswith(UNCONSUMED)) else None
                 db.execute('''UPDATE pr_watch SET fingerprint=?,event_id=?,payload=?,delivery_state=?,
-                              branch_identity=?,closure_identity=?,error=NULL,updated_at=? WHERE repository=? AND number=?''',
-                           (fingerprint, event, payload, delivery, json.dumps(branch_proof) if branch_proof else None, json.dumps(link_proof) if link_proof else None, now, repository, number))
+                              branch_identity=?,closure_identity=?,error=?,updated_at=? WHERE repository=? AND number=?''',
+                           (fingerprint, event, payload, delivery, json.dumps(branch_proof) if branch_proof else None, json.dumps(link_proof) if link_proof else None, delivery_error, now, repository, number))
                 saved = db.execute('SELECT fields FROM recovery WHERE repository=? AND number=? AND session_id=?',
                                    (repository, number, row['owner_session'])).fetchone()
                 waiting = bool(saved and json.loads(saved['fields']).get('awaiting_validation'))
@@ -389,6 +432,11 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
     if execute and not checklist:
         from .closure import dispatch
         result['closeout_workers'] = dispatch(store, now=now, spawn=spawn)
+    if checklist:
+        failures = unconsumed_deliveries(store, now)
+        if failures:
+            result['unconsumed_deliveries'] = failures
+            result['errors'] += len(failures)
     return result
 
 
@@ -507,7 +555,7 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
         for row in rows:
-            changed = db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=? AND state='open' AND delivery_state IN ('pending','reserved','queued')",
+            changed = db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,error=CASE WHEN client='codex' AND error LIKE 'Unconsumed Codex delivery:%' THEN NULL ELSE error END,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=? AND state='open' AND delivery_state IN ('pending','reserved','queued')",
                        (row['repository'], row['number'], sid, row['event_id'])).rowcount
             if changed:
                 claimed.append(row)
@@ -727,6 +775,9 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
             payload = json.loads(row['payload'])
             if checklist:
                 payload['queued_body_hash'] = hashlib.sha256(body.encode()).hexdigest()
+                if owner['client'] == 'codex':
+                    payload['queue_deadline'] = time.time() + DELIVERY_TIMEOUT
+                    payload.pop('queue_failure_reported', None)
             db.execute("UPDATE pr_watch SET delivery_state='queued',delivered_fingerprint=fingerprint,payload=?,worker_pid=COALESCE(worker_pid,?) WHERE owner_session=? AND event_id=? AND delivery_state='reserved'", (json.dumps(payload), os.getpid(), sid, row['event_id']))
     # The human-visible message contains actual work, never API JSON or a polling reminder.
     prompt = MARKER + rows[0]['event_id'] + '-->\n' + body
