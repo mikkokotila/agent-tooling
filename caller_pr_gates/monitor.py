@@ -278,6 +278,7 @@ def unconsumed_deliveries(store, now):
     """
     failures = []
     with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')  # A native receipt cannot race the failure audit.
         rows = db.execute("SELECT * FROM pr_watch WHERE state='open' AND client='codex' AND delivery_state='queued'").fetchall()
         for row in rows:
             payload = json.loads(row['payload'] or '{}')

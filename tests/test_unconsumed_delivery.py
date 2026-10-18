@@ -1,6 +1,9 @@
 """A durable queue acknowledgement must not hide a missing owner receipt."""
 import asyncio
+from contextlib import contextmanager
 import json
+import sqlite3
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -109,3 +112,42 @@ def test_claude_delivery_is_untouched_by_codex_guard(local):
     before = row(store)
     assert monitor.unconsumed_deliveries(store, 87400) == []
     assert row(store) == before
+
+
+def test_receipt_cannot_be_audited_as_missing_after_it_commits(local):
+    enqueue(local)
+    store = local[0]
+    connected = store._connect
+    committed = threading.Event()
+    workers = []
+
+    def receipt():
+        with sqlite3.connect(store.path, timeout=5) as db:
+            db.execute("UPDATE pr_watch SET delivery_state='consumed',error=NULL")
+            db.execute("INSERT INTO audit(event,fields,recorded_at) VALUES('test_receipt','{}',2000)")
+        committed.set()
+
+    @contextmanager
+    def racing_connection():
+        with connected() as db:
+            def trace(sql):
+                if sql.startswith('SELECT busy FROM watch_sessions') and not workers:
+                    worker = threading.Thread(target=receipt)
+                    workers.append(worker)
+                    worker.start()
+                    # Without the guard's transaction, this receipt commits
+                    # before the stale missing-receipt audit is written.
+                    committed.wait(.1)
+            db.set_trace_callback(trace)
+            yield db
+
+    with patch.object(store, '_connect', racing_connection):
+        monitor.unconsumed_deliveries(store, 2000)
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    assert committed.is_set()
+    with connected() as db:
+        events = [r[0] for r in db.execute("SELECT event FROM audit WHERE event IN ('test_receipt','pr_delivery_unconsumed') ORDER BY id")]
+    assert events == ['pr_delivery_unconsumed', 'test_receipt']
+    assert row(store)['delivery_state'] == 'consumed' and row(store)['error'] is None
