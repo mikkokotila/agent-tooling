@@ -480,13 +480,14 @@ def test_parallel_ticks_cannot_reserve_two_recovery_workers(pr_state):
     asyncio.run(run())
 
 
-def test_issue_receipt_uses_current_issue_revision_with_real_review_policy(state):
+@pytest.mark.parametrize("head_fields", [{}, {"head_sha": None}, {"head_sha": ""}], ids=["missing-pr-head", "null-pr-head", "empty-pr-head"])
+def test_issue_receipt_uses_current_issue_revision_with_real_review_policy(state, head_fields):
     from caller_pr_gates.policy import evaluate_review
     store, job, now, _ = state
     issue = store.register_followup(SID, "Owner/Repo", 17, 0, SCOPE, issue_number=17)
     revision = "1970-01-01T00:31:40Z"
     put_read(store, issue, now[0], head_sha=revision)
-    snap = {"collected_at": now[0], "comments": [], "updated_at": revision, "author_login": "owner", "actor_login": "owner"}
+    snap = {"collected_at": now[0], "comments": [], "updated_at": revision, "author_login": "owner", "actor_login": "owner", **head_fields}
     result = asyncio.run(sup.tick(store, collect_pr=lambda *a: snapshot(now[0]), collect_issue=lambda *a: snap,
                                  evaluate_pr=pass_gates, evaluate_review=evaluate_review, clock=lambda: now[0]))
     assert issue["id"] in result["completed"]
@@ -539,3 +540,21 @@ def test_stop_completion_helper_rejects_unhandled_comment(state):
     gates = pass_gates() + [{"gate": "REVIEW_CONCLUDED", "status": "FAIL"}]
     completed, reason = sup.complete_verified_followup(store, store.followups()[0], snapshot(now[0]), gates, now=now[0])
     assert not completed and "gates remain unfinished" in reason
+
+
+def test_issue_reread_rejects_changed_revision_when_pr_head_is_null(state):
+    store, _, now, _ = state
+    issue = store.register_followup(SID, "Owner/Repo", 17, 0, SCOPE, issue_number=17)
+    put_read(store, issue, now[0], head_sha="1970-01-01T00:31:40Z")
+    snap = {"collected_at": now[0], "comments": [], "head_sha": None,
+            "updated_at": "1970-01-01T00:31:41Z", "author_login": "owner", "actor_login": "owner"}
+    result = asyncio.run(sup.tick(store, collect_pr=lambda *a: snapshot(now[0]), collect_issue=lambda *a: snap,
+                                 evaluate_pr=pass_gates, evaluate_review=pass_gates, clock=lambda: now[0]))
+    assert issue["id"] not in result["completed"]
+
+
+def test_pr_reread_cannot_substitute_issue_revision_for_a_real_head(state):
+    store, job, now, _ = state
+    put_read(store, job, now[0], head_sha="1970-01-01T00:31:40Z")
+    snap = dict(snapshot(now[0]), updated_at="1970-01-01T00:31:40Z")
+    assert sup._read_verified(next(item for item in store.followups() if item["id"] == job["id"]), snap, SCOPE) == (False, "review reread no longer matches current content")

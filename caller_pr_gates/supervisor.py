@@ -158,7 +158,7 @@ def _read_verified(job: dict, snapshot: dict, current_scope: dict | None) -> tup
         read_at = _epoch(receipt.get("read_at"))
         if read_at < _epoch(job["due_at"]) or read_at > _epoch(snapshot.get("collected_at")):
             return False, "review reread was before the due time or is unverifiable"
-        expected_head = snapshot.get("head_sha", snapshot.get("updated_at"))
+        expected_head = snapshot.get("head_sha") or snapshot.get("updated_at")
         if not expected_head or receipt.get("head_sha") != expected_head:
             return False, "review reread no longer matches current content"
         comments = snapshot.get("comments")
