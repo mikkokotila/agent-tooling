@@ -10,6 +10,7 @@ import pytest
 
 from caller_pr_gates import monitor
 from caller_pr_gates.store import Store
+from test_policy import check, fresh_branch
 from test_quiet_monitor import local, row, SID
 
 
@@ -78,7 +79,9 @@ def test_poll_outage_remains_visible_without_repeating_delivery_audits(local):
         assert row(store)['error'] == 'RuntimeError: GitHub outage detail'
     # A new fingerprint rebuilds the work payload without resetting this
     # queued event's deadline or its once-only diagnostic receipt.
-    data['head_sha'] = 'b' * 40
+    head = 'b' * 40
+    data.update(head_sha=head, head_sha_after=head, merge_readiness_head_sha=head,
+                checks=[check(head_sha=head, conclusion='failure')], **fresh_branch(head))
     assert poll(local, 2200)['errors'] == 1
     state = row(store)
     assert state['error'].startswith(monitor.UNCONSUMED)
