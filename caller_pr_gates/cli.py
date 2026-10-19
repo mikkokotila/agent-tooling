@@ -263,6 +263,7 @@ def _nonrequired_quota_merge_allowed(store, sid, target, argv, rows, approval):
 def gateway(args, store):
     sid = session_id(args)
     argv = args.arguments
+    admitted_api_body = None
     if argv and argv[0] == '--': argv = argv[1:]
     if len(argv) < 2 or argv[0] not in {'pr', 'issue', 'api'}:
         raise ValueError('Gateway accepts gh pr, gh issue, or gh api operations')
@@ -326,11 +327,14 @@ def gateway(args, store):
                     and any(p['repository'] == repo and p['number'] == num for p in store.prs(sid))):
                 verb = (method or '').upper()
                 input_path = options.get('--input')
-                exact_args = (input_path and argv == ['api', endpoint, '--method', verb, '--input', input_path])
+                exact_args = (input_path and input_path != '-' and argv == ['api', endpoint, '--method', verb, '--input', input_path])
                 secret_endpoint = endpoint == f'repos/{repo}/actions/secrets/LINKEDIN_TOKEN'
                 workflow_endpoint = endpoint == f'repos/{repo}/actions/permissions/workflow'
-                if exact_args and verb == 'PUT' and (secret_endpoint or workflow_endpoint):
-                    payload = json.loads(Path(input_path).read_text())
+                auto_merge_endpoint = endpoint == f'repos/{repo}'
+                if exact_args and ((verb == 'PUT' and (secret_endpoint or workflow_endpoint)) or (verb == 'PATCH' and auto_merge_endpoint)):
+                    source = Path(input_path)
+                    if not source.is_absolute(): source = Path(args.cwd) / source
+                    payload = json.loads(source.read_text())
                     if secret_endpoint and isinstance(payload, dict) and set(payload) == {'key_id', 'encrypted_value'}:
                         try:
                             ciphertext = base64.b64decode(payload['encrypted_value'], validate=True)
@@ -338,7 +342,14 @@ def gateway(args, store):
                         except (ValueError, TypeError):
                             pass
                     elif workflow_endpoint:
-                        allowed_stream_config = payload == {'default_workflow_permissions': 'read', 'can_approve_pull_request_reviews': True}
+                        allowed_stream_config = (payload == {'default_workflow_permissions': 'read', 'can_approve_pull_request_reviews': True}
+                                                 and payload['can_approve_pull_request_reviews'] is True)
+                    elif auto_merge_endpoint:
+                        allowed_stream_config = payload == {'allow_auto_merge': True} and payload['allow_auto_merge'] is True
+                    if allowed_stream_config:
+                        # gh must receive these admitted bytes, never reopen a mutable caller file.
+                        admitted_api_body = json.dumps(payload)
+                        argv = ['api', endpoint, '--method', verb, '--input', '-']
             if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun):
                 raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
@@ -402,7 +413,10 @@ def gateway(args, store):
             if args.slice_id: store.update_followup(followup['id'], followup['status'], {'slice_id': args.slice_id})
         store.audit('github_mutation', {'session_id': sid, 'operation': argv[:2], 'repository': repository, 'number': number})
         return None
-    result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd, timeout=90)
+    run_options = {'cwd': args.cwd, 'timeout': 90}
+    if admitted_api_body is not None:
+        run_options.update(input=admitted_api_body, text=True)
+    result = github_run(['gh', *argv], runner=subprocess.run, **run_options)
     if result.returncode: raise RuntimeError(f'GitHub operation exited {result.returncode}')
     # Reads and URLs mentioned in comment/body/diagnostic data do not own PRs.
     if mutation and target_info and not target_info[3]:

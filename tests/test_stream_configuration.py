@@ -26,10 +26,12 @@ def config(tmp_path):
 
 
 def test_existing_linkedin_credential_can_be_restored_as_encrypted_data(config):
-    store, args, _ = config
+    store, args, path = config
     with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
         gateway(args, store)
     run.assert_called_once()
+    assert run.call_args.args[0][-2:] == ['--input', '-']
+    assert json.loads(run.call_args.kwargs['input']) == json.loads(path.read_text())
 
 
 def test_stream_workflow_can_create_prs_with_default_read_permissions(config):
@@ -39,6 +41,16 @@ def test_stream_workflow_can_create_prs_with_default_read_permissions(config):
     with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
         gateway(args, store)
     run.assert_called_once()
+
+
+def test_stream_auto_merge_can_be_enabled_without_altering_branch_requirements(config):
+    store, args, path = config
+    path.write_text(json.dumps({'allow_auto_merge': True}))
+    args.arguments[1], args.arguments[3] = f'repos/{REPO}', 'PATCH'
+    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
+        gateway(args, store)
+    run.assert_called_once()
+    assert json.loads(run.call_args.kwargs['input']) == {'allow_auto_merge': True}
 
 
 @pytest.mark.parametrize('endpoint,verb', [
@@ -85,3 +97,47 @@ def test_additional_query_fields_cannot_escape_the_exact_payload(config):
     with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
+
+
+def test_enabling_auto_merge_cannot_modify_other_repository_settings(config):
+    store, args, path = config
+    path.write_text(json.dumps({'allow_auto_merge': True, 'allow_merge_commit': False}))
+    args.arguments[1], args.arguments[3] = f'repos/{REPO}', 'PATCH'
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='API gateway permits'):
+            gateway(args, store)
+
+
+def test_relative_input_uses_the_gh_working_directory(config, tmp_path, monkeypatch):
+    store, args, path = config
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir()
+    (elsewhere / path.name).write_text('{"default_workflow_permissions":"write"}')
+    monkeypatch.chdir(elsewhere)
+    args.arguments[-1] = path.name
+    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
+        gateway(args, store)
+    assert json.loads(run.call_args.kwargs['input']) == json.loads(path.read_text())
+
+
+def test_stdin_cannot_be_admitted_using_a_decoy_file(config):
+    store, args, path = config
+    (path.parent / '-').write_text(path.read_text())
+    args.arguments[-1] = '-'
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='API gateway permits'):
+            gateway(args, store)
+
+
+def test_mutating_the_input_file_cannot_change_the_admitted_request(config):
+    store, args, path = config
+    admitted = path.read_text()
+
+    def write(argv, **kwargs):
+        path.write_text('{"default_workflow_permissions":"write"}')
+        assert argv[-2:] == ['--input', '-']
+        assert json.loads(kwargs['input']) == json.loads(admitted)
+        return subprocess.CompletedProcess(argv, 0)
+
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=write):
+        gateway(args, store)
