@@ -1,6 +1,8 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.39 installs runtime 1.7.39.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.40 installs runtime 1.7.40.
+
+After an external merge, the recorded owner can finish its retained qualification with `validation-plan` / `validate --merged-head ORIGINAL_PR_HEAD`. The exact checkout, unchanged declared inputs and stable live merged-source proof remain required. Retired reminders stay retired; closed PRs do not establish task acceptance or merge readiness. See [operations](docs/operations.md#retained-post-merge-qualification).
 
 Narrow validation preflights pin actual lifecycle, head and target ancestry while allowing unrelated comment timestamps to change. Full review and completion freshness remain unchanged.
 

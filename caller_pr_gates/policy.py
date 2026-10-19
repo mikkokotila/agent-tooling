@@ -307,7 +307,8 @@ def branch_freshness_gate(snapshot: dict) -> dict:
 def merge_readiness_gate(snapshot: dict, ci: list[dict]) -> dict:
     evidence = {key: snapshot.get(key) for key in ('merge_state_status', 'review_decision', 'merge_readiness_head_sha')}
     if snapshot.get('state') == 'closed':
-        return _gate('MERGE_READY', 'PASS', [], {'source_closed': True})
+        return _gate('MERGE_READY', 'WAIT', ['PR is closed; closure does not prove task acceptance or merge readiness'],
+                     {'source_closed': True, 'applicable': False, 'completion_verified': False})
     state, decision = snapshot.get('merge_state_status'), snapshot.get('review_decision')
     if (snapshot.get('merge_readiness_head_sha') != snapshot.get('head_sha')
             or 'review_decision' not in snapshot or decision not in {None, 'APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}

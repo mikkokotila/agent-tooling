@@ -550,11 +550,25 @@ async def collect_validation_with_client(client,repository,number):
         raise EvidenceError('PR lifecycle changed during validation preflight')
     if (after.get('base') or {}).get('ref')!=base:raise EvidenceError('PR target changed during validation preflight')
     if (after.get('head') or {}).get('sha')!=head:raise EvidenceError('PR head changed during validation preflight')
+    # Retained qualification needs the merged original head, never a caller's
+    # replacement commit. These fields do not change open-PR ancestry gates.
+    merged_source = {
+        'merge_commit_sha': raw.get('merge_commit_sha'),
+        'head_repository': ((raw.get('head') or {}).get('repo') or {}).get('full_name'),
+        'base_repository': ((raw.get('base') or {}).get('repo') or {}).get('full_name'),
+    }
+    merged_source_after = {
+        'merge_commit_sha': after.get('merge_commit_sha'),
+        'head_repository': ((after.get('head') or {}).get('repo') or {}).get('full_name'),
+        'base_repository': ((after.get('base') or {}).get('repo') or {}).get('full_name'),
+    }
+    if raw['merged'] and merged_source != merged_source_after:
+        raise EvidenceError('Merged source identity changed during validation preflight')
     receipt=await _branch_final_read(client,prefix,receipt)
     error=receipt.pop('branch_error',None)
     return dict(repository=repository,number=number,profile='validation',state=raw['state'],merged=raw['merged'],
         head_sha=head,head_sha_after=(after.get('head') or {}).get('sha'),base_ref_after=(after.get('base') or {}).get('ref'),
-        collected_at=time.time(),component_errors={'branch_freshness':error} if error else {},**receipt)
+        collected_at=time.time(),component_errors={'branch_freshness':error} if error else {},**merged_source,**receipt)
 
 
 async def collect_validation(repository,number,token_user=None):
