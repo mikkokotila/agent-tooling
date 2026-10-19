@@ -1,6 +1,8 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.37 installs runtime 1.7.37.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.38 installs runtime 1.7.38.
+
+Dependency-directory validation fingerprints exclude Vitest's regenerated timing records. Dependency code, tracked files and explicitly declared cache files remain inputs.
 
 The GitHub gateway can create the exact private personal repository authorized in the recorded scope (`repository_creation`: `full_name`, `visibility=private`, `approval_evidence`). It admits only `repo create OWNER/NAME --private [--description TEXT]`, verifies the authenticated owner and reads back identity and visibility. Clone, push, public creation and other repository mutations remain outside this operation. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 

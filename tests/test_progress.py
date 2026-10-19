@@ -74,6 +74,37 @@ class ValidationProgressRegression(unittest.TestCase):
         (self.root / "ignored.json").write_text('{"seed": 2}')
         self.assertNotEqual(before, fingerprint(self.root, plan))
 
+    def test_dependency_directory_ignores_generated_vitest_timings_but_hashes_code(self):
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        package = self.root / "node_modules" / "example" / "index.js"
+        package.parent.mkdir(parents=True)
+        package.write_text("export const value = 1\n")
+        cache = self.root / "node_modules" / ".vite" / "vitest" / ("a" * 40) / "results.json"
+        plan = {**self.plan, "input_paths": ["node_modules"]}
+        before = fingerprint(self.root, plan)
+        cache.parent.mkdir(parents=True)
+        cache.write_text('{"results": []}')
+        self.assertEqual(before, fingerprint(self.root, plan))
+        cache.write_text('{"results": [["test", {"duration": 42}]]}')
+        self.assertEqual(before, fingerprint(self.root, plan))
+        package.write_text("export const value = 2\n")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+
+    def test_explicit_and_tracked_vitest_cache_files_remain_inputs(self):
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        cache = self.root / "node_modules" / ".vite" / "vitest" / ("a" * 40) / "results.json"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("one")
+        plan = {**self.plan, "input_paths": ["node_modules", cache.relative_to(self.root).as_posix()]}
+        before = fingerprint(self.root, plan)
+        cache.write_text("two")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+        self.git("add", "--force", "node_modules")
+        directory_plan = {**self.plan, "input_paths": ["node_modules"]}
+        before = fingerprint(self.root, directory_plan)
+        cache.write_text("three")
+        self.assertNotEqual(before, fingerprint(self.root, directory_plan))
+
     def test_symlink_target_changes_are_hashed(self):
         (self.root / "ignored.json").write_text("one")
         (self.root / "linked.json").symlink_to("ignored.json")

@@ -319,7 +319,13 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
             for directory, folders, files in os.walk(candidate, followlinks=False):
                 folders[:] = [folder for folder in folders if folder != ".git"]
                 for name in files + [folder for folder in folders if (Path(directory) / folder).is_symlink()]:
-                    paths.add((Path(directory) / name).relative_to(repository).as_posix())
+                    relative = (Path(directory) / name).relative_to(repository)
+                    # Vitest regenerates execution timings inside its dependency tree.
+                    # Tracked files and individually declared inputs still take precedence.
+                    if (len(relative.parts) >= 5 and relative.parts[-5:-2] == ("node_modules", ".vite", "vitest")
+                            and re.fullmatch(r"[0-9a-f]{40}", relative.parts[-2]) and name == "results.json"):
+                        continue
+                    paths.add(relative.as_posix())
         else:
             relative = candidate.relative_to(repository).as_posix()
             paths.add(relative)
