@@ -9,7 +9,7 @@
     "caller_pr_gates/errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
     "caller_pr_gates/external.py": "3ba7729c19b122936790f6350df1c90545e174636f38f356f629c839b9c28516",
     "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
-    "caller_pr_gates/github.py": "f82b072dcfa7b5ce5860301bfd574787a5bb5e7e7bb995fd23f93a7f9013af10",
+    "caller_pr_gates/github.py": "b4fac460690b162dcfcc14316440751d0a8f1a31e90168b62cadcf403bb5cb71",
     "caller_pr_gates/handoff.py": "9ba4db254b13f6feef4657c6d56da8254632d3cdb444375a6cd7a6dd780b2ec2",
     "caller_pr_gates/hierarchy.py": "72f13c9843430de6249659c2307a4155784ad2d42df77d357b477402a7b793ba",
     "caller_pr_gates/hook.py": "7f383cf9933df64f6a6c0ee02f294d2f4655a47cb1e7f8214cdf6b3bf628735e",
@@ -28,6 +28,6 @@
     "caller_pr_gates/workflow.py": "1e1e9c76c8b324fd84320d66719ce01de2a55b952f6387069f20cc6eb30109cf"
   },
   "known_defects": [],
-  "runtime_version": "1.7.38",
-  "version": "0.1.38"
+  "runtime_version": "1.7.39",
+  "version": "0.1.39"
 }

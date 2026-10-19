@@ -1,6 +1,8 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.38 installs runtime 1.7.38.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.39 installs runtime 1.7.39.
+
+Narrow validation preflights pin actual lifecycle, head and target ancestry while allowing unrelated comment timestamps to change. Full review and completion freshness remain unchanged.
 
 Dependency-directory validation fingerprints exclude Vitest's regenerated timing records. Dependency code, tracked files and explicitly declared cache files remain inputs.
 
