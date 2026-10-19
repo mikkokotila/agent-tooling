@@ -12,6 +12,7 @@ import pytest
 
 from caller_pr_gates import cli, github, monitor, progress, workflow
 from caller_pr_gates.policy import evaluate_pr
+from caller_pr_gates.store import Store
 from test_github import Client
 from test_workflow import local, git, publish
 
@@ -144,6 +145,42 @@ def test_retained_mode_refuses_clone_and_subdirectory(local, tmp_path):
     for cwd in (clone, child):
         with pytest.raises(ValueError, match='exact recorded owner'):
             run(local, cwd=cwd)
+
+
+def test_original_registration_in_subdirectory_retains_same_checkout(local, tmp_path):
+    _, root, snap, plan = local
+    subdir = root / 'subdir'
+    subdir.mkdir()
+    store = Store(tmp_path / 'subdirectory-state')
+    store.register('s', 'codex', 'Owner/Repo', 1, str(subdir))
+    store.set_snapshot('Owner/Repo', 1, snap, evaluate_pr(snap, []))
+    context = store, root, snap, plan
+    prepare(context)
+    merge(context)
+    assert run(context)['run']['status'] == 'pass'
+    with store._connect() as db:
+        watch = db.execute('SELECT * FROM pr_watch').fetchone()
+    assert watch['cwd'] == str(subdir) and watch['state'] == 'merged'
+
+
+@pytest.mark.parametrize('takeover', ['owner', 'checkout'])
+def test_reregistering_closed_pr_cannot_manufacture_qualification_ownership(local, tmp_path, takeover):
+    store, root, _, plan = local
+    prepare(local)
+    sid, cwd = 'foreign', root
+    if takeover == 'checkout':
+        sid, cwd = 's', tmp_path / 'clone'
+        subprocess.run(['git', 'clone', '--quiet', str(root), str(cwd)], check=True)
+        git(cwd, 'remote', 'set-url', 'origin', 'https://github.com/Owner/Repo.git')
+    else:
+        store.register(sid, 'codex', 'Owner/Repo', 1, str(cwd))
+    # Simulate an old registration/plan receipt through the existing open API.
+    workflow.save_plan(store, sid, 'Owner/Repo', 1, cwd, plan)
+    merge(local)
+    store.register(sid, 'codex', 'Owner/Repo', 1, str(cwd))
+    merge(local)
+    with pytest.raises(ValueError, match='exact recorded owner'):
+        run(local, sid=sid, cwd=cwd)
 
 
 @pytest.mark.parametrize('change', ['dirty', 'commit', 'pin', 'origin', 'inputs', 'environment'])

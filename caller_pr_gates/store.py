@@ -443,11 +443,20 @@ class Store:
 
     def _retained_validation_plan(self, db, sid, repo, num, directory):
         """A retired watch retains authority only for its exact original plan owner."""
+        from .monitor import checkout
         watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
+        first_owner = db.execute('''SELECT session_id FROM prs WHERE repository=? AND number=?
+                                    ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
+        first_plan = db.execute('''SELECT cwd FROM validation_plans WHERE session_id=? AND repository=?
+                                   AND number=? ORDER BY created_at, plan_id LIMIT 1''', (sid, repo, num)).fetchone()
         row = db.execute('''SELECT * FROM validation_plans WHERE session_id=? AND repository=?
                             AND number=? AND cwd=? AND active=1''', (sid, repo, num, directory)).fetchone()
+        # Re-registering a closed PR can rearm its watch. It cannot manufacture
+        # a new qualification owner/checkout from a legacy foreign receipt.
         if (not watch or watch['owner_session'] != sid or watch['state'] not in {'open', 'merged'}
-                or str(Path(watch['cwd']).expanduser().resolve()) != directory or not row):
+                or not first_owner or self._root(first_owner['session_id'], self._parents(db)) != sid
+                or not first_plan or first_plan['cwd'] != directory
+                or checkout(watch['cwd']) != directory or not row):
             raise ValueError('Post-merge validation requires the exact recorded owner, checkout and retained plan')
         return self._validation_plan_row(row)
 
