@@ -48,7 +48,7 @@ def test_owner_mismatch_never_creates(tmp_path):
     assert run.call_count == 1
 
 
-def test_verified_private_creation_does_not_adopt_prs(tmp_path):
+def test_verified_private_creation_does_not_adopt_prs(tmp_path, capsys):
     store, args = setup(tmp_path)
     responses = [subprocess.CompletedProcess([], 0, '{"login":"owner"}'),
                  subprocess.CompletedProcess([], 0, 'https://github.com/owner/prototype\n'),
@@ -57,6 +57,7 @@ def test_verified_private_creation_does_not_adopt_prs(tmp_path):
     with patch('caller_pr_gates.cli.github_run', side_effect=responses) as run:
         result = gateway(args, store)
     assert result['private'] is True
+    assert capsys.readouterr().out == ''
     assert run.call_args_list[1].args[0] == ['gh', *args.arguments]
     assert store.prs('s') == []
 
@@ -87,3 +88,16 @@ def test_account_lookup_failure_retains_diagnostic_and_never_creates(tmp_path):
         with pytest.raises(RuntimeError, match='lookup failed: relay cooldown'):
             gateway(args, store)
     assert run.call_count == 1
+
+
+@pytest.mark.parametrize('malformed', ['authorized', ['owner/prototype'], True])
+def test_malformed_authorization_fails_before_remote_reads(tmp_path, malformed):
+    store = Store(tmp_path / 'state')
+    store.record_session('s', 'codex', str(tmp_path))
+    store.record_scope('s', dict(agreed_scope='Create prototype', acceptance_criteria=[],
+        slice_count=0, slice_ids=[], approved_at=1, repository_creation=malformed))
+    args = SimpleNamespace(session='s', client='codex', cwd=str(tmp_path),
+                           arguments=['repo', 'create', 'owner/prototype', '--private'])
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not read/write')):
+        with pytest.raises(ValueError, match='mapping'):
+            gateway(args, store)

@@ -302,6 +302,8 @@ def create_scoped_repository(args, store, argv):
     sid = session_id(args)
     scope = store.get_scope(sid) or {}
     approved = scope.get('repository_creation') or {}
+    if not isinstance(approved, dict):
+        raise ValueError('Repository creation authorization must be a mapping')
     name = argv[2] if len(argv) > 2 else ''
     valid = (len(argv) in {4, 6} and argv[:2] == ['repo', 'create']
              and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', name)
@@ -333,7 +335,6 @@ def create_scoped_repository(args, store, argv):
     if not isinstance(canonical, str) or canonical.casefold() != name.casefold() or repo.get('private') is not True or repo.get('html_url') != url:
         raise RuntimeError('Created repository identity/visibility could not be verified')
     store.audit('repository_created', {'session_id': sid, 'repository': name, 'url': url, 'private': True})
-    print(url)
     return {'repository': name, 'url': url, 'private': True}
 
 
