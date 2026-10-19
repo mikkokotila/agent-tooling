@@ -27,10 +27,12 @@ branch for that reconciliation run.
 A squash-merged pull request can prove earlier delivery even when another chat
 owned it. Both reads must agree on the exact head repository, branch and commit,
 target repository and branch, closed and merged state, merge commit and merge
-time. The merge must strictly precede the publication marker, and its merge commit
+time. GitHub reports merge times to whole seconds. That entire reported second
+must end before or at the publication marker (`merged_at + 1 second <= marker`),
+so a marker in the same second remains ambiguous and is retained. The merge commit
 must be an ancestor of the live default tip. Repository identity, default-branch
-selection and its commit are rechecked after these reads. A reused branch name,
-an equal merge/marker timestamp or a closed but unmerged pull request is not proof.
+selection and its commit are rechecked after these reads. A reused branch name or
+a closed but unmerged pull request is not proof.
 
 Before retiring a record, the command compares the clean source, recorded branch
 tip, task ancestry and exact marker version again. Only that task's matching

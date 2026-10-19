@@ -183,11 +183,12 @@ async def refresh(store, session_id, *, cwd=None, client=None):
                     pulls = listings[recorded_branch]
                     if not isinstance(pulls, list) or len(pulls) > 100:
                         raise ValueError('Closed pull-request discovery is unavailable')
+                    # GitHub reports whole seconds; that entire second must predate the marker.
                     matches = [pull for pull in pulls
                                if _pr_source(pull, repository, recorded_branch, local['branch_head'], branch)
                                and pull.get('state') == 'closed'
                                and (merged := _merged_at(pull.get('merged_at'))) is not None
-                               and merged < row['updated_at']]
+                               and merged + 1 <= row['updated_at']]
                     if not matches:
                         continue
                     number = matches[0]['number']
@@ -200,7 +201,7 @@ async def refresh(store, session_id, *, cwd=None, client=None):
                             raise ValueError('Merged pull-request identity changed or is unavailable')
                         proofs[key] = before
                     proof = proofs[key]
-                    if (proof['merged_timestamp'] >= row['updated_at']
+                    if (proof['merged_timestamp'] + 1 > row['updated_at']
                             or not on_base(row['cwd'], proof['merge_commit_sha'], sha)):
                         continue
                     current_metadata = await client.get('/repos/' + repository)

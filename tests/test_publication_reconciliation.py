@@ -333,6 +333,35 @@ def test_squash_without_exact_preexisting_merged_identity_stays_unpublished(squa
     assert gate_state(store) == original
 
 
+@pytest.mark.parametrize('marker_delay, retired', [(0.5, False), (1, True)])
+def test_second_precision_merge_time_requires_marker_in_the_next_second(squashed, marker_delay, retired):
+    store, root, proof = squashed
+    client = SquashedLive(proof)
+    client.pull['merged_at'] = iso_time(proof['marker'])
+    with store._connect() as db:
+        db.execute("UPDATE unpublished_work SET updated_at=? WHERE session_id='s'",
+                   (proof['marker'] + marker_delay,))
+    original = gate_state(store)
+    result = asyncio.run(refresh(store, 's', cwd=root, client=client))
+    assert bool(result['retired']) is retired and result['completion'] is False
+    assert count(store, root) == (1 if retired else 2)
+    assert gate_state(store) == original
+
+
+def test_authoritative_same_second_merge_time_cannot_reuse_an_older_listing_timestamp(squashed):
+    store, root, proof = squashed
+    client = SquashedLive(proof)
+    client.listing = [deepcopy(client.pull)]
+    client.pull['merged_at'] = iso_time(proof['marker'])
+    with store._connect() as db:
+        db.execute("UPDATE unpublished_work SET updated_at=? WHERE session_id='s'", (proof['marker'] + 0.5,))
+    original = gate_state(store)
+    result = asyncio.run(refresh(store, 's', cwd=root, client=client))
+    assert client.reads.get('pull') == 2
+    assert not result['retired'] and count(store, root) == 2 and result['completion'] is False
+    assert gate_state(store) == original
+
+
 def test_new_commit_after_the_squashed_tip_remains_unpublished(squashed):
     store, root, proof = squashed
     git(root, 'switch', '-q', 'shipped')
