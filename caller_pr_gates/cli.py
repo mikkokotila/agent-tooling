@@ -315,7 +315,9 @@ def create_scoped_repository(args, store, argv):
         raise ValueError('Repository creation requires the exact approved private repository; clone, push and other repository operations are not admitted')
     actor = github_run(['gh', 'api', 'user'], runner=subprocess.run, cwd=args.cwd,
                        text=True, capture_output=True, timeout=30)
-    if actor.returncode or json.loads(actor.stdout).get('login', '').lower() != name.split('/')[0].lower():
+    if actor.returncode:
+        raise RuntimeError('Authenticated account lookup failed: ' + actor.stderr.strip())
+    if json.loads(actor.stdout).get('login', '').lower() != name.split('/')[0].lower():
         raise ValueError('Repository owner must match the authenticated personal account')
     result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd,
                         text=True, capture_output=True, timeout=90)
@@ -326,8 +328,9 @@ def create_scoped_repository(args, store, argv):
     if verified.returncode:
         raise RuntimeError('Repository creation outcome requires readback; do not repeat creation')
     repo = json.loads(verified.stdout)
-    url = 'https://github.com/' + name
-    if repo.get('full_name') != name or repo.get('private') is not True or repo.get('html_url') != url:
+    canonical = repo.get('full_name')
+    url = 'https://github.com/' + (canonical if isinstance(canonical, str) else '')
+    if not isinstance(canonical, str) or canonical.casefold() != name.casefold() or repo.get('private') is not True or repo.get('html_url') != url:
         raise RuntimeError('Created repository identity/visibility could not be verified')
     store.audit('repository_created', {'session_id': sid, 'repository': name, 'url': url, 'private': True})
     print(url)

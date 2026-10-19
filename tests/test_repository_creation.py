@@ -69,3 +69,21 @@ def test_readback_mismatch_is_not_success(tmp_path):
     with patch('caller_pr_gates.cli.github_run', side_effect=responses):
         with pytest.raises(RuntimeError, match='verified'):
             gateway(args, store)
+
+
+def test_canonical_github_case_is_verified_after_creation(tmp_path):
+    store, args = setup(tmp_path)
+    responses = [subprocess.CompletedProcess([], 0, '{"login":"Owner"}'),
+                 subprocess.CompletedProcess([], 0, ''),
+                 subprocess.CompletedProcess([], 0, json.dumps(dict(full_name='Owner/Prototype',
+                    private=True, html_url='https://github.com/Owner/Prototype')))]
+    with patch('caller_pr_gates.cli.github_run', side_effect=responses):
+        assert gateway(args, store)['url'] == 'https://github.com/Owner/Prototype'
+
+
+def test_account_lookup_failure_retains_diagnostic_and_never_creates(tmp_path):
+    store, args = setup(tmp_path)
+    with patch('caller_pr_gates.cli.github_run', return_value=subprocess.CompletedProcess([], 1, '', 'relay cooldown')) as run:
+        with pytest.raises(RuntimeError, match='lookup failed: relay cooldown'):
+            gateway(args, store)
+    assert run.call_count == 1
