@@ -1,14 +1,15 @@
 """Add one native parent edge for a document owned by this chat."""
 from __future__ import annotations
 
+import re
 import subprocess
 
 from .ghrelay import run as github_run
 
 QUERY = '''query($owner:String!,$repo:String!,$parent:Int!,$child:Int!){
   repository(owner:$owner,name:$repo){
-    parent:issue(number:$parent){databaseId number url}
-    child:issue(number:$child){databaseId number url parent{number url}}
+    parent:issue(number:$parent){number url}
+    child:issue(number:$child){fullDatabaseId number url parent{number url}}
   }
 }'''
 
@@ -39,9 +40,11 @@ async def link(store, sid, parent_url, child_url, *, client=None):
         for key, number, url in [('parent', parent, expected_parent), ('child', child, expected_child)]:
             node = nodes.get(key)
             if (not isinstance(node, dict) or node.get('number') != number
-                    or str(node.get('url') or '').lower() != url.lower()
-                    or type(node.get('databaseId')) is not int or node['databaseId'] <= 0):
+                    or str(node.get('url') or '').lower() != url.lower()):
                 raise ValueError('Native issue identity is unavailable or changed')
+        identity = nodes['child'].get('fullDatabaseId')
+        if type(identity) not in {int, str} or not re.fullmatch(r'[1-9][0-9]*', str(identity)):
+            raise ValueError('Native issue identity is unavailable or changed')
         if 'parent' not in nodes['child']:
             raise ValueError('Current parent evidence is unavailable')
         return nodes
@@ -55,7 +58,7 @@ async def link(store, sid, parent_url, child_url, *, client=None):
         return dict(parent=expected_parent, child=expected_child, status='already_linked')
 
     result = github_run(['gh', 'api', f'repos/{repo}/issues/{parent}/sub_issues', '--method', 'POST',
-                         '-F', f'sub_issue_id={nodes["child"]["databaseId"]}', '-F', 'replace_parent=false'],
+                         '-F', f'sub_issue_id={nodes["child"]["fullDatabaseId"]}', '-F', 'replace_parent=false'],
                         runner=subprocess.run, text=True, capture_output=True, timeout=30)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or 'Native issue link failed; verify before retrying')

@@ -25,21 +25,22 @@ def owned(tmp_path):
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, identity=5914810765):
         self.calls = 0
-        self.nodes = dict(parent=dict(databaseId=100, number=10, url=PARENT),
-                          child=dict(databaseId=101, number=11, url=CHILD, parent=None))
+        self.nodes = dict(parent=dict(number=10, url=PARENT),
+                          child=dict(fullDatabaseId=identity, number=11, url=CHILD, parent=None))
 
     async def graphql(self, query, variables):
         self.calls += 1
         return dict(repository=copy.deepcopy(self.nodes))
 
 
-def test_link_verifies_the_exact_edge_and_retry_does_not_write(owned):
-    client = Client()
+@pytest.mark.parametrize('identity', [5914810765, '5914810765'])
+def test_link_verifies_the_exact_edge_and_retry_does_not_write(owned, identity):
+    client = Client(identity)
     def write(argv, **kwargs):
         assert argv == ['gh', 'api', 'repos/owner/repo/issues/10/sub_issues', '--method', 'POST',
-                        '-F', 'sub_issue_id=101', '-F', 'replace_parent=false']
+                        '-F', 'sub_issue_id=5914810765', '-F', 'replace_parent=false']
         client.nodes['child']['parent'] = dict(number=10, url=PARENT)
         return subprocess.CompletedProcess(argv, 0)
     with patch('caller_pr_gates.hierarchy.github_run', side_effect=write) as run:
@@ -62,7 +63,7 @@ def test_foreign_or_invalid_edges_never_read_or_write(owned, sid, parent, child)
 
 
 @pytest.mark.parametrize('field,value', [('parent', dict(number=12, url=PARENT.replace('/10', '/12'))),
-    ('url', 'https://github.com/elsewhere/repo/issues/11'), ('databaseId', True)])
+    ('url', 'https://github.com/elsewhere/repo/issues/11'), ('fullDatabaseId', True)])
 def test_existing_parent_and_unverified_identities_are_retained(owned, field, value):
     client = Client(); client.nodes['child'][field] = value
     with patch('caller_pr_gates.hierarchy.github_run', side_effect=AssertionError('must not write')):
