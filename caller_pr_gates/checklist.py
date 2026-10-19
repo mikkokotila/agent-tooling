@@ -29,6 +29,7 @@ def instructions(texts):
         'Unresolved actionable work returns to the idle owner at that cadence, even when unchanged; receiving a message is not completion. Pending CI and API outages alone do not restart chats. Merged/closed PRs cancel delivery without passing unresolved gates. '
         'Legacy issue/document reminder loops remain retired. '
         'Publish PRDs through the GitHub gateway with --kind prd; publish agreed slices with --kind slice --slice-id ID. '
+        'Create their native parent links with caller-pr-gates link-issues PARENT_URL CHILD_URL --session SESSION; the child must be this chat\'s recorded PRD/slice. '
         'Record the agreed scope first with scope --file FILE. Confirmed PRD creation delivers one automated review checklist to this chat; '
         'keep that turn active, poll every five minutes, address findings, and finish every scheduled document review before implementation.\n'
         'Copilot quota exhaustion, unavailability and review execution status never block work, completion or merge. '
