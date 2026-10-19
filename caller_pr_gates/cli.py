@@ -747,10 +747,11 @@ def main():
             except Exception:
                 store.set_preflight(repo,num,{'profile':'validation','collected_at':None})
                 raise
-            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload,merged_head=args.merged_head)
+            continuation={'merged_head':args.merged_head} if args.merged_head is not None else {}
+            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload,**continuation)
             elif not args.worker and (args.background or len(store.prs(sid))>1):
-                output=launch_check(store,sid,repo,num,args.cwd,args.check,merged_head=args.merged_head)
-            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True,merged_head=args.merged_head)
+                output=launch_check(store,sid,repo,num,args.cwd,args.check,**continuation)
+            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True,**continuation)
         elif args.command == 'retry':
             if bool(args.followup) == bool(args.pr): raise ValueError('Choose exactly one --followup ID or --pr URL')
             sid = session_id(args)

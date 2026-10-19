@@ -61,7 +61,9 @@ def validation_owner(store, sid, repository, number, cwd, merged_head=None, *, p
         if (not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
                 or not 0 <= time.time() - stamp <= progress.REMOTE_EVIDENCE_TTL
                 or proof.get('state') != 'closed' or proof.get('merged') is not True
+                or proof.get('repository') != repository or proof.get('number') != number
                 or proof.get('head_sha') != merged_head or proof.get('head_sha_after') != merged_head
+                or not proof.get('base_ref') or proof.get('base_ref_after') != proof.get('base_ref')
                 or proof.get('head_repository') != repository or proof.get('base_repository') != repository
                 or not re.fullmatch(r'[0-9a-f]{40}', str(proof.get('merge_commit_sha')))):
             raise ValueError('Post-merge validation requires fresh stable proof of the exact merged PR source')

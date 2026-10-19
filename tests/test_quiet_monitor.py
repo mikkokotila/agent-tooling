@@ -220,13 +220,17 @@ def test_merge_conflict_is_actionable_even_with_green_ci(local):
     assert 'Merge conflict' in row(local[0])['payload']
 
 
-def test_missing_checkout_on_merged_work_never_reopens_local_validation(local):
+def test_missing_checkout_on_merged_work_is_unknown_without_monitor_revival(local):
     store = local[0]
     with store._connect() as db:
         db.execute("UPDATE pr_watch SET state='merged'")
     fake = dict(repository='owner/repo', number=1, cwd='/does/not/exist', plan_id='old')
     with patch.object(store, 'validation_plans', return_value=[fake]):
-        assert workflow.task_progress(store, SID) == []
+        progress = workflow.task_progress(store, SID)
+    assert len(progress) == 1 and progress[0]['status'] == 'UNKNOWN'
+    assert progress[0]['evidence']['phase'] == 'UNKNOWN'
+    with store._connect() as db:
+        assert db.execute('SELECT state FROM pr_watch').fetchone()['state'] == 'merged'
 
 
 def test_read_only_redirect_is_not_engineering_mutation():

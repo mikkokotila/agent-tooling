@@ -47,7 +47,7 @@ def merge(local):
     store.set_snapshot('Owner/Repo', 1, snap, evaluate_pr(snap, []))
     monitor.retire(store, 'Owner/Repo', 1, dict(state='closed', merged=True,
                    head={'sha': snap['head_sha']}), checklist=True)
-    proof = dict(snap, profile='validation', merge_commit_sha='b' * 40,
+    proof = dict(snap, profile='validation', merge_commit_sha='b' * 40, base_ref_after=snap['base_ref'],
                  head_repository='Owner/Repo', base_repository='Owner/Repo')
     store.set_preflight('Owner/Repo', 1, proof)
     return proof
@@ -176,6 +176,7 @@ def test_altered_source_or_inputs_cannot_be_admitted(local, monkeypatch, change)
 @pytest.mark.parametrize('change', [
     {'state': 'open', 'merged': False}, {'merged': False}, {'head_sha_after': 'c' * 40},
     {'head_repository': 'Other/Repo'}, {'base_repository': 'Other/Repo'},
+    {'repository': 'Other/Repo'}, {'number': 2}, {'base_ref_after': 'other'},
     {'merge_commit_sha': None}, {'collected_at': 0}, {'collected_at': None},
 ])
 def test_retained_mode_requires_fresh_exact_merged_proof(local, change):
@@ -286,6 +287,24 @@ def test_plan_cli_continues_existing_registration_without_rearming(local, monkey
     cli.main()
     assert json.loads(capsys.readouterr().out)['plan']['plan_id'] == row['plan_id']
     assert store.prs('s') == []
+
+
+def test_owner_change_during_remote_preflight_cannot_start_check(local, monkeypatch, capsys):
+    store, root, snap, _ = local
+    row = prepare(local)
+    proof = merge(local)
+    monkeypatch.setenv('CALLER_PR_GATES_STATE_DIR', str(store.state_dir))
+    async def collect(*args):
+        store.register('foreign', 'codex', 'Owner/Repo', 1, str(root))
+        return proof
+    monkeypatch.setattr(github, 'collect_validation', collect)
+    monkeypatch.setattr(sys, 'argv', ['gate', 'validate', '--session', 's', '--pr',
+        'https://github.com/Owner/Repo/pull/1', '--cwd', str(root), '--check', 'remaining',
+        '--merged-head', snap['head_sha'], '--background'])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert 'exact recorded owner' in capsys.readouterr().err
+    assert store.validation_runs(row['plan_id']) == []
 
 
 @pytest.mark.parametrize('race', [False, True])
