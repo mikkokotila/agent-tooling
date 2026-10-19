@@ -406,7 +406,7 @@ def validation_decision(plan: dict, runs: list[dict], current_digest: str, check
 
 def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                       snapshot: dict | None = None, review_gates: list[dict] | None = None,
-                      local_state: dict | None = None, preflight: dict | None = None) -> dict:
+                      local_state: dict | None = None, preflight: dict | None = None, *, source_closed=False) -> dict:
     """Order validation, publication and proven review conclusions.
 
     A run may pass only after its managed process actually exited successfully
@@ -509,6 +509,10 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
         return result("VALIDATE_REQUIRED", "Run the distinct missing necessary validations", pending=missing, passed=passed, running=sorted(active))
     if active:
         return result("VALIDATE_RUNNING", "Managed checks are running; work on the next authorized PR and let the monitor check remote state", running=sorted(active), pending=[], passed=passed)
+    if source_closed or snapshot.get('state') == 'closed' or validation_evidence.get('state') == 'closed':
+        return result('WAIT_REMOTE', 'Retained local checks passed; PR closure does not establish task acceptance',
+                      next_action='Report the retained local results against the original task and verify its remaining acceptance; do not repeat passed checks.',
+                      local_checks_passed=True, completion_verified=False, source_closed=True, passed=passed)
     if not fresh_remote() or (preflight is not None and (not full_newer and snapshot.get("collected_at",0)<(preflight.get("collected_at") or 0))):
         return result("WAIT_REMOTE", "Local preflight proves only head and ancestry; collect full fresh CI/review/closure evidence for completion")
     if snapshot.get("head_sha_after") != head:

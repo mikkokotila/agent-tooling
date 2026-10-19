@@ -441,7 +441,23 @@ class Store:
                 raise ValueError("validation plan not found")
             return self._validation_evidence(db, row)
 
-    def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest):
+    def _retained_validation_plan(self, db, sid, repo, num, directory):
+        """A retired watch retains authority only for its exact original plan owner."""
+        watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
+        row = db.execute('''SELECT * FROM validation_plans WHERE session_id=? AND repository=?
+                            AND number=? AND cwd=? AND active=1''', (sid, repo, num, directory)).fetchone()
+        if (not watch or watch['owner_session'] != sid or watch['state'] not in {'open', 'merged'}
+                or str(Path(watch['cwd']).expanduser().resolve()) != directory or not row):
+            raise ValueError('Post-merge validation requires the exact recorded owner, checkout and retained plan')
+        return self._validation_plan_row(row)
+
+    def retained_validation_plan(self, sid, repo, num, cwd):
+        directory = str(Path(cwd).expanduser().resolve())
+        with self._connect() as db:
+            db.execute('BEGIN')
+            return self._retained_validation_plan(db, sid, repo, num, directory)
+
+    def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest, *, retained=False):
         if not isinstance(input_digest, str) or not input_digest.strip():
             raise ValueError("validation input_digest is required")
         if not isinstance(evidence_digest, str):
@@ -453,7 +469,11 @@ class Store:
             parents = self._parents(db)
             root = self._root(sid, parents)
             owned = self._task_sessions(db, sid)
-            if not any(row[0] in owned for row in db.execute(
+            if retained:
+                previous = self._retained_validation_plan(db, sid, repo, num, directory)
+                if input_digest != previous['input_digest']:
+                    raise ValueError('Post-merge validation inputs changed; source repairs need their own scoped PR')
+            elif not any(row[0] in owned for row in db.execute(
                 "SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repo, num))):
                 raise ValueError("PR is not registered to this task")
             row = db.execute("""SELECT * FROM validation_plans
@@ -510,7 +530,7 @@ class Store:
                 "repository": repo, "number": num, "input_digest": input_digest, "evidence_digest": evidence_digest})
             return self._validation_plan_row(db.execute("SELECT * FROM validation_plans WHERE plan_id=?", (plan_id,)).fetchone())
 
-    def begin_validation(self, plan_id, check_id, input_digest, owner_pid=None, owner_group=None, *, session_id=None):
+    def begin_validation(self, plan_id, check_id, input_digest, owner_pid=None, owner_group=None, *, session_id=None, retained=False):
         pid = os.getpid() if owner_pid is None else owner_pid
         if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
             raise ValueError("validation owner_pid must be a positive integer")
@@ -524,6 +544,8 @@ class Store:
                 raise ValueError("validation plan is missing or no longer active")
             if session_id is not None and self._root(session_id, self._parents(db)) != plan["session_id"]:
                 raise ValueError("validation plan is owned by another task")
+            if retained:
+                self._retained_validation_plan(db, session_id, plan['repository'], plan['number'], plan['cwd'])
             if input_digest != plan["input_digest"]:
                 raise ValueError("validation input changed; save an updated plan first")
             _, checks = self._validation_checks(plan["plan"])
@@ -542,7 +564,7 @@ class Store:
             self._audit(db, "validation_started", {"run_id": run_id, "plan_id": plan_id, "check_id": check_id, "pid": pid, "process_group": owner_group})
             return dict(db.execute("SELECT * FROM validation_runs WHERE run_id=?", (run_id,)).fetchone())
 
-    def finish_validation(self, run_id, exit_code, after_digest, *, session_id=None):
+    def finish_validation(self, run_id, exit_code, after_digest, *, session_id=None, source_valid=True):
         if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
             raise ValueError("validation exit_code must be an integer or None")
         if after_digest is not None and not isinstance(after_digest, str):
@@ -562,12 +584,12 @@ class Store:
                     return result
                 raise ValueError("completed validation evidence cannot be rewritten")
             unchanged = bool(after_digest and after_digest == result["before_digest"])
-            status = "unknown" if exit_code is None or exit_code < 0 or not unchanged else ("pass" if exit_code == 0 else "fail")
+            status = "unknown" if exit_code is None or exit_code < 0 or not unchanged or source_valid is not True else ("pass" if exit_code == 0 else "fail")
             now = time.time()
             db.execute("""UPDATE validation_runs SET status=?, exit_code=?, after_digest=?, finished_at=?
                 WHERE run_id=?""", (status, exit_code, after_digest, now, run_id))
             self._audit(db, "validation_finished", {"run_id": run_id, "status": status, "exit_code": exit_code,
-                "before_digest": result["before_digest"], "after_digest": after_digest})
+                "before_digest": result["before_digest"], "after_digest": after_digest, "source_valid": source_valid})
             result.update(status=status, exit_code=exit_code, after_digest=after_digest, finished_at=now)
             return result
 

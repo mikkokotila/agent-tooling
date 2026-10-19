@@ -573,7 +573,9 @@ def main():
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())
+    p.add_argument('--merged-head', help='Continue the retained plan on this exact original merged PR head')
     p = owned('validate'); p.add_argument('--pr', required=True); p.add_argument('--check', required=True); p.add_argument('--cwd', default=os.getcwd())
+    p.add_argument('--merged-head', help='Continue the retained plan on this exact original merged PR head')
     p.add_argument('--background', action='store_true')
     p.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     p = sub.add_parser('supervise'); p.add_argument('--execute', action='store_true'); p.add_argument('--verbose', action='store_true')
@@ -704,12 +706,12 @@ def main():
             if not output: raise ValueError('No independently verified external account failure covers the remaining blockers')
             output = {'handoff': output, 'obligation_complete': False, 'gates': gates}
         elif args.command in {'validation-plan', 'validate'}:
-            from .workflow import owned_pr, run_check, save_plan, launch_check
+            from .workflow import validation_owner, run_check, save_plan, launch_check
             from . import progress
             repo, num, issue = reference(args.pr)
             if issue: raise ValueError('Local validation plans apply to PRs, not review documents')
             sid = session_id(args)
-            owned_pr(store,sid,repo,num)
+            validation_owner(store,sid,repo,num,args.cwd,args.merged_head)
             os.environ['CALLER_GATE_SESSION']=sid
             if args.command=='validation-plan':
                 payload=progress.normalize_plan(json.loads(Path(args.file).read_text()),args.cwd)
@@ -720,6 +722,8 @@ def main():
                 local=progress.working_state(args.cwd)
                 if not local['clean']:raise ValueError('PUBLISH_REQUIRED: commit and push before local validation')
                 digest=progress.fingerprint(args.cwd,row['plan'])
+                if args.merged_head is not None and digest!=row['input_digest']:
+                    raise ValueError('Post-merge validation inputs changed; source repairs need their own scoped PR')
                 if any(r['check_id']==args.check and r['input_digest']==digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
                     raise ValueError('This check already ran on unchanged inputs; inspect its recorded result')
             from .github import collect_validation
@@ -728,22 +732,25 @@ def main():
                 store.set_preflight(repo,num,preflight)
                 from .policy import branch_freshness_gate
                 freshness=branch_freshness_gate(preflight)
-                if preflight.get('state')!='open' or preflight.get('merged') is not False:raise ValueError('REMOTE_READ_REQUIRED: owned PR is no longer open')
-                if freshness['status']!='PASS':
-                    phase='SYNC_BASE_REQUIRED' if freshness['status']=='FAIL' else 'REMOTE_READ_REQUIRED'
-                    raise ValueError(phase+': '+'; '.join(freshness['details']))
-                cached=(store.snapshot(repo,num) or {}).get('snapshot') or {}
-                if cached.get('head_sha')!=preflight.get('head_sha') or not cached.get('actor_login'):
-                    refreshed=asyncio.run(inspect(store,sid,args.pr))
-                    if not refreshed or any(g['gate']=='GITHUB_DATA' for r in refreshed for g in r['gates']):
-                        raise ValueError('Initial complete remote evidence is unavailable')
+                if args.merged_head is not None:
+                    validation_owner(store,sid,repo,num,args.cwd,args.merged_head,preflight=True)
+                else:
+                    if preflight.get('state')!='open' or preflight.get('merged') is not False:raise ValueError('REMOTE_READ_REQUIRED: owned PR is no longer open')
+                    if freshness['status']!='PASS':
+                        phase='SYNC_BASE_REQUIRED' if freshness['status']=='FAIL' else 'REMOTE_READ_REQUIRED'
+                        raise ValueError(phase+': '+'; '.join(freshness['details']))
+                    cached=(store.snapshot(repo,num) or {}).get('snapshot') or {}
+                    if cached.get('head_sha')!=preflight.get('head_sha') or not cached.get('actor_login'):
+                        refreshed=asyncio.run(inspect(store,sid,args.pr))
+                        if not refreshed or any(g['gate']=='GITHUB_DATA' for r in refreshed for g in r['gates']):
+                            raise ValueError('Initial complete remote evidence is unavailable')
             except Exception:
                 store.set_preflight(repo,num,{'profile':'validation','collected_at':None})
                 raise
-            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload)
+            if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload,merged_head=args.merged_head)
             elif not args.worker and (args.background or len(store.prs(sid))>1):
-                output=launch_check(store,sid,repo,num,args.cwd,args.check)
-            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True)
+                output=launch_check(store,sid,repo,num,args.cwd,args.check,merged_head=args.merged_head)
+            else:output=run_check(store,sid,repo,num,args.cwd,args.check,manage_process_group=True,merged_head=args.merged_head)
         elif args.command == 'retry':
             if bool(args.followup) == bool(args.pr): raise ValueError('Choose exactly one --followup ID or --pr URL')
             sid = session_id(args)

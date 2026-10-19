@@ -37,3 +37,22 @@ Release 0.1.10 records worker execution failures even after native delivery was 
 Release 0.1.27 adds a five-minute receipt deadline to Codex checklist deliveries. Queue acceptance does not clear that deadline. An idle owner that has not consumed the event becomes a persistent local monitor-health error; the existing queued event remains authentic and consumable. Legacy queued records receive one fixed grace period. The guard never enqueues another copy, changes polling cadence, interrupts an active owner, or alters Claude execution. A late native receipt clears the delivery error. Automatic desktop recovery requires an authorized execution interface; direct external app-tool clients can be rejected by the desktop's code-signing boundary.
 
 Release 0.1.29 adds `caller-pr-gates link-issues PARENT_URL CHILD_URL --session SESSION` for native issue hierarchy. The child must be the chat's recorded PRD/slice; both URLs must identify distinct issues in the same repository. The operation verifies remote identities and the current parent, never replaces a parent, skips an existing correct edge, and verifies readback after one POST. No arbitrary API-write permission or PR ownership is added. The shared checklist tells both clients to repair routine tooling gaps without another permission request and continue the next authorized task while retaining incomplete blocked work. Repeated actionable hook delivery and merge/validation gates are unchanged.
+
+## Retained post-merge qualification
+
+External merge can retire a PR watch while an already declared local check is still running. Let that managed process finish naturally. Retirement preserves its real exit, before/after input digests, validation plan and review evidence; it does not complete the original task.
+
+For a remaining declared check, use the existing runner from the exact original owner session and recorded checkout:
+
+```sh
+caller-pr-gates validate --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --check REMAINING_CHECK \
+  --merged-head FULL_ORIGINAL_PR_HEAD_SHA --background
+```
+
+`--merged-head` names the original PR head GitHub records as merged, not the squash/merge commit or today's default-branch tip. The checkout must still be clean at that exact commit, with its recorded origin and identical source, declared inputs and environment fingerprint. Live preflight checks the stable merged lifecycle, source/target repository identity and merge commit; the background worker repeats admission. A different owner, checkout, missing retained plan, changed input, unmerged closed PR or unavailable proof refuses admission. This continuation is limited to same-repository PRs.
+
+The retained plan stays necessary and frozen. `validation-plan` accepts the same `--merged-head` option to retain it or, after an actual failure, add a distinct diagnostic check under the existing rules. It cannot remove required checks, rewrite completed evidence or authorize replay of an unchanged failure. Inspect the actual failed result and diagnose it. A source change beyond the pinned merged product requires its own genuine scoped PR.
+
+No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
