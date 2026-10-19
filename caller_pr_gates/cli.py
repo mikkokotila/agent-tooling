@@ -101,6 +101,43 @@ def _api_reply_allowed(repo, number, issue, endpoint, method, fields, input_file
     return len(replies) == 1 and re.fullmatch(r'[1-9][0-9]*', replies[0]) is not None
 
 
+def _owned_slice_sweep_allowed(store, sid, repo, number, issue, endpoint, method, argv, cwd):
+    """Refresh the existing trusted-main Limen slice verdict; never run candidate code."""
+    expected = 'repos/Vaquum/Limen/actions/workflows/pr_checks_slice_sweep.yml/dispatches'
+    if issue or repo != 'Vaquum/Limen' or endpoint != expected or method != 'POST':
+        return False
+    if len(argv) != 6 or argv != ['api', endpoint, '--method', 'POST', '--input', argv[-1]] or argv[-1] == '-':
+        return False
+    path = Path(argv[-1])
+    if not path.is_absolute(): path = Path(cwd) / path
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    if payload != {'ref': 'main'}: return False
+    from .workflow import owned_pr
+    from .github import collect_validation
+    from .policy import branch_freshness_gate
+    owned_pr(store, sid, repo, number)
+
+    def current_owner():
+        with store._connect() as db:
+            root = store._root(sid, store._parents(db))
+            row = db.execute("SELECT cwd FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state='open'", (repo, number, root)).fetchone()
+            return row is not None and Path(row['cwd']).resolve() == Path(cwd).resolve()
+
+    if not current_owner(): return False
+    snapshot = asyncio.run(collect_validation(repo, number))
+    if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
+            or snapshot.get('base_ref') != 'main'
+            or not snapshot.get('head_sha') or snapshot.get('head_sha_after') != snapshot['head_sha']
+            or branch_freshness_gate(snapshot)['status'] != 'PASS'):
+        raise ValueError('Slice sweep requires an owned open PR with fresh head and target ancestry')
+    if not current_owner():
+        raise ValueError('Slice sweep owner or checkout changed during validation')
+    return True
+
+
 def _owned_ci_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
     """One retry of an owned current-head failed/cancelled CI run; never a review."""
     match = re.fullmatch(re.escape(f'repos/{repo}/actions/') + r'(jobs|runs)/([1-9][0-9]*)/rerun', endpoint)
@@ -287,6 +324,11 @@ def gateway(args, store):
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
             allowed_ci_rerun = _owned_ci_rerun_allowed(
                 store, sid, repo, num, issue, endpoint, method, argv)
+            allowed_slice_sweep = _owned_slice_sweep_allowed(
+                store, sid, repo, num, issue, endpoint, method, argv, args.cwd)
+            if allowed_slice_sweep:
+                admitted_api_body = json.dumps({'ref': 'main'})
+                argv = ['api', endpoint, '--method', 'POST', '--input', '-']
             allowed_runner_registration = (
                 repo == 'Vaquum/Origo'
                 and issue
@@ -350,7 +392,7 @@ def gateway(args, store):
                         # gh must receive these admitted bytes, never reopen a mutable caller file.
                         admitted_api_body = json.dumps(payload)
                         argv = ['api', endpoint, '--method', verb, '--input', '-']
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun):
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun or allowed_slice_sweep):
                 raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
