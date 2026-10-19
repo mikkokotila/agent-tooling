@@ -14,6 +14,17 @@ SCOPE = {"agreed_scope": "Repair the agreed login timeout only", "acceptance_cri
 SID = "21a641cb-7e14-4cd2-b97d-8cdba8fe74d5"
 
 
+def test_accepted_scope_metadata_does_not_hide_the_immutable_baseline(tmp_path):
+    scope = {**SCOPE, 'scope': ['Restore ingestion', 'Repair search']}
+    store = Store(tmp_path / 'state')
+    store.record_scope(SID, scope)
+    recorded = store.get_scope(SID)
+    assert sup.scope_value(recorded) == scope
+    assert sup.scope_digest(recorded) == sup.scope_digest({'scope': recorded})
+    with pytest.raises(ValueError, match='approved scope is missing'):
+        sup.scope_digest(None)
+
+
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     now = [2000.0]
