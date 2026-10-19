@@ -16,12 +16,29 @@ remains. To inspect and reconcile one exact checkout explicitly:
 caller-pr-gates publication-reconcile --session SESSION --cwd /absolute/repository
 ```
 
-The command reads repository identity and the live default tip twice, verifies
-ancestry against the recorded local branch, then compares source and ownership
-again before retiring that exact durable record. Dirty source, unpublished
-commits, unrelated origins/checkouts, changing target refs, missing evidence,
-changed source/ownership and concurrent record updates remain protected. Errors
-remain local and records stay incomplete. No direct database repair is needed.
+The command reads repository identity and the live default tip twice, then first
+checks ancestry against the recorded local branch. If that tip is outside the
+default branch's history, it reads at most 100 closed pull requests for the exact
+head repository and branch, targeting the default branch. The first matching
+candidate receives two individual reads; an unstable candidate stops reconciliation
+without trying another candidate. Listings are shared within the repository and
+branch for that reconciliation run.
+
+A squash-merged pull request can prove earlier delivery even when another chat
+owned it. Both reads must agree on the exact head repository, branch and commit,
+target repository and branch, closed and merged state, merge commit and merge
+time. The merge must strictly precede the publication marker, and its merge commit
+must be an ancestor of the live default tip. Repository identity, default-branch
+selection and its commit are rechecked after these reads. A reused branch name,
+an equal merge/marker timestamp or a closed but unmerged pull request is not proof.
+
+Before retiring a record, the command compares the clean source, recorded branch
+tip, task ancestry and exact marker version again. Only that task's matching
+publication marker is removed. Other chats' ownership, watches, snapshots and CI
+or review gates remain unchanged; the audit records the publication proof with
+`completion: false`. Dirty source, unpublished commits, unrelated origins or
+checkouts, changing remote identity, missing evidence and concurrent updates keep
+their markers. Errors remain local. No direct database repair is needed.
 
 Deployment retains worker protection. `make install` waits up to 600 seconds for
 active workers by default, without retrying deployment or changing a lease. The
