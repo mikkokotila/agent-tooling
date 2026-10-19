@@ -32,7 +32,9 @@ SESSION_INACTIVITY = 180
 def scope_value(scope: dict | None) -> dict | None:
     if not isinstance(scope, dict):
         return None
-    value = scope.get("scope", scope)
+    # Store accepts extra scope metadata. Only a mapping is a wrapped scope record;
+    # a caller's list-valued "scope" metadata must not hide its agreed_scope baseline.
+    value = scope["scope"] if isinstance(scope.get("scope"), dict) else scope
     if not isinstance(value, dict):
         return None
     return {k: v for k, v in value.items() if k not in {"session_id", "created_at", "updated_at"}}
