@@ -441,6 +441,7 @@ def main():
         p.add_argument('--session')
         return p
     p = owned('register'); p.add_argument('url'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd())
+    p = owned('link-issues'); p.add_argument('parent', help='Same-repository parent issue URL'); p.add_argument('child', help='Owned PRD/slice issue URL; existing parents are never replaced')
     p = owned('scope'); p.add_argument('--file', required=True); p.add_argument('--work-item', help='Stable ID for a separately authorized work item; existing baselines remain immutable')
     p = owned('resolve'); p.add_argument('--pr', required=True); p.add_argument('--thread', required=True)
     p = owned('address'); p.add_argument('--pr', required=True); p.add_argument('--comment', required=True); p.add_argument('--disposition', choices=['fixed','nonfix'], required=True); p.add_argument('--commit'); p.add_argument('--reason', required=True); p.add_argument('--reply-url')
@@ -477,6 +478,9 @@ def main():
             scope.setdefault('approved_at', previous['approved_at'] if previous else time.time())
             store.record_scope(session_id(args), scope, work_item=args.work_item)
             output = {'scope': store.get_scope(session_id(args)), 'immutable': True, 'work_item': args.work_item or 'selected'}
+        elif args.command == 'link-issues':
+            from .hierarchy import link
+            output = asyncio.run(link(store, session_id(args), args.parent, args.child))
         elif args.command == 'resolve':
             from .github import collect_review
             from .policy import evaluate_review
