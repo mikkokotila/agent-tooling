@@ -70,3 +70,25 @@ def test_relative_payload_is_read_from_the_owned_checkout(store, sweep_case, tmp
     with patch('caller_pr_gates.github.collect_validation', side_effect=validation), patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
         gateway(value, store)
     assert json.loads(run.call_args.kwargs['input']) == {'ref': 'main'}
+
+
+def test_foreign_registration_receipt_does_not_authorize_the_sweep(store, sweep_case):
+    value, _, _, _ = sweep_case
+    store.register('other', 'claude', REPO, 1, value.cwd)
+    value.session = 'other'
+    assert any(row['repository'] == REPO for row in store.prs('other'))
+    with patch('caller_pr_gates.github.collect_validation', side_effect=AssertionError('foreign receipt must fail before network')), patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError): gateway(value, store)
+
+
+@pytest.mark.parametrize('change', ['owner', 'state', 'checkout'])
+def test_sweep_rechecks_current_owner_after_remote_validation(store, sweep_case, tmp_path, change):
+    value, snap, _, _ = sweep_case
+    async def validation(*a):
+        with store._connect() as db:
+            if change == 'owner': db.execute("UPDATE pr_watch SET owner_session='other' WHERE repository=? AND number=1", (REPO,))
+            elif change == 'state': db.execute("UPDATE pr_watch SET state='closed' WHERE repository=? AND number=1", (REPO,))
+            else: db.execute("UPDATE pr_watch SET cwd=? WHERE repository=? AND number=1", (str(tmp_path / 'other'), REPO))
+        return snap
+    with patch('caller_pr_gates.github.collect_validation', side_effect=validation), patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='owner or checkout changed'): gateway(value, store)

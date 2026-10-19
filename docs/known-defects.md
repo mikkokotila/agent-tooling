@@ -20,6 +20,6 @@ Version 0.1.1 removes the three expected-failure marks after correcting stable q
 
 Issue #3 repairs these captured failures in 0.1.1 and adds coordinated recovery and narrower collections through 0.1.3. Current required tests have no expected failures. The original capture remains immutable.
 
-### Owned Limen slice sweep dispatch (0.1.35)
+### Owned Limen slice sweep dispatch (0.1.36)
 
 The gateway previously denied the repository-prescribed trusted-main sweep needed to replace a stale API-posted slice failure. Admit only that named Limen workflow with ref main and no inputs, behind owned open-PR and fresh ancestry checks. Negative-route tests retain rejection of unrelated actions and immutable-input tests prevent a caller-file race.

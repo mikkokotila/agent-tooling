@@ -119,12 +119,22 @@ def _owned_slice_sweep_allowed(store, sid, repo, number, issue, endpoint, method
     from .github import collect_validation
     from .policy import branch_freshness_gate
     owned_pr(store, sid, repo, number)
+
+    def current_owner():
+        with store._connect() as db:
+            root = store._root(sid, store._parents(db))
+            row = db.execute("SELECT cwd FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state='open'", (repo, number, root)).fetchone()
+            return row is not None and Path(row['cwd']).resolve() == Path(cwd).resolve()
+
+    if not current_owner(): return False
     snapshot = asyncio.run(collect_validation(repo, number))
     if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
             or snapshot.get('base_ref') != 'main'
             or not snapshot.get('head_sha') or snapshot.get('head_sha_after') != snapshot['head_sha']
             or branch_freshness_gate(snapshot)['status'] != 'PASS'):
         raise ValueError('Slice sweep requires an owned open PR with fresh head and target ancestry')
+    if not current_owner():
+        raise ValueError('Slice sweep owner or checkout changed during validation')
     return True
 
 
