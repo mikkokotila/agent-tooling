@@ -546,8 +546,9 @@ async def collect_validation_with_client(client,repository,number):
         raise EvidenceError('Missing validation lifecycle/head/target evidence')
     receipt=await _branch_evidence(client,prefix,base,head)
     after=_mapping(await client.get(path),'final validation PR')
-    if any(raw.get(k)!=after.get(k) for k in ('state','merged','draft','updated_at')):
+    if any(raw.get(k)!=after.get(k) for k in ('state','merged','draft')):
         raise EvidenceError('PR lifecycle changed during validation preflight')
+    if (after.get('base') or {}).get('ref')!=base:raise EvidenceError('PR target changed during validation preflight')
     if (after.get('head') or {}).get('sha')!=head:raise EvidenceError('PR head changed during validation preflight')
     receipt=await _branch_final_read(client,prefix,receipt)
     error=receipt.pop('branch_error',None)

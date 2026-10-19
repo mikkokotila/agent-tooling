@@ -306,3 +306,28 @@ def test_legacy_unknown_preflight_preserved_and_full_read_can_supersede(local):
     assert receipt['collected_at'] is None and receipt['attempted_at']>=snap['collected_at']
     again=Store(store.state_dir).preflight('Owner/Repo',1)
     assert again==receipt # Restart never moves the marker forward again.
+
+
+class ValidationMetadataRace(Client):
+    def __init__(self, change):
+        super().__init__();self.change=change
+    async def get(self,path,params=None):
+        value=await super().get(path,params)
+        if path=='/repos/mikkokotila/caller/pulls/50' and self.reads>1:
+            value.update(self.change)
+        return value
+
+@async_test
+async def test_validation_ignores_comment_timestamp_but_review_stays_fresh():
+    changed={'updated_at':'2026-10-06T08:00:01Z'}
+    result=await github.collect_validation_with_client(ValidationMetadataRace(changed),'mikkokotila/caller',50)
+    assert result['profile']=='validation' and result['head_sha']==result['head_sha_after']==SHA
+    assert 'comments' not in result and 'checks' not in result
+    with pytest.raises(github.EvidenceError):
+        await github.collect_review_with_client(ValidationMetadataRace(changed),'mikkokotila/caller',50)
+
+@pytest.mark.parametrize('change', [{'state':'open'},{'merged':False},{'draft':True},{'base':{'ref':'release'}}])
+@async_test
+async def test_validation_still_rejects_actual_lifecycle_or_target_races(change):
+    with pytest.raises(github.EvidenceError,match='PR (lifecycle|target) changed'):
+        await github.collect_validation_with_client(ValidationMetadataRace(change),'mikkokotila/caller',50)
