@@ -297,11 +297,50 @@ def _nonrequired_quota_merge_allowed(store, sid, target, argv, rows, approval):
     return True
 
 
+def create_scoped_repository(args, store, argv):
+    """Create only the exact private personal repository recorded in approved scope."""
+    sid = session_id(args)
+    scope = store.get_scope(sid) or {}
+    approved = scope.get('repository_creation') or {}
+    name = argv[2] if len(argv) > 2 else ''
+    valid = (len(argv) in {4, 6} and argv[:2] == ['repo', 'create']
+             and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', name)
+             and argv[3] == '--private'
+             and (len(argv) == 4 or argv[4] == '--description')
+             and approved.get('full_name') == name
+             and approved.get('visibility') == 'private'
+             and isinstance(approved.get('approval_evidence'), str)
+             and bool(approved['approval_evidence'].strip()))
+    if not valid:
+        raise ValueError('Repository creation requires the exact approved private repository; clone, push and other repository operations are not admitted')
+    actor = github_run(['gh', 'api', 'user'], runner=subprocess.run, cwd=args.cwd,
+                       text=True, capture_output=True, timeout=30)
+    if actor.returncode or json.loads(actor.stdout).get('login', '').lower() != name.split('/')[0].lower():
+        raise ValueError('Repository owner must match the authenticated personal account')
+    result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd,
+                        text=True, capture_output=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip())
+    verified = github_run(['gh', 'api', 'repos/' + name], runner=subprocess.run,
+                          cwd=args.cwd, text=True, capture_output=True, timeout=30)
+    if verified.returncode:
+        raise RuntimeError('Repository creation outcome requires readback; do not repeat creation')
+    repo = json.loads(verified.stdout)
+    url = 'https://github.com/' + name
+    if repo.get('full_name') != name or repo.get('private') is not True or repo.get('html_url') != url:
+        raise RuntimeError('Created repository identity/visibility could not be verified')
+    store.audit('repository_created', {'session_id': sid, 'repository': name, 'url': url, 'private': True})
+    print(url)
+    return {'repository': name, 'url': url, 'private': True}
+
+
 def gateway(args, store):
     sid = session_id(args)
     argv = args.arguments
     admitted_api_body = None
     if argv and argv[0] == '--': argv = argv[1:]
+    if argv[:2] == ['repo', 'create']:
+        return create_scoped_repository(args, store, argv)
     if len(argv) < 2 or argv[0] not in {'pr', 'issue', 'api'}:
         raise ValueError('Gateway accepts gh pr, gh issue, or gh api operations')
     if any(a == '-d' or a.startswith('--draft') for a in argv) or '--undo' in argv or 'convertPullRequestToDraft' in ' '.join(argv):
