@@ -19,3 +19,7 @@ The separately discussed shared cooldown is also outside this release. There is 
 Version 0.1.1 removes the three expected-failure marks after correcting stable quota identity and retaining full redacted diagnostics. Version 0.1.2 adds shared cooldown; 0.1.3 adds collection profiles and measured request reductions. The v0.1.0 tag remains the immutable capture.
 
 Issue #3 repairs these captured failures in 0.1.1 and adds coordinated recovery and narrower collections through 0.1.3. Current required tests have no expected failures. The original capture remains immutable.
+
+### Owned Limen slice sweep dispatch (0.1.35)
+
+The gateway previously denied the repository-prescribed trusted-main sweep needed to replace a stale API-posted slice failure. Admit only that named Limen workflow with ref main and no inputs, behind owned open-PR and fresh ancestry checks. Negative-route tests retain rejection of unrelated actions and immutable-input tests prevent a caller-file race.
