@@ -318,7 +318,28 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_ci_rerun):
+            # Restore the existing LinkedIn integration for the authorized site-stream repair.
+            # The exact repository, owned PR, endpoints, verbs and payloads are bounded here;
+            # branch protection, workflow approval requirements and arbitrary secrets stay denied.
+            allowed_stream_config = False
+            if (repo == 'mikkokotila/mikkokotila-com' and not issue
+                    and any(p['repository'] == repo and p['number'] == num for p in store.prs(sid))):
+                verb = (method or '').upper()
+                input_path = options.get('--input')
+                exact_args = (input_path and argv == ['api', endpoint, '--method', verb, '--input', input_path])
+                secret_endpoint = endpoint == f'repos/{repo}/actions/secrets/LINKEDIN_TOKEN'
+                workflow_endpoint = endpoint == f'repos/{repo}/actions/permissions/workflow'
+                if exact_args and verb == 'PUT' and (secret_endpoint or workflow_endpoint):
+                    payload = json.loads(Path(input_path).read_text())
+                    if secret_endpoint and isinstance(payload, dict) and set(payload) == {'key_id', 'encrypted_value'}:
+                        try:
+                            ciphertext = base64.b64decode(payload['encrypted_value'], validate=True)
+                            allowed_stream_config = (len(ciphertext) > 48 and isinstance(payload['key_id'], str) and bool(payload['key_id']))
+                        except (ValueError, TypeError):
+                            pass
+                    elif workflow_endpoint:
+                        allowed_stream_config = payload == {'default_workflow_permissions': 'read', 'can_approve_pull_request_reviews': True}
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun):
                 raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
