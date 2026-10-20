@@ -381,6 +381,127 @@ def test_changed_source_symlink_is_not_reconstructed_as_ordinary_file(local):
         epoch(local, before)
 
 
+@pytest.mark.parametrize('flag', ['--assume-unchanged', '--skip-worktree'])
+@pytest.mark.parametrize('change', ['bytes', 'delete', 'mode'])
+def test_index_hints_cannot_admit_unpublished_final_source(local, flag, change):
+    store, root, snap, _ = local
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    final_source(local)
+    target = root / 'final-source.txt'
+    git(root, 'update-index', flag, target.name)
+    if change == 'bytes':
+        target.write_text('Unpublished source hidden by an index hint\n')
+    elif change == 'delete':
+        target.unlink()
+    else:
+        target.chmod(0o755)
+    assert git(root, 'status', '--porcelain') == ''
+    assert git(root, '--no-replace-objects', 'diff', '--name-only', snap['head_sha'], '--') == ''
+    workflow.validation_owner(store, 's', 'Owner/Repo', 1, root, snap['head_sha'], preflight=True)
+    with pytest.raises(ValueError, match='exact published final tree'):
+        epoch(local, before)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == []
+    assert store.validation_evidence(old['plan_id']) == []
+
+
+def test_unpublished_unchanged_tree_file_cannot_reconstruct_a_prior_pin(local):
+    store, root, snap, plan = local
+    prepare(local, inputs=True)
+    before = snap['head_sha']
+    git(root, 'update-index', '--assume-unchanged', 'src.txt')
+    (root / 'src.txt').write_text('Unpublished bytes already in an older local pin')
+    old = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    final_source(local)
+    assert git(root, 'status', '--porcelain') == ''
+    with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+        epoch(local, before)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == []
+
+
+def test_hidden_source_edit_after_admission_cannot_execute(local):
+    store, root, snap, _ = local
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    final_source(local)
+    new = epoch(local, before)['plan']
+    git(root, 'update-index', '--skip-worktree', 'final-source.txt')
+    (root / 'final-source.txt').write_text('Unpublished edit after admission')
+    assert git(root, 'status', '--porcelain') == ''
+    with pytest.raises(ValueError, match='Post-merge validation inputs changed'):
+        execute(local, 'remaining')
+    assert store.validation_runs(old['plan_id']) == store.validation_runs(new['plan_id']) == []
+
+
+@pytest.mark.parametrize('change', ['delete', 'rename', 'directory-file', 'file-directory', 'missing-directory'])
+def test_declared_source_directory_types_are_reconstructed(local, change):
+    store, root, snap, plan = local
+    target = root / 'declared-source'
+    if change == 'file-directory':
+        target.write_bytes(b'original file\x00bytes')
+    elif change != 'missing-directory':
+        target.mkdir()
+        (target / 'source.dat').write_bytes(b'original directory\x00bytes')
+    prepare(local, inputs=True)
+    plan['input_paths'].append(target.name)
+    old = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    before = snap['head_sha']
+    if change == 'rename':
+        target.rename(root / 'renamed-source')
+    elif change in {'delete', 'directory-file'}:
+        (target / 'source.dat').unlink()
+        target.rmdir()
+        if change == 'directory-file':
+            target.write_bytes(b'published replacement file')
+    else:
+        if change == 'file-directory':
+            target.unlink()
+        target.mkdir()
+        (target / 'source.dat').write_bytes(b'published new directory')
+    final_source(local)
+    new = epoch(local, before)['plan']
+    assert new['plan_id'] != old['plan_id'] and new['input_digest'] != old['input_digest']
+    assert progress.plan_declaration(new['plan']) == old['plan']
+    assert store.validation_evidence(new['plan_id']) == []
+    actual = execute(local, 'remaining')['run']
+    assert actual['status'] == 'pass' and actual['exit_code'] == 0
+    assert actual['before_digest'] == actual['after_digest'] == new['input_digest']
+    assert store.validation_runs(old['plan_id']) == []
+    assert git(root, 'status', '--porcelain') == ''
+
+
+def test_unchanged_published_symlink_retains_its_actual_target_pin(local):
+    store, root, snap, _ = local
+    (root / 'source-link').symlink_to('src.txt')
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    final_source(local)
+    new = epoch(local, before)['plan']
+    assert store.validation_evidence(new['plan_id']) == []
+    assert execute(local, 'remaining')['run']['status'] == 'pass'
+    assert store.validation_runs(old['plan_id']) == []
+
+
+def test_removed_published_file_cannot_remain_as_hidden_source(local):
+    store, root, snap, _ = local
+    target = root / 'removed-source.py'
+    target.write_text('original published source')
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    target.unlink()
+    with (root / '.gitignore').open('a') as ignored:
+        ignored.write(target.name + '\n')
+    final_source(local)
+    target.write_text('original published source')
+    assert git(root, 'status', '--porcelain') == ''
+    with pytest.raises(ValueError, match='Removed published source is still present'):
+        epoch(local, before)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == []
+
+
 def test_replace_ref_cannot_impersonate_the_published_source(local):
     _, root, snap, _ = local
     prepare(local, inputs=True)

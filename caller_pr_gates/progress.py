@@ -455,26 +455,41 @@ def validation_command(command: str) -> bool:
     return False
 
 
-def source_overrides(cwd, previous_head, final_head):
-    """Read earlier ordinary blobs without changing or executing the checkout."""
+def source_snapshots(cwd, previous_head, final_head):
+    """Read both published trees without trusting index hints or running filters."""
     if (any(not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
             for head in (previous_head, final_head)) or previous_head == final_head):
         raise ValueError("--from-head requires a distinct full previous source SHA")
     root = Path(cwd)
     _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", previous_head, final_head)
-    _git(root, "--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", final_head, "--")
-    entries = iter(_git(root, "--no-replace-objects", "diff", "--raw", "--no-ext-diff", "--no-textconv", "--no-abbrev", "--no-renames", "-z",
-                        previous_head, final_head, "--").split(b"\x00"))
-    changed = {}
-    for header in entries:
-        if not header:
-            continue
-        old_mode, new_mode, old_blob, _, _ = header[1:].split()
-        path = os.fsdecode(next(entries))
-        if old_mode not in {b"000000", b"100644", b"100755"} or new_mode not in {b"000000", b"100644", b"100755"}:
+    trees = []
+    for head in (previous_head, final_head):
+        files, directories = {}, set()
+        for entry in _git(root, "--no-replace-objects", "ls-tree", "-r", "-t", "-z", "--full-tree", head).split(b"\x00"):
+            if not entry:
+                continue
+            header, path = entry.split(b"\t", 1)
+            mode, kind, blob = header.split()
+            path = os.fsdecode(path)
+            if mode == b"040000" and kind == b"tree":
+                directories.add(path)
+            elif mode in {b"100644", b"100755", b"120000"} and kind == b"blob":
+                files[path] = (mode, blob)
+            else:
+                raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
+        trees.append((files, directories))
+    old, final = trees[0][0], trees[1][0]
+    for path in old.keys() | final.keys():
+        if (any(entry and entry[0] == b"120000" for entry in (old.get(path), final.get(path)))
+                and old.get(path) != final.get(path)):
             raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
-        changed[path] = (old_mode, old_blob)
-    blobs = sorted({blob for mode, blob in changed.values() if mode != b"000000"})
+        if (path not in final and path not in trees[1][1]
+                and ((root / path).exists() or (root / path).is_symlink())):
+            raise ValueError("Removed published source is still present in the checkout")
+    for path in trees[0][1] | trees[1][1]:
+        if (root / path).is_symlink():
+            raise ValueError("Published source directories cannot be symlinked")
+    blobs = sorted({blob for files, _ in trees for _, blob in files.values()})
     contents = {}
     if blobs:
         stream = _git(root, "--no-replace-objects", "cat-file", "--batch", data=b"\n".join(blobs) + b"\n")
@@ -488,11 +503,12 @@ def source_overrides(cwd, previous_head, final_head):
                 raise ValueError("Historical Git source could not be reconstructed")
             contents[expected] = stream[position:position + size]
             position += size + 1
-    return {path: None if mode == b"000000" else (stat.S_IMODE(int(mode, 8)), contents[blob])
-            for path, (mode, blob) in changed.items()}
+    paths = old.keys() | final.keys() | trees[0][1] | trees[1][1]
+    return tuple(({path: (int(files[path][0], 8), contents[files[path][1]]) if path in files else None
+                   for path in paths}, directories) for files, directories in trees)
 
 
-def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
+def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
     Every tracked and untracked nonignored repository file is included. Commit
@@ -504,12 +520,15 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
     normalized = normalize_plan(plan, working, stored=True)
     repository = Path(repo_root(working))
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
-    if source_overrides is not None:
-        paths.update(source_overrides)
+    source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, set())
+    paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
         candidate = working / value
-        if candidate.is_dir() and not candidate.is_symlink():
+        relative = candidate.relative_to(repository).as_posix()
+        directory = (relative in source_directories if relative in source_files else
+                     candidate.is_dir() and not candidate.is_symlink())
+        if directory:
             for directory, folders, files in os.walk(candidate, followlinks=False):
                 folders[:] = [folder for folder in folders if folder != ".git"]
                 for name in files + [folder for folder in folders if (Path(directory) / folder).is_symlink()]:
@@ -521,7 +540,6 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
                         continue
                     paths.add(relative.as_posix())
         else:
-            relative = candidate.relative_to(repository).as_posix()
             paths.add(relative)
             explicit.add(relative)
     digest = hashlib.sha256()
@@ -537,8 +555,8 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
         append(b"unset" if name not in os.environ else b"set" + os.environ[name].encode())
     for value in sorted(paths):
         path = repository / value
-        if source_overrides is not None and value in source_overrides:
-            historical = source_overrides[value]
+        if value in source_files:
+            historical = source_files[value]
             if historical is None:
                 if value in explicit:
                     append(os.fsencode(value))
@@ -546,9 +564,20 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
                 continue
             mode, body = historical
             append(os.fsencode(value))
-            append(str(mode).encode())
-            append(b"file")
-            append(body)
+            if stat.S_ISLNK(mode):
+                # Unchanged links retain the existing target-content pin. The
+                # published link text is independent of the current index.
+                append(str(stat.S_IMODE(path.lstat().st_mode)).encode())
+                append(b"symlink")
+                append(body)
+                if path.is_file():
+                    append(path.read_bytes())
+                elif path.exists():
+                    raise ValueError("directory symlink inputs require explicit file inputs")
+            else:
+                append(str(stat.S_IMODE(mode)).encode())
+                append(b"file")
+                append(body)
             continue
         try:
             metadata = path.lstat()
@@ -582,12 +611,12 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
     return digest.hexdigest()
 
 
-def check_fingerprint(cwd, plan, check, *, source_overrides=None):
+def check_fingerprint(cwd, plan, check, *, source_snapshot=None):
     """Bind a control's added inputs without changing retained check identities."""
     scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
     for name in ("input_paths", "env_names"):
         scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
-    return fingerprint(cwd, scoped, source_overrides=source_overrides)
+    return fingerprint(cwd, scoped, source_snapshot=source_snapshot)
 
 
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:

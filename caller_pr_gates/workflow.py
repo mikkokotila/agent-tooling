@@ -159,13 +159,17 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None,
                 raise ValueError('A final-head epoch must preserve every necessary check and input/environment declaration')
             if any('correction' in check for check in plan['checks']):
                 raise ValueError('Source-bound checker correction receipts cannot transfer to a new source epoch')
-            historical = progress.source_overrides(cwd, from_head, merged_head)
-            if progress.fingerprint(cwd, previous['plan'], source_overrides=historical) != previous['input_digest']:
+            historical, published = progress.source_snapshots(cwd, from_head, merged_head)
+            if progress.fingerprint(cwd, previous['plan'], source_snapshot=historical) != previous['input_digest']:
                 raise ValueError('Previous source and unchanged private inputs do not reproduce the retained fingerprint')
             old_pins = {check['id']: check['input_digest'] for check in previous['plan']['checks'] if 'input_digest' in check}
-            if any(progress.check_fingerprint(cwd, previous['plan'], check, source_overrides=historical) != old_pins[check['id']]
+            if any(progress.check_fingerprint(cwd, previous['plan'], check, source_snapshot=historical) != old_pins[check['id']]
                    for check in previous['plan']['checks'] if check['id'] in old_pins):
                 raise ValueError('Previous qualification control inputs no longer match their retained pins')
+            if (progress.fingerprint(cwd, plan, source_snapshot=published) != digest
+                    or any(progress.check_fingerprint(cwd, plan, check, source_snapshot=published) != check['input_digest']
+                           for check in plan['checks'] if 'input_digest' in check)):
+                raise ValueError('Current tracked source does not match the exact published final tree')
             if digest == previous['input_digest']:
                 raise ValueError('Unchanged source inputs cannot create a new validation epoch')
             validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
