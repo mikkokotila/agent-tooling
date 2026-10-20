@@ -255,7 +255,8 @@ class Store:
             db.execute("""INSERT INTO prs VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
                 ON CONFLICT(repository, number, session_id) DO UPDATE SET cwd=excluded.cwd,
                 status='active', updated_at=excluded.updated_at""", (repository, number, session_id, client, str(cwd), now, now))
-            self._audit(db, "pr_registered", {"session_id": session_id, "repository": repository, "number": number})
+            self._audit(db, "pr_registered", {"session_id": session_id, "repository": repository, "number": number,
+                                             "client": client, "cwd": str(cwd)})
             from .monitor import arm
             root = self._root(session_id, self._parents(db))
             baseline = self._scope_row(db, root)
@@ -285,19 +286,54 @@ class Store:
         first = db.execute('''SELECT * FROM prs WHERE repository=? AND number=?
                               ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
         watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
-        retired = db.execute('''SELECT id, fields FROM audit WHERE event='pr_monitor_retired'
-                                AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
-                                ORDER BY id LIMIT 1''', (repo, num)).fetchone()
-        registration = db.execute('''SELECT MAX(id) FROM audit WHERE event='pr_registered'
-                                     AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?''',
-                                  (repo, num)).fetchone()[0]
+        def history(event):
+            return [{**json.loads(row['fields']), 'id': row['id'], 'recorded_at': row['recorded_at']}
+                    for row in db.execute('''SELECT id, fields, recorded_at FROM audit WHERE event=?
+                        AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
+                        ORDER BY id''', (event, repo, num))]
+        retirements, registrations = history('pr_monitor_retired'), history('pr_registered')
         if (not first or not watch or watch['state'] not in {'closed', 'merged'}
-                or not retired or registration is None or registration > retired['id']
+                or not retirements or not registrations or registrations[-1]['id'] > retirements[-1]['id']
                 or watch['owner_session'] != sid or self._root(sid, parents) != sid
                 or self._root(first['session_id'], parents) != sid
-                or first['status'] != 'retired_' + watch['state']):
+                or first['client'] != watch['client']
+                or first['status'] != 'retired_' + watch['state']
+                or any(not r.get('session_id') or self._root(r['session_id'], parents) != sid for r in registrations)
+                or any(r.get('state') != watch['state'] or r.get('head_sha') != retirements[0].get('head_sha')
+                       or r.get('gates_waived') is not False for r in retirements)):
             raise ValueError('Closed review receipts require the exact retained owner and retired PR')
-        return {'registration': dict(first), 'retirement': {'id': retired['id'], **json.loads(retired['fields'])},
+        repeated = [r for r in registrations if r['id'] > retirements[0]['id']]
+        acknowledgements = []
+        original_cwd = registrations[0].get('cwd')
+        if repeated:
+            # Successful gateway comments register their existing owner before
+            # the next ordinary lifecycle read retires the same PR again. Only
+            # that evidenced cycle can continue; an arbitrary register cannot.
+            for registered in repeated:
+                boundary = min(r['id'] for r in registrations + retirements if r['id'] > registered['id'])
+                proofs = [dict(row) for row in db.execute('''SELECT id, fields FROM audit
+                    WHERE event='ownership_evidence' AND id>? AND id<?
+                    AND json_extract(fields,'$.target')=? ORDER BY id''',
+                    (registered['id'], boundary, f'https://github.com/{repo}/pull/{num}'))]
+                proof = json.loads(proofs[0]['fields']) if len(proofs) == 1 else {}
+                if (registered['session_id'] != sid or proof.get('session_id') != sid
+                        or proof.get('origin') != 'gateway_write' or proof.get('operation') != ['pr', 'comment']):
+                    raise ValueError('Closed review receipts require proven same-owner gateway acknowledgements before retirement')
+                acknowledgements.append(proofs[0]['id'])
+            if not original_cwd:
+                # Legacy registration audits lack cwd. A plan predating the
+                # first retirement supplies an immutable original checkout.
+                plan = db.execute('''SELECT cwd FROM validation_plans WHERE session_id=? AND repository=?
+                    AND number=? AND created_at<=? ORDER BY created_at, plan_id LIMIT 1''',
+                    (sid, repo, num, retirements[0]['recorded_at'])).fetchone()
+                original_cwd = plan['cwd'] if plan else None
+            if not original_cwd:
+                raise ValueError('Repeated closed registration lacks an immutable original checkout')
+        if any(r.get('client', watch['client']) != watch['client'] for r in registrations):
+            raise ValueError('Closed review receipts require the original recorded client')
+        return {'registration': dict(first), 'retirement': retirements[-1],
+                'registration_history': registrations, 'retirement_history': retirements,
+                'acknowledgements': acknowledgements, 'original_cwd': original_cwd or first['cwd'],
                 'watch': {key: watch[key] for key in
                 ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')}}
 
@@ -309,8 +345,9 @@ class Store:
             identity = self._closed_review_owner(db, sid, repo, num)
         # Resolve the recorded checkout before the write transaction; the final
         # source check is repeated there immediately before the receipt insert.
-        if (checkout(identity['watch']['cwd']) != directory
-                or checkout(identity['registration']['cwd']) != directory):
+        recorded = [identity['watch']['cwd'], identity['registration']['cwd'], identity['original_cwd'],
+                    *[r['cwd'] for r in identity['registration_history'] if 'cwd' in r]]
+        if any(checkout(cwd) != directory for cwd in recorded):
             raise ValueError('Closed review receipts require the original recorded checkout')
         return {'repository': repo, 'number': num, 'cwd': directory, 'identity': identity}
 
