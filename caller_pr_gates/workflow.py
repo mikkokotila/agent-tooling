@@ -116,7 +116,9 @@ def current_phase(store, row):
                        for check in row['plan']['checks'] if 'input_digest' in check})
 
 
-def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None):
+def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None, from_head=None):
+    if from_head is not None and merged_head is None:
+        raise ValueError('--from-head requires --merged-head and the retained necessary plan')
     validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
     root = progress.repo_root(cwd)
     cwd = str(Path(cwd).expanduser().resolve())
@@ -138,10 +140,46 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None)
             check['input_digest'] = progress.check_fingerprint(cwd, plan, check)
     previous = store.validation_plan(sid, repository, number, cwd)
     _recover_runs(store, previous)
+    source_epoch = None
+    if previous and 'source_epoch' in previous['plan']:
+        plan['source_epoch'] = previous['plan']['source_epoch']
+    digest = progress.fingerprint(cwd, plan)
+    if from_head is not None:
+        prior_epoch = (previous or {}).get('plan', {}).get('source_epoch')
+        if prior_epoch:
+            if prior_epoch['from_head'] != from_head or prior_epoch['head_sha'] != merged_head:
+                raise ValueError('The final published source epoch is immutable')
+        else:
+            from .publication import _merged_at
+            proof = store.preflight(repository, number) or {}
+            merged_at = _merged_at(proof.get('merged_at'))
+            if not previous or merged_at is None or previous['created_at'] > merged_at:
+                raise ValueError('A final-head epoch requires a retained plan recorded before the proven merge')
+            if progress.plan_declaration(plan) != progress.plan_declaration(previous['plan']):
+                raise ValueError('A final-head epoch must preserve every necessary check and input/environment declaration')
+            if any('correction' in check for check in plan['checks']):
+                raise ValueError('Source-bound checker correction receipts cannot transfer to a new source epoch')
+            historical = progress.source_overrides(cwd, from_head, merged_head)
+            if progress.fingerprint(cwd, previous['plan'], source_overrides=historical) != previous['input_digest']:
+                raise ValueError('Previous source and unchanged private inputs do not reproduce the retained fingerprint')
+            old_pins = {check['id']: check['input_digest'] for check in previous['plan']['checks'] if 'input_digest' in check}
+            if any(progress.check_fingerprint(cwd, previous['plan'], check, source_overrides=historical) != old_pins[check['id']]
+                   for check in previous['plan']['checks'] if check['id'] in old_pins):
+                raise ValueError('Previous qualification control inputs no longer match their retained pins')
+            if digest == previous['input_digest']:
+                raise ValueError('Unchanged source inputs cannot create a new validation epoch')
+            validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
+            if (progress.fingerprint(cwd, plan) != digest
+                    or any(progress.check_fingerprint(cwd, plan, check) != check['input_digest']
+                           for check in plan['checks'] if 'input_digest' in check)):
+                raise ValueError('Validation inputs changed while proving the final source epoch')
+            source_epoch = dict(previous_plan_id=previous['plan_id'], from_head=from_head, head_sha=merged_head,
+                merge_commit_sha=proof['merge_commit_sha'], previous_input_digest=previous['input_digest'],
+                previous_check_digests=old_pins)
     row = store.save_validation_plan(sid, repository, number, cwd, plan,
-        progress.fingerprint(cwd, plan), evidence_digest(snapshot, store.dispositions(repository, number),
+        digest, evidence_digest(snapshot, store.dispositions(repository, number),
                                                        (previous or {}).get('evidence_digest')),
-        retained=merged_head is not None)
+        retained=merged_head is not None, source_epoch=source_epoch)
     store.audit('pr_validation_plan_bound', {'session_id': sid, 'plan_id': row['plan_id'],
                 'repository': repository, 'number': number, 'root': root})
     return {'plan': row, 'progress': current_phase(store, row)}
@@ -260,3 +298,4 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
                 'number': number, 'check': check_id, 'pid': child.pid, 'log': str(log)})
     return {'started': True, 'pid': child.pid, 'log': str(log), 'completion_verified': False,
             'next_action': render_prompt('validation_background')}
+

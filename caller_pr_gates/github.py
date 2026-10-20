@@ -557,11 +557,13 @@ async def collect_validation_with_client(client,repository,number):
     # replacement commit. These fields do not change open-PR ancestry gates.
     merged_source = {
         'merge_commit_sha': raw.get('merge_commit_sha'),
+        'merged_at': raw.get('merged_at'),
         'head_repository': ((raw.get('head') or {}).get('repo') or {}).get('full_name'),
         'base_repository': ((raw.get('base') or {}).get('repo') or {}).get('full_name'),
     }
     merged_source_after = {
         'merge_commit_sha': after.get('merge_commit_sha'),
+        'merged_at': after.get('merged_at'),
         'head_repository': ((after.get('head') or {}).get('repo') or {}).get('full_name'),
         'base_repository': ((after.get('base') or {}).get('repo') or {}).get('full_name'),
     }
@@ -619,3 +621,4 @@ async def collect_review(repository,number,token_user=None):
     client=GitHubClient(token_user)
     return await Collections(client.coordinator,client.account).run('review',f'{repository}/pull/{number}',
         lambda:collect_review_with_client(client,repository,number))
+

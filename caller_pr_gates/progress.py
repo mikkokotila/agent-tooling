@@ -193,7 +193,8 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     pipeline or background shell operator. Optional input_paths add ignored
     files/directories that the declared check depends on.
     """
-    if not isinstance(payload, dict) or set(payload) - {"checks", "input_paths", "env_names"}:
+    allowed = {"checks", "input_paths", "env_names"} | ({"source_epoch"} if stored else set())
+    if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("validation plan must contain checks and optional input_paths")
     root = Path(cwd).expanduser().resolve()
     if not root.is_dir():
@@ -257,7 +258,17 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
             if not isinstance(check["input_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", check["input_digest"]):
                 raise ValueError("stored qualification input pin is malformed")
             normalized[-1]["input_digest"] = check["input_digest"]
-    return {"checks": normalized, **shared}
+    result = {"checks": normalized, **shared}
+    if stored and "source_epoch" in payload:
+        result["source_epoch"] = payload["source_epoch"]
+    return result
+
+
+def plan_declaration(plan):
+    """Compare caller declarations without runner-owned pins or source provenance."""
+    return {**{key: value for key, value in plan.items() if key not in {"checks", "source_epoch"}},
+            "checks": [{key: value for key, value in check.items() if key != "input_digest"}
+                       for check in plan["checks"]]}
 
 
 def plan_digest(plan: dict) -> str:
@@ -265,8 +276,8 @@ def plan_digest(plan: dict) -> str:
                                     ensure_ascii=False).encode()).hexdigest()
 
 
-def _git(root: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=10)
+def _git(root: Path, *args: str, data=None) -> bytes:
+    result = subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True, timeout=10)
     if result.returncode:
         raise ValueError("validation fingerprint requires a readable Git working tree")
     return result.stdout
@@ -444,7 +455,44 @@ def validation_command(command: str) -> bool:
     return False
 
 
-def fingerprint(cwd: str | Path, plan: dict) -> str:
+def source_overrides(cwd, previous_head, final_head):
+    """Read earlier ordinary blobs without changing or executing the checkout."""
+    if (any(not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
+            for head in (previous_head, final_head)) or previous_head == final_head):
+        raise ValueError("--from-head requires a distinct full previous source SHA")
+    root = Path(cwd)
+    _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", previous_head, final_head)
+    _git(root, "--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", final_head, "--")
+    entries = iter(_git(root, "--no-replace-objects", "diff", "--raw", "--no-ext-diff", "--no-textconv", "--no-abbrev", "--no-renames", "-z",
+                        previous_head, final_head, "--").split(b"\x00"))
+    changed = {}
+    for header in entries:
+        if not header:
+            continue
+        old_mode, new_mode, old_blob, _, _ = header[1:].split()
+        path = os.fsdecode(next(entries))
+        if old_mode not in {b"000000", b"100644", b"100755"} or new_mode not in {b"000000", b"100644", b"100755"}:
+            raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
+        changed[path] = (old_mode, old_blob)
+    blobs = sorted({blob for mode, blob in changed.values() if mode != b"000000"})
+    contents = {}
+    if blobs:
+        stream = _git(root, "--no-replace-objects", "cat-file", "--batch", data=b"\n".join(blobs) + b"\n")
+        position = 0
+        for expected in blobs:
+            end = stream.index(b"\n", position)
+            actual, kind, size = stream[position:end].split()
+            size = int(size)
+            position = end + 1
+            if actual != expected or kind != b"blob" or stream[position + size:position + size + 1] != b"\n":
+                raise ValueError("Historical Git source could not be reconstructed")
+            contents[expected] = stream[position:position + size]
+            position += size + 1
+    return {path: None if mode == b"000000" else (stat.S_IMODE(int(mode, 8)), contents[blob])
+            for path, (mode, blob) in changed.items()}
+
+
+def fingerprint(cwd: str | Path, plan: dict, *, source_overrides=None) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
     Every tracked and untracked nonignored repository file is included. Commit
@@ -456,6 +504,8 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     normalized = normalize_plan(plan, working, stored=True)
     repository = Path(repo_root(working))
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
+    if source_overrides is not None:
+        paths.update(source_overrides)
     explicit = set()
     for value in normalized["input_paths"]:
         candidate = working / value
@@ -487,6 +537,19 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
         append(b"unset" if name not in os.environ else b"set" + os.environ[name].encode())
     for value in sorted(paths):
         path = repository / value
+        if source_overrides is not None and value in source_overrides:
+            historical = source_overrides[value]
+            if historical is None:
+                if value in explicit:
+                    append(os.fsencode(value))
+                    append(b"missing")
+                continue
+            mode, body = historical
+            append(os.fsencode(value))
+            append(str(mode).encode())
+            append(b"file")
+            append(body)
+            continue
         try:
             metadata = path.lstat()
         except FileNotFoundError:
@@ -519,12 +582,12 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     return digest.hexdigest()
 
 
-def check_fingerprint(cwd, plan, check):
+def check_fingerprint(cwd, plan, check, *, source_overrides=None):
     """Bind a control's added inputs without changing retained check identities."""
     scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
     for name in ("input_paths", "env_names"):
         scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
-    return fingerprint(cwd, scoped)
+    return fingerprint(cwd, scoped, source_overrides=source_overrides)
 
 
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:
@@ -725,3 +788,4 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
     if not required.issubset(gates) or any(gates[name].get("status") != "PASS" for name in required):
         return result("WAIT_REMOTE", "Current review/CI gates still require evidence or action; successful local checks must not be repeated")
     return result("COMPLETE", "Current published head, every necessary local check and every separate PR gate are verified")
+
