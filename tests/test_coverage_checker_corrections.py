@@ -54,13 +54,17 @@ def prepare_coverage(local, monkeypatch, *, prefix=(), execute=True, original_pa
     (root / 'src.txt').write_text('fixed')
     argv = [*prefix, sys.executable, '-m', 'coverage', 'run',
             '--data-file=' + str(root / '.coverage-proof'), '.frozen/original.py', '--case', 'retained']
-    plan.update(checks=[dict(id='profile', argv=argv, cwd='.', reason='Execute every retained recorded-case assertion',
-                            input_paths=['.frozen/dependency.txt'], env_names=[])],
-                input_paths=['.frozen/original.py'], env_names=['EXPECTED_SOURCE_HEAD'])
+    profile = dict(id='profile', argv=argv, cwd='.', reason='Execute every retained recorded-case assertion',
+                   input_paths=['.frozen/dependency.txt'], env_names=[])
+    plan.update(input_paths=['.frozen/original.py'], env_names=['EXPECTED_SOURCE_HEAD'])
     publish(local)
     monkeypatch.setenv('EXPECTED_SOURCE_HEAD', snap['head_sha'])
-    row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)
     merge(local)
+    # Per-check controls use the existing post-merge admission, before their
+    # first actual execution. Shared driver pins must not be rewritten.
+    plan['checks'].append(profile)
+    row = save(local, plan)['plan']
     actual = run(local, 'profile')['run'] if execute else None
     return row, actual, len(prefix) + 5
 
@@ -73,7 +77,7 @@ def corrected(local, failed, index, *, exit_code=0, identifier='profile-current'
     (root / script).write_text(body(corrected=True, exit_code=exit_code))
     diagnosis = 'Compare the full actual head to the already frozen expected source instead of the obsolete literal.'
     (root / evidence).write_text(diagnosis + ' Preserve every original assertion and all coverage controls.\n')
-    check = deepcopy(payload['checks'][0])
+    check = deepcopy(next(c for c in payload['checks'] if c['id'] == 'profile'))
     check.update(id=identifier, correction=dict(check_id='profile', run_id=failed['run_id'],
                  diagnosis=diagnosis, evidence_path=evidence))
     check['argv'][index] = script
@@ -90,11 +94,12 @@ def test_coverage_correction_preserves_runner_and_requires_fresh_actual_exit(loc
     payload, check = corrected(local, failed, index, exit_code=exit_code)
     row = save(local, payload)['plan']
     assert row['plan_id'] == original['plan_id'] and row['input_digest'] == original['input_digest']
-    assert row['plan']['checks'][0] == original['plan']['checks'][0]
+    assert row['plan']['checks'][:-1] == original['plan']['checks']
     assert row['plan']['input_paths'] == original['plan']['input_paths']
     assert row['plan']['env_names'] == original['plan']['env_names']
-    assert check['argv'][:index] == original['plan']['checks'][0]['argv'][:index]
-    assert check['argv'][index + 1:] == original['plan']['checks'][0]['argv'][index + 1:]
+    frozen = next(c for c in original['plan']['checks'] if c['id'] == 'profile')
+    assert check['argv'][:index] == frozen['argv'][:index]
+    assert check['argv'][index + 1:] == frozen['argv'][index + 1:]
     assert store.validation_runs(row['plan_id']) == [failed]
     assert workflow.current_phase(store, row)['failed'] == ['profile']
     with pytest.raises(ValueError, match='already completed'):
