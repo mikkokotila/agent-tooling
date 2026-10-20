@@ -22,9 +22,12 @@ def local(tmp_path):
     root = tmp_path / 'repo'
     root.mkdir()
     git(root, 'init', '-q')
-    git(root, 'config', 'user.name', 'Gate test')
-    git(root, 'config', 'user.email', 'gate@example.invalid')
-    git(root, 'remote', 'add', 'origin', 'https://github.com/Owner/Repo.git')
+    # These fixed fixture settings need no separate Git processes. Git still
+    # initializes the repository and creates every real index and commit.
+    with (root / '.git/config').open('a') as config:
+        config.write('[user]\n\tname = Gate test\n\temail = gate@example.invalid\n'
+                     '[remote "origin"]\n\turl = https://github.com/Owner/Repo.git\n'
+                     '\tfetch = +refs/heads/*:refs/remotes/origin/*\n')
     (root / '.gitignore').write_text('__pycache__/\n.pytest_cache/\n')
     (root / 'src.txt').write_text('old')
     (root / 'check.py').write_text("from pathlib import Path\nassert Path('src.txt').read_text() == 'fixed'\n")
@@ -62,6 +65,25 @@ def bind(local):
 def run(local):
     store, root, _, _ = local
     return workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'regression')
+
+
+def test_local_fixture_preserves_real_git_configuration_and_identity(local, tmp_path):
+    _, root, _, _ = local
+    reference = tmp_path / 'reference'
+    reference.mkdir()
+    git(reference, 'init', '-q')
+    git(reference, 'config', 'user.name', 'Gate test')
+    git(reference, 'config', 'user.email', 'gate@example.invalid')
+    git(reference, 'remote', 'add', 'origin', 'https://github.com/Owner/Repo.git')
+    assert (root / '.git/config').read_bytes() == (reference / '.git/config').read_bytes()
+    for name in ('.gitignore', 'src.txt', 'check.py'):
+        (reference / name).write_bytes((root / name).read_bytes())
+    git(reference, 'add', '.')
+    git(reference, 'commit', '-qm', 'Initial')
+    identity = ('show', '-s', '--format=%an%n%ae%n%cn%n%ce', 'HEAD')
+    assert git(root, *identity) == git(reference, *identity)
+    assert git(root, 'remote', 'get-url', 'origin') == 'https://github.com/Owner/Repo.git'
+    assert git(root, 'config', '--get-all', 'remote.origin.fetch') == '+refs/heads/*:refs/remotes/origin/*'
 
 
 def test_publication_precedes_checks_and_identical_retry_is_blocked(local):
