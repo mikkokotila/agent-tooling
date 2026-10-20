@@ -60,10 +60,6 @@ def _runner(argv: list[str], cwd: Path, root: Path):
     first = Path(argv[0]).name.lower()
     if first in _FORBIDDEN_RUNNERS or any(re.search(r"&&|\|\||[;`\n\r]|\$\(", argument) or argument in {"|", ">", ">>", "<", "&"} for argument in argv):
         raise ValueError("validation commands cannot use shell/no-op runners or shell control operators")
-    script_index = _python_script_index(argv)
-    if script_index is not None:
-        argv = argv[script_index - 1:]
-        first = Path(argv[0]).name.lower()
     interpreter = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
     if interpreter and any(re.match(r"-(?:c|e)(?:$|.)|--(?:eval|print)(?:=|$)", argument) for argument in argv[1:]):
         raise ValueError("inline programs cannot substitute for real validation runners")
@@ -72,7 +68,11 @@ def _runner(argv: list[str], cwd: Path, root: Path):
     executable = Path(argv[0])
     if not executable.is_absolute():
         executable = cwd / executable
-    script = argv[1] if interpreter and len(argv) > 1 and not argv[1].startswith("-") else None
+    # Locate an env-wrapped script without treating its trailing arguments as
+    # Python options or changing the existing direct-runner guards above.
+    script_index = _python_script_index(argv)
+    script = (argv[script_index] if script_index is not None else
+              argv[1] if interpreter and len(argv) > 1 and not argv[1].startswith("-") else None)
     if script:
         candidate = _inside(cwd / script, root)
         if candidate.is_file():

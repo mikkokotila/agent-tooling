@@ -17,11 +17,12 @@ PREFIX = ['env', 'PYTHONPATH=.frozen', 'POLARS_MAX_THREADS=2']
 SCRIPT_INDEX = 4
 
 
-def corrected_body(*, exit_code=0):
+def corrected_body(*, exit_code=0, arguments=None):
+    arguments = ['--mode', 'compare'] if arguments is None else arguments
     return ("import os\nassert os.environ['PYTHONPATH'] == '.frozen'\n"
             "assert os.environ['POLARS_MAX_THREADS'] == '2'\n" +
             driver(corrected=True, suffix=(
-                "assert sys.argv[1:] == ['--mode', 'compare']\n"
+                f"assert sys.argv[1:] == {arguments!r}\n"
                 f"raise SystemExit({exit_code})\n")))
 
 
@@ -109,6 +110,45 @@ def test_literal_env_correction_preserves_every_other_invocation_field(local, en
                 save(local, payload)
             assert store.validation_plan('s', 'Owner/Repo', 1, root) == row
             assert store.validation_runs(row['plan_id']) == [failed]
+
+
+@pytest.mark.parametrize('option', ['-c', '-e', '--eval', '--print'])
+def test_env_script_options_remain_literal_through_fingerprinting_and_correction(local, option):
+    store, root, _, _ = local
+    arguments = [option, 'config.json']
+    original, failed, _ = prepare(local, prefix=PREFIX, arguments=arguments)
+    assert failed['status'] == 'fail' and failed['exit_code'] == 125
+    assert progress.fingerprint(root, original['plan']) == original['input_digest']
+    payload, check = correction(local, failed, script_index=SCRIPT_INDEX,
+                                body=corrected_body(arguments=arguments))
+    row = save(local, payload)['plan']
+    assert row['input_digest'] == original['input_digest']
+    assert row['plan']['checks'][:2] == original['plan']['checks']
+    assert row['plan']['checks'][-1]['argv'][SCRIPT_INDEX + 1:] == arguments
+    assert store.validation_runs(row['plan_id']) == [failed]
+    actual = run(local, check['id'])
+    assert actual['run']['status'] == 'pass' and actual['run']['exit_code'] == 0
+    assert actual['run']['before_digest'] == actual['run']['after_digest']
+    assert actual['progress']['corrected_failures'][0]['failed_run_id'] == failed['run_id']
+    assert actual['progress']['pending'] == ['remaining']
+    assert store.validation_runs(row['plan_id']) == [failed, actual['run']]
+
+
+@pytest.mark.parametrize('prefix', [[], PREFIX])
+@pytest.mark.parametrize('option', ['-c', '-e', '--eval', '--print'])
+def test_actual_inline_programs_stay_refused(tmp_path, prefix, option):
+    argv = [*prefix, sys.executable, option, 'print(42)']
+    with pytest.raises(ValueError):
+        progress.normalize_plan({'checks': [dict(id='inline', argv=argv,
+            reason='An inline program is not a private checker')]}, tmp_path)
+
+
+def test_existing_direct_python_option_guard_is_unchanged(tmp_path):
+    (tmp_path / 'check.py').write_text('assert True\n')
+    with pytest.raises(ValueError, match='inline programs'):
+        progress.normalize_plan({'checks': [dict(id='direct',
+            argv=[sys.executable, 'check.py', '-c', 'config.json'],
+            reason='Preserve the existing direct-runner guard')]}, tmp_path)
 
 
 @pytest.mark.parametrize('prefix', [
