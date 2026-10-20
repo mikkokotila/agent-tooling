@@ -283,6 +283,7 @@ class Store:
     def _closed_review_owner(self, db, sid, repo, num):
         """Retirement preserves one canonical receipt owner, not active PR authority."""
         parents = self._parents(db)
+        clients = {row['session_id']: row['client'] for row in db.execute('SELECT session_id,client FROM sessions')}
         first = db.execute('''SELECT * FROM prs WHERE repository=? AND number=?
                               ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
         watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
@@ -296,7 +297,7 @@ class Store:
                 or not retirements or not registrations or registrations[-1]['id'] > retirements[-1]['id']
                 or watch['owner_session'] != sid or self._root(sid, parents) != sid
                 or self._root(first['session_id'], parents) != sid
-                or first['client'] != watch['client']
+                or watch['client'] != clients.get(sid) or first['client'] != clients.get(first['session_id'])
                 or first['status'] != 'retired_' + watch['state']
                 or any(not r.get('session_id') or self._root(r['session_id'], parents) != sid for r in registrations)
                 or any(r.get('state') != watch['state'] or r.get('head_sha') != retirements[0].get('head_sha')
@@ -310,7 +311,10 @@ class Store:
             # the next ordinary lifecycle read retires the same PR again. Only
             # that evidenced cycle can continue; an arbitrary register cannot.
             for registered in repeated:
-                boundary = min(r['id'] for r in registrations + retirements if r['id'] > registered['id'])
+                # Registration and its evidence are separate committed writes.
+                # A normal retirement may interleave; another registration may
+                # not be mistaken for this acknowledgement's evidence.
+                boundary = min((r['id'] for r in registrations if r['id'] > registered['id']), default=2**63 - 1)
                 proofs = [dict(row) for row in db.execute('''SELECT id, fields FROM audit
                     WHERE event='ownership_evidence' AND id>? AND id<?
                     AND json_extract(fields,'$.target')=? ORDER BY id''',
@@ -318,7 +322,7 @@ class Store:
                 proof = json.loads(proofs[0]['fields']) if len(proofs) == 1 else {}
                 if (registered['session_id'] != sid or proof.get('session_id') != sid
                         or proof.get('origin') != 'gateway_write' or proof.get('operation') != ['pr', 'comment']):
-                    raise ValueError('Closed review receipts require proven same-owner gateway acknowledgements before retirement')
+                    raise ValueError('Closed review receipts require proven same-owner gateway acknowledgements')
                 acknowledgements.append(proofs[0]['id'])
             if not original_cwd:
                 # Legacy registration audits lack cwd. A plan predating the
@@ -329,7 +333,7 @@ class Store:
                 original_cwd = plan['cwd'] if plan else None
             if not original_cwd:
                 raise ValueError('Repeated closed registration lacks an immutable original checkout')
-        if any(r.get('client', watch['client']) != watch['client'] for r in registrations):
+        if any(r.get('client', clients.get(r['session_id'])) != clients.get(r['session_id']) for r in registrations):
             raise ValueError('Closed review receipts require the original recorded client')
         return {'registration': dict(first), 'retirement': retirements[-1],
                 'registration_history': registrations, 'retirement_history': retirements,

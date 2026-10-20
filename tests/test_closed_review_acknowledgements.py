@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from caller_pr_gates import cli, monitor, workflow
+from caller_pr_gates.store import Store
 import test_closed_review_receipts as closed
 from test_workflow import local, git
 
@@ -112,12 +113,12 @@ def test_legacy_repeated_registration_needs_a_pre_retirement_checkout_anchor(
 
 
 @pytest.mark.parametrize('change', ['plain_register', 'wrong_origin', 'wrong_operation', 'wrong_target',
-                                   'wrong_actor', 'duplicate_proof', 'proof_after_retirement', 'unretired'])
+                                   'wrong_actor', 'duplicate_proof', 'unretired'])
 def test_only_completed_original_owner_gateway_comment_cycles_are_admitted(
         local, monkeypatch, capsys, change):
     store, root, _, _ = local
     review = closed.review_snapshot(local)
-    if change in {'plain_register', 'proof_after_retirement'}:
+    if change == 'plain_register':
         store.register('s', 'codex', 'Owner/Repo', 1, root)
     else:
         gateway_comment(local, monkeypatch)
@@ -136,11 +137,65 @@ def test_only_completed_original_owner_gateway_comment_cycles_are_admitted(
                           'wrong_actor': ('session_id', 'other')}[change]
             fields[key] = value
             db.execute('UPDATE audit SET fields=? WHERE id=?', (json.dumps(fields), row['id']))
-    elif change == 'proof_after_retirement':
-        store.audit('ownership_evidence', dict(session_id='s', target=closed.URL,
-                    origin='gateway_write', operation=['pr', 'comment']))
     with pytest.raises(SystemExit):
         closed.address(local, monkeypatch, capsys, review)
+    assert store.dispositions('Owner/Repo', 1) == []
+
+
+def test_retirement_between_gateway_registration_and_its_evidence_preserves_receipt_access(
+        local, monkeypatch, capsys):
+    store, _, _, _ = local
+    review = closed.review_snapshot(local)
+    original = store.audit
+
+    def interleaved(event, fields):
+        if event == 'ownership_evidence':
+            retire(local)
+        return original(event, fields)
+
+    monkeypatch.setattr(store, 'audit', interleaved)
+    gateway_comment(local, monkeypatch)
+    before = retained_state(store)
+    with store._connect() as db:
+        latest_retirement = db.execute("SELECT MAX(id) FROM audit WHERE event='pr_monitor_retired'").fetchone()[0]
+        proof = db.execute("SELECT MAX(id) FROM audit WHERE event='ownership_evidence'").fetchone()[0]
+    assert latest_retirement < proof
+    result, _ = closed.address(local, monkeypatch, capsys, review)
+    assert result['receipt']['retirement_id'] == latest_retirement
+    assert retained_state(store) == before and not store.prs('s')
+
+
+def test_original_root_receipt_survives_registration_by_a_different_client_child(
+        local, tmp_path, monkeypatch, capsys):
+    _, root, snap, plan = local
+    store = Store(tmp_path / 'child-state')
+    store.record_session('s', 'codex', root)
+    store.register('child', 'claude', 'Owner/Repo', 1, root, parent_session='s')
+    context = (store, root, snap, plan)
+    review = closed.review_snapshot(context)
+    with store._connect() as db:
+        assert db.execute('SELECT client FROM prs').fetchone()[0] == 'claude'
+        assert db.execute('SELECT client FROM pr_watch').fetchone()[0] == 'codex'
+    assert closed.address(context, monkeypatch, capsys, review)[0]['receipt']['closed_head'] == snap['head_sha']
+    with pytest.raises(SystemExit):
+        closed.address(context, monkeypatch, capsys, review, sid='child', comment='review:11')
+    assert {receipt['comment_id'] for receipt in store.dispositions('Owner/Repo', 1)} == {'review:10'}
+
+
+def test_legacy_plan_created_in_another_checkout_cannot_establish_original_registration(
+        local, tmp_path, monkeypatch, capsys):
+    store, root, _, plan = local
+    other = tmp_path / 'other'
+    git(root, 'clone', '-q', str(root), str(other))
+    git(other, 'remote', 'set-url', 'origin', 'https://github.com/Owner/Repo.git')
+    row = workflow.save_plan(store, 's', 'Owner/Repo', 1, other, plan)['plan']
+    assert row['cwd'] == str(other)
+    review = closed.review_snapshot(local)
+    gateway_comment(local, monkeypatch, cwd=other)
+    retire(local)
+    legacy_registration_audits(store)
+    with pytest.raises(SystemExit):
+        closed.address(local, monkeypatch, capsys, review, cwd=other)
     assert store.dispositions('Owner/Repo', 1) == []
 
 
