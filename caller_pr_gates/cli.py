@@ -101,6 +101,56 @@ def _api_reply_allowed(repo, number, issue, endpoint, method, fields, input_file
     return len(replies) == 1 and re.fullmatch(r'[1-9][0-9]*', replies[0]) is not None
 
 
+def _update_release_body(args, store, sid, argv, endpoint, repository, release_id):
+    """Update only body text in the recorded session's repository, without PR adoption."""
+    target = 'https://api.github.com/' + endpoint
+    if (getattr(args, 'target', None) != target or len(argv) != 6
+            or argv != ['api', endpoint, '--method', 'PATCH', '--input', argv[-1]]
+            or argv[-1] == '-' or any(part in {'.', '..'} for part in repository.split('/'))):
+        raise ValueError('Release body update needs its exact API --target and api ENDPOINT --method PATCH --input FILE')
+    session = store.session(sid)
+    if (not session or session['client'] != args.client
+            or Path(session['cwd']).resolve() != Path(args.cwd).resolve()):
+        raise ValueError('Release body update requires the recorded session, client and working directory')
+    source = Path(argv[-1])
+    if not source.is_absolute(): source = Path(args.cwd) / source
+    try:
+        payload = json.loads(source.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError('Release body update needs a saved JSON body object') from exc
+    if not isinstance(payload, dict) or set(payload) != {'body'} or not isinstance(payload['body'], str):
+        raise ValueError('Release body update accepts only a JSON object with one string body field')
+    try:
+        origin = subprocess.run(['git', '-C', args.cwd, 'remote', 'get-url', 'origin'],
+                                capture_output=True, text=True, timeout=3, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError('Release body update requires a matching GitHub origin') from exc
+    origin = origin.removesuffix('.git').casefold()
+    if origin not in {f'https://github.com/{repository}'.casefold(),
+                      f'git@github.com:{repository}'.casefold(),
+                      f'ssh://git@github.com/{repository}'.casefold()}:
+        raise ValueError('Release body target repository differs from the recorded checkout origin')
+    # Freeze admitted content; gh must not reopen the caller's mutable file.
+    result = github_run(['gh', 'api', endpoint, '--method', 'PATCH', '--input', '-'],
+                        runner=subprocess.run, cwd=args.cwd, input=json.dumps(payload),
+                        text=True, capture_output=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError(f'GitHub release body update exited {result.returncode}; read the release before retrying')
+    try:
+        updated = json.loads(result.stdout)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError('Release body update response is unverified; read the release before retrying') from exc
+    if (not isinstance(updated, dict) or type(updated.get('id')) is not int
+            or updated['id'] != int(release_id) or not isinstance(updated.get('url'), str)
+            or updated['url'].casefold() != target.casefold()
+            or updated.get('body') != payload['body']):
+        raise RuntimeError('Release body update response is unverified; read the release before retrying')
+    receipt = {'session_id': sid, 'repository': repository, 'release_id': int(release_id),
+               'url': target, 'body_sha256': hashlib.sha256(payload['body'].encode()).hexdigest()}
+    store.audit('github_release_body_updated', receipt)
+    return receipt
+
+
 def _owned_slice_sweep_allowed(store, sid, repo, number, issue, endpoint, method, argv, cwd):
     """Refresh the existing trusted-main Limen slice verdict; never run candidate code."""
     expected = 'repos/Vaquum/Limen/actions/workflows/pr_checks_slice_sweep.yml/dispatches'
@@ -362,6 +412,9 @@ def gateway(args, store):
         fields = bool(field_values) or input_file is not None
         api_write = method.upper() not in {'GET', 'HEAD'} if method else fields
         if api_write:
+            release = re.fullmatch(r'repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/([1-9][0-9]*)', endpoint)
+            if release:
+                return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)

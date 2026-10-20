@@ -38,6 +38,31 @@ Release 0.1.27 adds a five-minute receipt deadline to Codex checklist deliveries
 
 Release 0.1.29 adds `caller-pr-gates link-issues PARENT_URL CHILD_URL --session SESSION` for native issue hierarchy. The child must be the chat's recorded PRD/slice; both URLs must identify distinct issues in the same repository. The operation verifies remote identities and the current parent, never replaces a parent, skips an existing correct edge, and verifies readback after one POST. No arbitrary API-write permission or PR ownership is added. The shared checklist tells both clients to repair routine tooling gaps without another permission request and continue the next authorized task while retaining incomplete blocked work. Repeated actionable hook delivery and merge/validation gates are unchanged.
 
+## Existing release body updates
+
+Release 0.1.45 permits an authorized task to update only the body of an existing release through the existing GitHub API gateway. Use the numeric release ID and its exact API URL as `--target`; a related PR is not a surrogate release owner. The exact session must already be recorded with the same client and working directory, whose GitHub `origin` must match the target repository. No PR registration is needed or performed.
+
+Save the complete approved body in a UTF-8 JSON file containing only `{"body": "..."}`. The body must be a string. If only a prefix is authorized to change, retain the required suffix byte-for-byte in that string and verify it before invoking the gateway. The gateway does not interpret project-specific headings or artifact digests.
+
+```sh
+caller-pr-gates github --session "$OWNER_SESSION" --client codex \
+  --cwd "$REPOSITORY_CHECKOUT" \
+  --target https://api.github.com/repos/OWNER/REPO/releases/RELEASE_ID \
+  -- api repos/OWNER/REPO/releases/RELEASE_ID \
+  --method PATCH --input "$BODY_ONLY_JSON"
+```
+
+Use that exact argument form; relative input files resolve under `--cwd`. Stdin, field/query flags, headers, host overrides, extra fields and other write endpoints are not admitted by this route. The validated JSON is frozen and passed to the existing authenticated relay via stdin. The PATCH response must confirm the release ID, API URL and exact body before a local success audit with its body digest is recorded. No approval, PR ownership, review disposition or completion receipt is created.
+
+The caller remains responsible for authorization and a final readback of the release body and unchanged metadata/assets. Existing read syntax is:
+
+```sh
+caller-pr-gates github --session "$OWNER_SESSION" --client codex \
+  --cwd "$REPOSITORY_CHECKOUT" -- api repos/OWNER/REPO/releases/RELEASE_ID
+```
+
+Read back before retrying any failed or ambiguous mutation; the gateway never retries it automatically. Release creation/deletion, uploads/assets, tag/title/target/draft/prerelease edits and unrelated API writes remain outside this capability. Existing PR gates, ownership and closed-reminder retirement are unchanged.
+
 ## Retained post-merge qualification
 
 External merge can retire a PR watch while an already declared local check is still running. Let that managed process finish naturally. Retirement preserves its real exit, before/after input digests, validation plan and review evidence; it does not complete the original task.
