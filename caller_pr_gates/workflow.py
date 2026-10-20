@@ -4,6 +4,7 @@ from .prompts import render_prompt
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -146,6 +147,170 @@ def current_phase(store, row):
                        for check in row['plan']['checks'] if 'input_digest' in check})
 
 
+def _final_coverage_local(context, cwd):
+    from .publication import source, exact_source
+    row = context['final']['row']
+    local = source(cwd, stable=True)
+    if (not exact_source(row, local) or local['head'] != context['final']['identity']['retirement']['head_sha']
+            or progress.fingerprint(cwd, row['plan']) != row['input_digest'] or source(cwd, stable=True) != local):
+        raise ValueError('Final coverage requires the exact clean successor checkout, source and current frozen inputs')
+    files, directories = progress.source_tree(cwd, local['head'])
+    if (any((Path(cwd) / path).is_symlink() for path in directories)
+            or progress.fingerprint(cwd, row['plan'], source_snapshot=(files, None)) != row['input_digest']
+            or source(cwd, stable=True) != local):
+        raise ValueError('Final qualification inputs do not match the exact published final tree')
+    return local
+
+
+def _final_coverage_evidence(context, proof, cwd):
+    from .closure import gate as closure_gate
+    from .publication import _merged_at
+    for role in ('original', 'final'):
+        snapshot, recorded = proof[role], context[role]
+        stamp = snapshot.get('collected_at')
+        if (not isinstance(stamp, (float, int)) or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= progress.REMOTE_EVIDENCE_TTL
+                or snapshot.get('repository') != context['repository'] or snapshot.get('number') != recorded['row']['number']
+                or snapshot.get('state') != 'closed' or snapshot.get('merged') is not True
+                or snapshot.get('head_sha') != recorded['identity']['retirement']['head_sha']
+                or snapshot.get('head_sha_after') != snapshot.get('head_sha')
+                or not re.fullmatch(r'[0-9a-f]{40}', str(snapshot.get('head_sha')))
+                or snapshot.get('head_repository') != context['repository'] or snapshot.get('base_repository') != context['repository']
+                or type(snapshot.get('head_repository_id')) is not int or snapshot['head_repository_id'] <= 0
+                or type(snapshot.get('base_repository_id')) is not int
+                or snapshot.get('base_repository_id') != snapshot['head_repository_id']
+                or not snapshot.get('head_ref') or not snapshot.get('base_ref')
+                or not re.fullmatch(r'[0-9a-f]{40}', str(snapshot.get('merge_commit_sha')))
+                or _merged_at(snapshot.get('merged_at')) is None):
+            raise ValueError('Final coverage requires fresh coherent merged source identities for both recorded PRs')
+        if any(g['status'] != 'PASS' for g in evaluate_review(snapshot, recorded['dispositions'])):
+            raise ValueError('Final coverage requires actual handling and public conclusions for both PRs')
+    original = {**proof['original'], **proof['original_closure']}
+    if (proof['original_closure'].get('closure_error') or closure_gate(original)['status'] != 'PASS'
+            or original.get('closure_merged') is not True or original.get('closure_state') != 'MERGED'):
+        raise ValueError('Original issue closure remains unverified')
+    final = proof['final']
+    if final['head_repository_id'] != proof['original']['head_repository_id'] or not final.get('checks'):
+        raise ValueError('Final qualification requires the same repository identity and actual CI evidence')
+    gates = evaluate_pr(final, context['final']['dispositions'])
+    if any(g['status'] != 'PASS' for g in gates if g['gate'] != 'MERGE_READY'):
+        raise ValueError('Final qualification requires every actual CI, review and issue-closure gate')
+    real_checks = next(g for g in gates if g['gate'] == 'CI_FAILED')['evidence'].get('checks', [])
+    if not any(check.get('head_sha') == final['head_sha'] and check.get('status') == 'completed'
+               and check.get('conclusion') == 'success' for check in real_checks):
+        raise ValueError('Final qualification requires successful non-service CI execution on the exact final head')
+    decisions = {}
+    for review in sorted(final.get('submitted_reviews', []), key=lambda r: str(r.get('submitted_at') or '')):
+        if review.get('state') in {'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'}:
+            decisions[review.get('author_login')] = review
+    approvals = [review for review in decisions.values() if review.get('state') == 'APPROVED'
+                 and review.get('commit_sha') == final['head_sha'] and review.get('author_type') == 'User'
+                 and review.get('author_login') not in {final.get('author_login'), final.get('actor_login')}
+                 and review.get('id') and review.get('url') and _merged_at(review.get('submitted_at')) is not None]
+    if not approvals or any(review.get('state') == 'CHANGES_REQUESTED' for review in decisions.values()):
+        raise ValueError('Final qualification requires an actual independent approval of the exact final head')
+    comparison, merge = proof['ancestry'], proof['merge']
+    original_merge = proof['original']['merge_commit_sha']
+    if (comparison.get('base_commit', {}).get('sha') != original_merge
+            or comparison.get('merge_base_commit', {}).get('sha') != original_merge
+            or type(comparison.get('behind_by')) is not int or comparison['behind_by'] != 0
+            or type(comparison.get('ahead_by')) is not int or comparison['ahead_by'] < 0
+            or comparison.get('status') != ('ahead' if comparison['ahead_by'] else 'identical')
+            or (comparison['ahead_by'] == 0) != (original_merge == final['head_sha'])):
+        raise ValueError('The delivered predecessor merge is not proven in the final source ancestry')
+    tree = progress._git(Path(cwd), '--no-replace-objects', 'rev-parse', final['head_sha'] + '^{tree}').decode().strip()
+    if merge.get('sha') != final['merge_commit_sha'] or merge.get('tree', {}).get('sha') != tree:
+        raise ValueError('The qualified final head and actual merge must have identical source trees')
+    manifests = []
+    for snapshot in (proof['original'], final):
+        raw = progress._git(Path(cwd), '--no-replace-objects', 'show', snapshot['head_sha'] + ':package.json')
+        manifests.append(json.loads(raw).get('scripts'))
+    if not isinstance(manifests[0], dict) or manifests[0] != manifests[1]:
+        raise ValueError('The full repository script definitions changed; this bounded coverage route cannot establish equivalence')
+    row, runs = context['final']['row'], context['final']['runs']
+    checks = {check['id']: check for check in row['plan']['checks']}
+    if len(runs) != len(checks) or {run['check_id'] for run in runs} != set(checks):
+        raise ValueError('Every final necessary check needs its own actual execution in the exact final plan')
+    for run in runs:
+        stamps = [run.get('started_at'), run.get('finished_at')]
+        if (run['plan_id'] != row['plan_id'] or run['status'] != 'pass' or type(run['exit_code']) is not int or run['exit_code'] != 0
+                or any(run.get(key) != row['input_digest'] for key in ('input_digest', 'before_digest', 'after_digest'))
+                or any(type(stamp) not in {float, int} or not math.isfinite(stamp) for stamp in stamps)
+                or not row['created_at'] <= stamps[0] <= stamps[1] <= time.time()):
+            raise ValueError('Final coverage cannot promote missing, failed, unknown, stale or fabricated execution evidence')
+    coverage = progress.final_coverage(context['original']['row'], row, context['original']['scope'], proof['declaration'])
+    for value in coverage['replaced_private_configs']:
+        path = Path(value)
+        # Establish only that this was a private/untracked declaration, not a
+        # tracked source config or a path through a tracked link/submodule.
+        # Missing historical private bytes remain explicitly unverified.
+        for candidate in (path, *(parent for parent in path.parents if parent != Path('.'))):
+            entries = progress._git(Path(cwd), '--no-replace-objects', 'ls-tree', '-z', proof['original']['head_sha'],
+                                    '--', candidate.as_posix())
+            for entry in entries.split(b'\0'):
+                if entry and (candidate == path or entry.split(b' ', 1)[0] != b'040000'):
+                    raise ValueError('Final coverage cannot replace a tracked browser configuration or linked source path')
+    if any(not isinstance(manifests[1].get(script), str) or not manifests[1][script].strip() for script in coverage['scripts'].values()):
+        raise ValueError('A declared full gate is absent from the published package scripts')
+    local = _final_coverage_local(context, cwd)
+    return {'phase': 'QUALIFIED_SUCCESSOR', 'blocked': False, 'qualification_verified': True,
+            'completion_verified': False, 'source_closed': True,
+            'reason': 'Actual final-source full gates cover the original declared qualification; historical results remain unchanged',
+            'next_action': 'Report the final coverage and remaining task acceptance; do not rerun obsolete source or copy passing receipts.',
+            'original_plan_id': context['original']['row']['plan_id'], 'final_plan_id': row['plan_id'],
+            'final_pr': f"https://github.com/{context['repository']}/pull/{row['number']}",
+            'final_head': local['head'], 'final_tree': tree, 'final_input_digest': row['input_digest'],
+            'final_runs': runs, 'independent_approvals': approvals, 'coverage': coverage,
+            'historical_runs': context['original']['runs']}
+
+
+async def qualify_successor(store, sid, repository, original, final, cwd, payload, *, client=None):
+    """One explicit collection and append-only coverage receipt, without execution."""
+    import asyncio
+    from .github import collect_pr, collect_review
+    from .closure import read_live
+    from .transport import GitHubClient
+    context = store.final_coverage_context(sid, repository, original, final)
+    progress.final_coverage(context['original']['row'], context['final']['row'], context['original']['scope'], payload)
+    _final_coverage_local(context, cwd)
+    # Supersede any earlier success before remote reads, including failed or
+    # interrupted refreshes. Only this latest attempt may append a conclusion.
+    attempt = store.record_final_coverage(context, None, lambda: _final_coverage_local(context, cwd))
+    previous, successor, closure = await asyncio.gather(collect_review(repository, original), collect_pr(repository, final),
+                                                       read_live(repository, original))
+    client = client or GitHubClient()
+    prefix = '/repos/' + repository
+    old_merge, head, merge_sha = previous.get('merge_commit_sha'), successor.get('head_sha'), successor.get('merge_commit_sha')
+    if any(not re.fullmatch(r'[0-9a-f]{40}', str(sha)) for sha in (old_merge, head, merge_sha)):
+        raise ValueError('Merged source identities are unavailable; no final coverage was recorded')
+    ancestry, merge = await asyncio.gather(client.get(f'{prefix}/compare/{old_merge}...{head}'),
+                                         client.get(f'{prefix}/git/commits/{merge_sha}'))
+    proof = {'original': previous, 'final': successor, 'original_closure': closure,
+             'ancestry': ancestry, 'merge': merge, 'declaration': payload}
+    result = _final_coverage_evidence(context, proof, cwd)
+    receipt = store.record_final_coverage(context, proof, lambda: _final_coverage_evidence(context, proof, cwd),
+                                          attempt_id=attempt['id'])
+    return {'receipt_id': receipt['id'], **result}
+
+
+def successor_progress(store, row):
+    receipt = store.final_coverage_receipt(row['session_id'], row['plan_id'])
+    if receipt is None:
+        return None
+    context = receipt['context']
+    try:
+        if receipt['proof'] is None:
+            raise ValueError('Final coverage refresh is pending or failed; prior successful coverage cannot be reused')
+        current = store.final_coverage_context(context['session_id'], context['repository'],
+            context['original']['row']['number'], context['final']['row']['number'])
+        if current != context:
+            raise ValueError('Recorded final coverage context has changed')
+        return {'receipt_id': receipt['id'], **_final_coverage_evidence(context, receipt['proof'], context['final']['row']['cwd'])}
+    except Exception as exc:
+        return {'phase': 'SUCCESSOR_INCOMPLETE', 'blocked': True, 'qualification_verified': False,
+                'completion_verified': False, 'receipt_id': receipt['id'], 'reason': str(exc),
+                'next_action': 'Reconcile the stated evidence gap and explicitly refresh qualify-successor; preserve all actual results.'}
+
+
 def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None, from_head=None):
     if from_head is not None and merged_head is None:
         raise ValueError('--from-head requires --merged-head and the retained necessary plan')
@@ -275,8 +440,8 @@ def task_progress(store, sid):
     for row in store.validation_plans(sid):
         # Retirement cancels reminders, never the retained task's acceptance.
         try:
-            phase = current_phase(store, row)
-            state = 'PASS' if phase['phase'] == 'COMPLETE' else 'WAIT'
+            phase = successor_progress(store, row) or current_phase(store, row)
+            state = 'PASS' if phase['phase'] == 'COMPLETE' or phase.get('qualification_verified') is True else 'WAIT'
             details = [phase.get('next_action') or phase.get('reason') or phase['phase']]
         except Exception as exc:
             phase = {'phase': 'UNKNOWN'}

@@ -558,6 +558,67 @@ class Store:
             db.execute('BEGIN')
             return self._retained_validation_plan(db, sid, repo, num, directory)
 
+    def _final_coverage_context(self, db, sid, repo, original, final):
+        if original == final:
+            raise ValueError('Final coverage requires a distinct delivered successor PR')
+        result = {'session_id': sid, 'repository': repo}
+        for role, number in (('original', original), ('final', final)):
+            identity = self._closed_review_owner(db, sid, repo, number)
+            rows = db.execute('''SELECT * FROM validation_plans WHERE session_id=? AND repository=?
+                                 AND number=? AND active=1''', (sid, repo, number)).fetchall()
+            scope = db.execute('SELECT scope FROM pr_scope_bindings WHERE session_id=? AND repository=? AND number=?',
+                               (sid, repo, number)).fetchone()
+            if identity['watch']['state'] != 'merged' or len(rows) != 1 or not scope:
+                raise ValueError('Final coverage requires both retained merged PRs, their exact plans and immutable scopes')
+            plan = self._validation_plan_row(rows[0])
+            recorded = [identity[key]['cwd'] for key in ('registration', 'watch', 'checkout_anchor')]
+            if any(str(Path(path).expanduser().resolve()) != plan['cwd'] for path in recorded):
+                raise ValueError('Final coverage requires each plan at its own recorded checkout')
+            if db.execute('''SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
+                             WHERE p.session_id=? AND p.repository=? AND p.number=? AND r.status='running' ''',
+                          (sid, repo, number)).fetchone():
+                raise ValueError('Final coverage cannot conclude while either PR has an active execution')
+            result[role] = {'identity': identity, 'row': plan, 'scope': json.loads(scope['scope']),
+                'runs': [dict(r) for r in db.execute('SELECT * FROM validation_runs WHERE plan_id=? ORDER BY started_at,run_id',
+                                                    (plan['plan_id'],))],
+                'dispositions': [json.loads(r[0]) for r in db.execute('''SELECT receipt FROM dispositions
+                    WHERE repository=? AND number=? ORDER BY recorded_at''', (repo, number))]}
+        return result
+
+    def final_coverage_context(self, sid, repo, original, final):
+        with self._connect() as db:
+            db.execute('BEGIN')
+            return self._final_coverage_context(db, sid, repo, original, final)
+
+    def record_final_coverage(self, context, proof, source_guard, *, attempt_id=None):
+        """Append an attempt or conclusion; never rewrite historical evidence."""
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            actual = self._final_coverage_context(db, context['session_id'], context['repository'],
+                context['original']['row']['number'], context['final']['row']['number'])
+            if actual != context:
+                raise ValueError('Final coverage ownership, scope, plan, results or review receipts changed during collection')
+            if proof is not None:
+                prior = self._final_coverage_receipt(db, context['session_id'], context['original']['row']['plan_id'])
+                if prior is None or prior['id'] != attempt_id or prior['proof'] is not None:
+                    raise ValueError('A newer final coverage refresh superseded this collection')
+            source_guard()
+            fields = {'context': context, 'proof': proof}
+            self._audit(db, 'validation_final_coverage', fields)
+            return {'id': db.execute('SELECT last_insert_rowid()').fetchone()[0], **fields}
+
+    @staticmethod
+    def _final_coverage_receipt(db, sid, plan_id):
+        row = db.execute('''SELECT id,fields FROM audit WHERE event='validation_final_coverage'
+                AND json_extract(fields,'$.context.session_id')=?
+                AND json_extract(fields,'$.context.original.row.plan_id')=? ORDER BY id DESC LIMIT 1''',
+                (sid, plan_id)).fetchone()
+        return {'id': row['id'], **json.loads(row['fields'])} if row else None
+
+    def final_coverage_receipt(self, sid, plan_id):
+        with self._connect() as db:
+            return self._final_coverage_receipt(db, sid, plan_id)
+
     def _checker_corrections(self, db, existing, plan, checks, old_checks):
         """Validate fresh correction links inside the same plan-write transaction."""
         from .progress import private_checker_correction
