@@ -17,6 +17,7 @@ import time
 _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 REMOTE_EVIDENCE_TTL = 120
+_SOURCE_BLOB_BATCH_BYTES = 8 * 1024 * 1024
 _FORBIDDEN_RUNNERS = {"sh", "bash", "zsh", "fish", "csh", "tcsh", "dash", "cmd", "cmd.exe",
                       "powershell", "powershell.exe", "pwsh", "true", "false", "echo", "printf"}
 _VALIDATION_COMMAND = re.compile(
@@ -465,22 +466,22 @@ def source_snapshots(cwd, previous_head, final_head):
     trees = []
     for head in (previous_head, final_head):
         files, directories = {}, set()
-        for entry in _git(root, "--no-replace-objects", "ls-tree", "-r", "-t", "-z", "--full-tree", head).split(b"\x00"):
+        for entry in _git(root, "--no-replace-objects", "ls-tree", "-r", "-t", "-l", "-z", "--full-tree", head).split(b"\x00"):
             if not entry:
                 continue
             header, path = entry.split(b"\t", 1)
-            mode, kind, blob = header.split()
+            mode, kind, blob, size = header.split()
             path = os.fsdecode(path)
             if mode == b"040000" and kind == b"tree":
                 directories.add(path)
             elif mode in {b"100644", b"100755", b"120000"} and kind == b"blob":
-                files[path] = (mode, blob)
+                files[path] = (int(mode, 8), blob, int(size))
             else:
                 raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
         trees.append((files, directories))
     old, final = trees[0][0], trees[1][0]
     for path in old.keys() | final.keys():
-        if (any(entry and entry[0] == b"120000" for entry in (old.get(path), final.get(path)))
+        if (any(entry and stat.S_ISLNK(entry[0]) for entry in (old.get(path), final.get(path)))
                 and old.get(path) != final.get(path)):
             raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
         if (path not in final and path not in trees[1][1]
@@ -489,23 +490,41 @@ def source_snapshots(cwd, previous_head, final_head):
     for path in trees[0][1] | trees[1][1]:
         if (root / path).is_symlink():
             raise ValueError("Published source directories cannot be symlinked")
-    blobs = sorted({blob for files, _ in trees for _, blob in files.values()})
-    contents = {}
-    if blobs:
-        stream = _git(root, "--no-replace-objects", "cat-file", "--batch", data=b"\n".join(blobs) + b"\n")
+    paths = old.keys() | final.keys() | trees[0][1] | trees[1][1]
+    # Only historical directory types replace current traversal. In the final
+    # checkout a directory may remain solely for unchanged private inputs.
+    return tuple(({path: files.get(path) for path in paths}, directories if index == 0 else None)
+                 for index, (files, directories) in enumerate(trees))
+
+
+def _source_blobs(root, files):
+    """Fetch bounded blob groups instead of retaining both complete source trees."""
+    def read(batch):
+        stream = _git(root, "--no-replace-objects", "cat-file", "--batch",
+                      data=b"\n".join(entry[2] for entry in batch) + b"\n")
         position = 0
-        for expected in blobs:
+        for path, mode, expected, expected_size in batch:
             end = stream.index(b"\n", position)
             actual, kind, size = stream[position:end].split()
             size = int(size)
             position = end + 1
-            if actual != expected or kind != b"blob" or stream[position + size:position + size + 1] != b"\n":
+            if (actual != expected or kind != b"blob" or size != expected_size
+                    or stream[position + size:position + size + 1] != b"\n"):
                 raise ValueError("Historical Git source could not be reconstructed")
-            contents[expected] = stream[position:position + size]
+            yield path, mode, memoryview(stream)[position:position + size]
             position += size + 1
-    paths = old.keys() | final.keys() | trees[0][1] | trees[1][1]
-    return tuple(({path: (int(files[path][0], 8), contents[files[path][1]]) if path in files else None
-                   for path in paths}, directories) for files, directories in trees)
+    batch, total = [], 0
+    for path in sorted(files):
+        if files[path] is None:
+            continue
+        mode, blob, size = files[path]
+        if batch and (len(batch) == 128 or total + size > _SOURCE_BLOB_BATCH_BYTES):
+            yield from read(batch)
+            batch, total = [], 0
+        batch.append((path, mode, blob, size))
+        total += size
+    if batch:
+        yield from read(batch)
 
 
 def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
@@ -520,13 +539,14 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     normalized = normalize_plan(plan, working, stored=True)
     repository = Path(repo_root(working))
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
-    source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, set())
+    source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, None)
+    source_contents = iter(_source_blobs(repository, source_files))
     paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
         candidate = working / value
         relative = candidate.relative_to(repository).as_posix()
-        directory = (relative in source_directories if relative in source_files else
+        directory = (relative in source_directories if source_directories is not None and relative in source_files else
                      candidate.is_dir() and not candidate.is_symlink())
         if directory:
             for directory, folders, files in os.walk(candidate, followlinks=False):
@@ -562,7 +582,9 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
                     append(os.fsencode(value))
                     append(b"missing")
                 continue
-            mode, body = historical
+            source_path, mode, body = next(source_contents)
+            if source_path != value:
+                raise ValueError("Published source paths changed during reconstruction")
             append(os.fsencode(value))
             if stat.S_ISLNK(mode):
                 # Unchanged links retain the existing target-content pin. The

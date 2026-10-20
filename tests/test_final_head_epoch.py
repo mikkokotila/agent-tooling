@@ -444,9 +444,8 @@ def test_declared_source_directory_types_are_reconstructed(local, change):
     elif change != 'missing-directory':
         target.mkdir()
         (target / 'source.dat').write_bytes(b'original directory\x00bytes')
-    prepare(local, inputs=True)
-    plan['input_paths'].append(target.name)
-    old = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    plan['input_paths'] = [target.name]
+    old = prepare(local)
     before = snap['head_sha']
     if change == 'rename':
         target.rename(root / 'renamed-source')
@@ -470,6 +469,64 @@ def test_declared_source_directory_types_are_reconstructed(local, change):
     assert actual['before_digest'] == actual['after_digest'] == new['input_digest']
     assert store.validation_runs(old['plan_id']) == []
     assert git(root, 'status', '--porcelain') == ''
+
+
+@pytest.mark.parametrize('changed_private', [False, True])
+def test_private_directory_remains_after_its_last_tracked_child_is_deleted(local, changed_private):
+    store, root, snap, plan = local
+    directory = root / 'declared-source'
+    directory.mkdir()
+    tracked, private = directory / 'tracked.dat', directory / 'private.dat'
+    tracked.write_bytes(b'published source')
+    private.write_bytes(b'original private input')
+    with (root / '.gitignore').open('a') as ignored:
+        ignored.write('declared-source/private.dat\n')
+    plan['input_paths'] = [directory.name]
+    old = prepare(local)
+    before = snap['head_sha']
+    tracked.unlink()
+    final_source(local)
+    if changed_private:
+        private.write_bytes(b'changed private input')
+    assert git(root, 'status', '--porcelain') == '' and directory.is_dir()
+    if changed_private:
+        with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+            epoch(local, before)
+        assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    else:
+        new = epoch(local, before)['plan']
+        assert store.validation_evidence(new['plan_id']) == []
+        actual = execute(local, 'remaining')['run']
+        assert actual['status'] == 'pass' and actual['exit_code'] == 0
+        assert actual['before_digest'] == actual['after_digest'] == new['input_digest']
+    assert store.validation_runs(old['plan_id']) == []
+
+
+def test_source_reconstruction_processes_bounded_real_git_batches(local, monkeypatch):
+    store, root, snap, _ = local
+    for index in range(6):
+        (root / f'blob-{index}.dat').write_bytes(bytes([index]) * 40)
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    (root / 'blob-0.dat').write_bytes(b'published final blob')
+    final_source(local)
+    snapshots = progress.source_snapshots(root, before, snap['head_sha'])
+    sizes = {entry[1]: entry[2] for files, _ in snapshots for entry in files.values() if entry is not None}
+    actual_git, requests = progress._git, []
+    def record_git(*args, **kwargs):
+        if 'cat-file' in args:
+            requests.append(kwargs['data'].splitlines())
+        return actual_git(*args, **kwargs)
+    monkeypatch.setattr(progress, '_git', record_git)
+    monkeypatch.setattr(progress, '_SOURCE_BLOB_BATCH_BYTES', 64)
+    new = epoch(local, before)['plan']
+    assert len(requests) > 2
+    assert any(len(batch) > 1 for batch in requests)
+    assert all(len(batch) <= 128 and (sum(sizes[blob] for blob in batch) <= 64 or len(batch) == 1)
+               for batch in requests)
+    assert store.validation_evidence(new['plan_id']) == []
+    assert execute(local, 'remaining')['run']['status'] == 'pass'
+    assert store.validation_runs(old['plan_id']) == []
 
 
 def test_unchanged_published_symlink_retains_its_actual_target_pin(local):
