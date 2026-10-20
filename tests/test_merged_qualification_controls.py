@@ -329,3 +329,67 @@ def test_control_requires_real_declared_local_inputs(local, bad_inputs):
     with pytest.raises(ValueError):
         save(local, payload)
     assert store.validation_runs(row['plan_id']) == []
+
+
+@pytest.mark.parametrize('kind', ['fixture', 'parent', 'driver'])
+def test_symlink_controls_refuse_pinning_before_target_identity_can_be_lost(local, kind):
+    store, root, _, _ = local
+    original, _ = retained(local)
+    payload, control = add_control(local)
+    directory = root / '.qualification'
+    if kind == 'parent':
+        first, second = directory / 'first', directory / 'second'
+        first.mkdir()
+        second.mkdir()
+        (first / 'case.txt').write_text('05Z..06Z')
+        (second / 'case.txt').write_text('another range')
+        link = directory / 'selected'
+        link.symlink_to(first, target_is_directory=True)
+        control['input_paths'][1] = '.qualification/selected/case.txt'
+    elif kind == 'fixture':
+        first, second = directory / 'first.txt', directory / 'second.txt'
+        first.write_text('05Z..06Z')
+        second.write_text('another range')
+        link = directory / 'selected.txt'
+        link.symlink_to(first)
+        control['input_paths'][1] = '.qualification/selected.txt'
+    else:
+        first = root / control['input_paths'][0]
+        second = directory / 'another.py'
+        second.write_text(first.read_text())
+        link = directory / 'selected.py'
+        link.symlink_to(first)
+        # Even listing the resolved target must not leave the actual argv
+        # symlink unpinned and mutable.
+        control['argv'][1] = '.qualification/selected.py'
+    with pytest.raises(ValueError, match='cannot traverse symlinks'):
+        save(local, payload)
+    link.unlink()
+    link.symlink_to(second, target_is_directory=kind == 'parent')
+    with pytest.raises(ValueError, match='cannot traverse symlinks'):
+        save(local, payload)
+    assert store.validation_runs(original['plan_id']) == []
+
+
+@pytest.mark.parametrize('kind', ['fixture', 'parent', 'driver'])
+def test_symlink_introduced_after_pinning_cannot_execute_or_reset_a_control(local, kind):
+    store, root, _, _ = local
+    original, _ = retained(local)
+    payload, control = add_control(local)
+    directory = root / '.qualification'
+    if kind == 'parent':
+        selected = directory / 'selected'
+        selected.mkdir()
+        (selected / 'case.txt').write_text('05Z..06Z')
+        control['input_paths'][1] = '.qualification/selected/case.txt'
+    else:
+        selected = root / control['input_paths'][0 if kind == 'driver' else 1]
+    row = save(local, payload)['plan']
+    target = selected.with_name('different-target')
+    selected.rename(target)
+    selected.symlink_to(target, target_is_directory=kind == 'parent')
+    for action in (lambda: save(local, payload), lambda: run(local, 'retry-cancel')):
+        with pytest.raises(ValueError, match='cannot traverse symlinks'):
+            action()
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == row
+    assert store.validation_runs(original['plan_id']) == []

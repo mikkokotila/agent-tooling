@@ -60,7 +60,17 @@ def _runner(argv: list[str], cwd: Path, root: Path):
     raise ValueError("validation command must name a common check runner or an actual repository script")
 
 
-def _input_settings(payload, root):
+def _ordinary_control_path(path, root):
+    # Resolving a private path would otherwise discard a link's identity.
+    # Keep this restriction local to the new per-check qualification surface.
+    for candidate in (path, *path.parents):
+        if candidate == root:
+            break
+        if candidate.is_symlink():
+            raise ValueError("Qualification control paths cannot traverse symlinks; pin ordinary local files")
+
+
+def _input_settings(payload, root, *, control=False):
     inputs = payload.get("input_paths", [])
     if not isinstance(inputs, list) or any(not isinstance(path, str) or not path for path in inputs):
         raise ValueError("input_paths must be relative file or directory paths")
@@ -69,6 +79,8 @@ def _input_settings(payload, root):
         path = Path(value)
         if path.is_absolute():
             raise ValueError("input_paths must remain relative to the working directory")
+        if control:
+            _ordinary_control_path(root / path, root)
         candidate = _inside(root / path, root)
         if candidate == root or candidate.name == ".git" or ".git" in candidate.relative_to(root).parts:
             raise ValueError("input_paths cannot include the whole workspace or Git metadata")
@@ -121,11 +133,14 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         normalized.append({"id": identifier, "argv": list(argv), "reason": reason.strip(),
                            "cwd": directory.relative_to(root).as_posix() or "."})
         if "input_paths" in check or "env_names" in check:
-            normalized[-1].update(_input_settings(check, root))
+            normalized[-1].update(_input_settings(check, root, control=True))
             first = Path(argv[0]).name.lower()
             script = argv[1] if (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
                                       and len(argv) > 1 and not argv[1].startswith("-")) else argv[0]
-            candidate = (directory / script).resolve()
+            candidate = directory / script
+            if candidate.is_file() and candidate.resolve().is_relative_to(root):
+                _ordinary_control_path(candidate, root)
+            candidate = candidate.resolve()
             if (candidate.is_file() and candidate.is_relative_to(root)
                     and not any(candidate == root / path or (root / path).is_dir() and candidate.is_relative_to(root / path)
                                 for path in normalized[-1]["input_paths"])):

@@ -71,7 +71,7 @@ If remaining acceptance needs a new local driver for the unchanged merged produc
 }
 ```
 
-Use the real interpreter, driver and dependencies for that check; the paths above illustrate the declaration only. Paths are relative to the recorded repository root. New files must be private ignored inputs outside previously frozen input directories, so creating them does not change the retained fingerprint. Do not edit tracked `.gitignore` or producer files to make this work. Explicitly include every additional dependency; keep outputs outside declared inputs. The runner computes the control's `input_digest` from the producer, retained inputs and its additional inputs/environment. Do not supply an `input_digest` or copy a receipt into the plan file.
+Use the real interpreter, driver and dependencies for that check; the paths above illustrate the declaration only. Paths are relative to the recorded repository root. New files must be private ignored inputs outside previously frozen input directories, so creating them does not change the retained fingerprint. Do not edit tracked `.gitignore` or producer files to make this work. Per-check input paths and local drivers must use ordinary paths without symlink traversal; replacing a pinned path with a symlink also refuses execution. Explicitly include every additional dependency; keep outputs outside declared inputs. The runner computes the control's `input_digest` from the producer, retained inputs and its additional inputs/environment. Do not supply an `input_digest` or copy a receipt into the plan file.
 
 ```sh
 caller-pr-gates validation-plan --session OWNER_SESSION \
