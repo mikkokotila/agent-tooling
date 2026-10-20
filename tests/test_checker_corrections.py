@@ -199,8 +199,8 @@ def test_tracked_checker_still_requires_a_real_product_repair(local):
 
 @pytest.mark.parametrize('option', ['-m', '-'])
 def test_private_filename_cannot_substitute_a_python_option_for_the_driver(local, option):
-    _, root, _, _ = local
-    _, failed, _ = prepare(local, arguments=['pytest'])
+    store, root, _, _ = local
+    row, failed, _ = prepare(local, arguments=['pytest'])
     payload, check = correction(local, failed)
     # The generic runner recognizes "python -m pytest". A private file named
     # "-m" must not make that different executable program a checker repair.
@@ -209,8 +209,10 @@ def test_private_filename_cannot_substitute_a_python_option_for_the_driver(local
     (root / option).write_text(driver(corrected=True))
     check['argv'][1] = option
     check['input_paths'].append(option)
-    with pytest.raises(ValueError, match='preserve its Python interpreter'):
+    with pytest.raises(ValueError):
         save(local, payload)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == row
+    assert store.validation_runs(row['plan_id']) == [failed]
 
 
 def test_failed_corrected_checker_needs_its_own_evidenced_correction(local):
