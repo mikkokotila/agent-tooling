@@ -396,3 +396,50 @@ def test_replace_ref_cannot_impersonate_the_published_source(local):
     assert git(root, 'status', '--porcelain') == ''
     with pytest.raises(ValueError):
         epoch(local, before)
+
+
+def test_transformed_historical_worktree_bytes_refuse_without_repinning(local):
+    store, root, snap, plan = local
+    (root / '.gitattributes').write_text('transformed.txt text eol=crlf\n')
+    (root / 'transformed.txt').write_bytes(b'original\r\n')
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    assert subprocess.check_output(['git', '-C', str(root), 'show', f'{before}:transformed.txt']) == b'original\n'
+    assert (root / 'transformed.txt').read_bytes() == b'original\r\n'
+    (root / 'transformed.txt').write_bytes(b'published final\r\n')
+    final_source(local)
+    assert git(root, 'status', '--porcelain') == ''
+    with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+        epoch(local, before)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == []
+    assert progress.plan_declaration(old['plan']) == progress.normalize_plan(plan, root)
+    assert (root / 'transformed.txt').read_bytes() == b'published final\r\n'
+
+
+@pytest.mark.parametrize('explicit_pin', [False, True])
+def test_changed_ignore_membership_requires_an_existing_explicit_private_pin(local, explicit_pin):
+    store, root, snap, plan = local
+    prepare(local, inputs=True)
+    before = snap['head_sha']
+    artifact = root / 'local-artifact.txt'
+    artifact.write_text('unchanged local input\n')
+    if explicit_pin:
+        plan['input_paths'].append('local-artifact.txt')
+    old = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    assert git(root, 'status', '--porcelain') == '?? local-artifact.txt'
+    with (root / '.gitignore').open('a') as target:
+        target.write('local-artifact.txt\n')
+    final_source(local)
+    assert git(root, 'status', '--porcelain') == ''
+    if explicit_pin:
+        new = epoch(local, before)['plan']
+        assert new['plan_id'] != old['plan_id']
+        assert store.validation_evidence(new['plan_id']) == []
+        assert execute(local, 'remaining')['run']['status'] == 'pass'
+    else:
+        with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+            epoch(local, before)
+        assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert artifact.read_text() == 'unchanged local input\n'
+    assert store.validation_runs(old['plan_id']) == []
