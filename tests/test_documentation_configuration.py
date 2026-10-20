@@ -395,3 +395,29 @@ def test_unverified_write_or_any_readback_drift_stays_incomplete_without_retry(c
     assert 'private error' not in json.dumps(incomplete)
     assert CIPHERTEXT not in json.dumps(incomplete)
     if change == 'read_error': assert 'classic' in incomplete[0]['after']
+
+
+@pytest.mark.parametrize('change', ['addition', 'rebind'])
+def test_concurrent_administrator_edit_is_not_overwritten_or_reported_verified(case, change):
+    """A matching post-write snapshot cannot prove an intervening edit was preserved."""
+    store, value, _, remote, _ = case
+    concurrent = {'context': 'concurrently-required', 'app_id': 98765}
+    def interleave(argv, kwargs):
+        if argv == ['gh', 'api', DOCS_CHECKS, '--method', 'PATCH', '--input', '-']:
+            required = remote.values[DOCS_PROTECTION]['required_status_checks']
+            if change == 'addition':
+                required['checks'].append(concurrent)
+                required['contexts'].append(concurrent['context'])
+            else:
+                required['checks'][0]['app_id'] = 98765
+    remote.before_call = interleave
+    with patch('caller_pr_gates.cli.github_run', remote):
+        try:
+            gateway(value, store)
+        except (ValueError, RuntimeError):
+            pass
+    if remote.writes:
+        after = remote.values[DOCS_PROTECTION]['required_status_checks']['checks']
+        if change == 'addition': assert concurrent in after
+        else: assert after[0]['app_id'] == 98765
+    assert audits(store, 'verified') == []
