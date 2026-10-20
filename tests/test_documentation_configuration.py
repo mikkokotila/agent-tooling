@@ -8,12 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from caller_pr_gates.cli import (DOCS_CHECKS, DOCS_ENVIRONMENT, DOCS_PROTECTION,
-                                 DOCS_SECRET, gateway, main)
+from caller_pr_gates.cli import DOCS_ENVIRONMENT, DOCS_SECRET, gateway, main
 from caller_pr_gates.store import Store
 
 REPO = 'Vaquum/Limen'
 PR = f'repos/{REPO}/pulls/7'
+DOCS_PROTECTION = f'repos/{REPO}/branches/main/protection'
+DOCS_CHECKS = DOCS_PROTECTION + '/required_status_checks'
 RULES = f'repos/{REPO}/rulesets/5406995'
 POLICY = {'protected_branches': True, 'custom_branch_policies': False}
 RETIRED = {'context': 'Workers Builds: limen', 'app_id': 85455}
@@ -110,7 +111,7 @@ def case(tmp_path):
     path = tmp_path / 'request.json'
     remote = Remote()
 
-    def request(endpoint=DOCS_CHECKS, payload=None):
+    def request(endpoint=DOCS_ENVIRONMENT, payload=None):
         path.write_text(json.dumps(remote.payload(endpoint) if payload is None else payload))
         value.arguments = ['api', endpoint, '--method', 'PATCH' if endpoint == DOCS_CHECKS else 'PUT',
                            '--input', str(path)]
@@ -126,7 +127,7 @@ def audits(store, suffix):
             ('github_documentation_configuration_' + suffix,))]
 
 
-@pytest.mark.parametrize('endpoint', [DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CHECKS])
+@pytest.mark.parametrize('endpoint', [DOCS_ENVIRONMENT, DOCS_SECRET])
 def test_documented_cli_uses_frozen_json_and_verified_readbacks(case, monkeypatch, capsys, endpoint):
     store, value, path, remote, request = case
     request(endpoint)
@@ -154,19 +155,9 @@ def test_documented_cli_uses_frozen_json_and_verified_readbacks(case, monkeypatc
         watch = db.execute('SELECT * FROM pr_watch').fetchone()
         assert watch['owner_session'] == 's' and watch['cwd'] == value.cwd and watch['state'] == 'open'
     assert remote.values[RULES] == original_rules
-    if endpoint == DOCS_CHECKS:
-        expected = deepcopy(original_protection)
-        expected['required_status_checks']['checks'] = admitted['checks']
-        expected['required_status_checks']['contexts'] = [c['context'] for c in admitted['checks']]
-        assert receipt['before'] == {'classic': original_protection, 'ruleset': original_rules}
-        assert receipt['after'] == {'classic': expected, 'ruleset': original_rules}
-        assert len(admitted['checks']) == 22
-        assert remote.calls.count(['gh', 'api', DOCS_PROTECTION]) == 2
-        assert remote.calls.count(['gh', 'api', RULES]) == 2
-        assert len(remote.calls) == 12  # Eleven necessary bounded reads, one write; no gate collector.
-    else:
-        assert remote.values[DOCS_PROTECTION] == original_protection
-        assert not any(call[2] in {RULES, DOCS_PROTECTION} for call in remote.calls)
+    assert remote.values[DOCS_PROTECTION] == original_protection
+    assert not any(call[2] in {RULES, DOCS_PROTECTION, DOCS_CHECKS} for call in remote.calls)
+    assert len(remote.calls) == (4 if endpoint == DOCS_ENVIRONMENT else 7)
 
 
 def test_provisioning_sequence_and_matching_origin_relative_input(case, tmp_path, monkeypatch):
@@ -180,11 +171,11 @@ def test_provisioning_sequence_and_matching_origin_relative_input(case, tmp_path
     subprocess.run(['git', '-C', value.cwd, 'remote', 'set-url', 'origin',
                     'ssh://git@github.com/Vaquum/Limen.git'], check=True)
     with patch('caller_pr_gates.cli.github_run', remote):
-        for endpoint in (DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CHECKS):
+        for endpoint in (DOCS_ENVIRONMENT, DOCS_SECRET):
             request(endpoint)
             value.arguments[-1] = path.name
             assert gateway(value, store)['stage'] == 'verified'
-    assert [call[0][2] for call in remote.writes] == [DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CHECKS]
+    assert [call[0][2] for call in remote.writes] == [DOCS_ENVIRONMENT, DOCS_SECRET]
 
 
 @pytest.mark.parametrize('endpoint,payload', [
@@ -220,7 +211,7 @@ def test_request_file_and_flags_cannot_escape_admission(case, change):
     if change == 'missing': path.unlink()
     elif change == 'malformed': path.write_text('not JSON')
     elif change == 'stdin': value.arguments[-1] = '-'
-    elif change == 'method': value.arguments[3] = 'PUT'
+    elif change == 'method': value.arguments[3] = 'PATCH'
     else:
         value.arguments += {'headers': ['-H', 'X-Anything: x'], 'host': ['--hostname', 'other.invalid'],
                            'field': ['-f', 'strict=false'], 'duplicate': ['--input', str(path)],
@@ -234,6 +225,8 @@ def test_request_file_and_flags_cannot_escape_admission(case, change):
     (DOCS_ENVIRONMENT + '/other', 'PUT'), (DOCS_ENVIRONMENT.replace('documentation', 'production'), 'PUT'),
     (DOCS_SECRET.replace('CLOUDFLARE_DOCS_API_TOKEN', 'OTHER'), 'PUT'),
     (DOCS_SECRET.replace('Vaquum/Limen', 'other/repo'), 'PUT'), (DOCS_SECRET, 'DELETE'),
+    *[(DOCS_CHECKS, method) for method in ('PATCH', 'PUT', 'POST', 'DELETE')],
+    *[(DOCS_CHECKS + '/contexts', method) for method in ('PATCH', 'PUT', 'POST', 'DELETE')],
     (DOCS_CHECKS.replace('/main/', '/other/'), 'PATCH'), (DOCS_PROTECTION, 'PUT'),
     (RULES, 'PUT'), (DOCS_CHECKS + '?strict=false', 'PATCH'), (DOCS_CHECKS + '/', 'PATCH'),
     ('repos/Vaquum/Limen', 'PATCH'), ('repos/Vaquum/Limen/statuses/' + 'a' * 40, 'POST'),
@@ -292,14 +285,16 @@ def test_live_pr_must_be_open_and_identify_the_owned_repository(case, change):
     assert remote.writes == []
 
 
-@pytest.mark.parametrize('change', ['environment', 'policy', 'secret', 'key'])
+@pytest.mark.parametrize('change', ['environment', 'policy', 'name', 'url', 'public_key', 'key'])
 def test_provisioning_is_a_fresh_prerequisite(case, change):
     store, value, _, remote, request = case
+    request(DOCS_SECRET)
     if change == 'environment': remote.values.pop(DOCS_ENVIRONMENT)
     elif change == 'policy': remote.values[DOCS_ENVIRONMENT]['deployment_branch_policy'] = None
-    elif change == 'secret': remote.values.pop(DOCS_SECRET)
+    elif change == 'name': remote.values[DOCS_ENVIRONMENT]['name'] = 'production'
+    elif change == 'url': remote.values[DOCS_ENVIRONMENT]['url'] += '/other'
+    elif change == 'public_key': remote.values.pop(DOCS_ENVIRONMENT + '/secrets/public-key')
     else:
-        request(DOCS_SECRET)
         remote.values[DOCS_ENVIRONMENT + '/secrets/public-key']['key_id'] = 'new-key'
     with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError):
         gateway(value, store)
@@ -309,8 +304,9 @@ def test_provisioning_is_a_fresh_prerequisite(case, change):
 @pytest.mark.parametrize('change', ['delete_extra', 'add', 'reorder', 'binding', 'strict', 'contexts',
                                    'already_removed', 'duplicate_retired', 'no_strict', 'no_admin',
                                    'no_threads', 'no_stale_dismissal', 'no_approval', 'rules_hidden', 'rules_bypass'])
-def test_classic_delta_cannot_drop_other_checks_or_normalize_authorities(case, change):
-    store, value, path, remote, _ = case
+def test_classic_protection_admission_is_removed_regardless_of_delta_or_authority(case, change):
+    store, value, path, remote, request = case
+    request(DOCS_CHECKS)
     payload = json.loads(path.read_text())
     before = remote.values[DOCS_PROTECTION]
     required = before['required_status_checks']
@@ -330,59 +326,60 @@ def test_classic_delta_cannot_drop_other_checks_or_normalize_authorities(case, c
     elif change == 'rules_hidden': remote.values[RULES].pop('bypass_actors')
     else: remote.values[RULES]['bypass_actors'] = [{'actor_id': 17, 'actor_type': 'User'}]
     path.write_text(json.dumps(payload))
-    with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError):
+    original = deepcopy(remote.values)
+    with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError, match='API gateway permits'):
         gateway(value, store)
-    assert remote.writes == []
+    assert remote.calls == [] and remote.writes == []
+    assert remote.values == original and audits(store, 'verified') == []
 
 
-def test_same_context_from_another_app_is_retained_in_order(case):
+def test_denied_protection_write_preserves_same_context_from_another_app_in_order(case):
     store, value, _, remote, request = case
     required = remote.values[DOCS_PROTECTION]['required_status_checks']
     other = {'context': RETIRED['context'], 'app_id': 99}
     required['checks'].insert(2, other)
     required['contexts'].insert(2, other['context'])
-    request()
-    with patch('caller_pr_gates.cli.github_run', remote):
-        result = gateway(value, store)
-    assert result['after']['classic']['required_status_checks']['checks'][2] == other
+    request(DOCS_CHECKS)
+    original = deepcopy(remote.values)
+    with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError, match='API gateway permits'):
+        gateway(value, store)
+    assert remote.calls == [] and remote.values == original
+    assert required['checks'][2] == other
 
 
-@pytest.mark.parametrize('change', ['head', 'owner', 'checkout', 'closed'])
+@pytest.mark.parametrize('change', ['owner', 'checkout', 'closed'])
 def test_changes_during_preflight_refuse_the_write(case, change, tmp_path):
-    store, value, _, remote, _ = case
+    store, value, _, remote, request = case
+    request(DOCS_SECRET)
     def race(argv, kwargs):
-        if argv == ['gh', 'api', DOCS_PROTECTION]:
-            if change == 'head': remote.values[PR]['head']['sha'] = 'c' * 40
-            else:
-                with store._connect() as db:
-                    if change == 'owner': db.execute("UPDATE pr_watch SET owner_session='other'")
-                    elif change == 'checkout': db.execute('UPDATE pr_watch SET cwd=?', (str(tmp_path / 'other'),))
-                    else: db.execute("UPDATE pr_watch SET state='closed'")
+        if argv == ['gh', 'api', DOCS_ENVIRONMENT + '/secrets/public-key']:
+            with store._connect() as db:
+                if change == 'owner': db.execute("UPDATE pr_watch SET owner_session='other'")
+                elif change == 'checkout': db.execute('UPDATE pr_watch SET cwd=?', (str(tmp_path / 'other'),))
+                else: db.execute("UPDATE pr_watch SET state='closed'")
     remote.before_call = race
     with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError):
         gateway(value, store)
     assert remote.writes == []
 
 
-@pytest.mark.parametrize('change', ['exit', 'strict', 'admin', 'reviews', 'threads', 'checks', 'extra_field',
-                                   'rules', 'rules_metadata', 'secret', 'environment', 'head', 'closed', 'read_error', 'owner'])
-def test_unverified_write_or_any_readback_drift_stays_incomplete_without_retry(case, change):
-    store, value, _, remote, _ = case
+@pytest.mark.parametrize('endpoint,change', [
+    *[(endpoint, change) for endpoint in (DOCS_ENVIRONMENT, DOCS_SECRET)
+      for change in ('exit', 'environment', 'head', 'base', 'closed', 'read_error', 'owner')],
+    *[(DOCS_SECRET, change) for change in ('secret_missing', 'secret_name', 'secret_timestamp')],
+])
+def test_unverified_write_or_any_readback_drift_stays_incomplete_without_retry(case, change, endpoint):
+    store, value, _, remote, request = case
+    request(endpoint)
     def drift():
-        classic = remote.values[DOCS_PROTECTION]
-        if change == 'strict': classic['required_status_checks']['strict'] = False
-        elif change == 'admin': classic['enforce_admins']['enabled'] = False
-        elif change == 'reviews': classic['required_pull_request_reviews']['required_approving_review_count'] = 0
-        elif change == 'threads': classic['required_conversation_resolution']['enabled'] = False
-        elif change == 'checks': classic['required_status_checks']['checks'][0]['app_id'] = 19
-        elif change == 'extra_field': classic['allow_deletions']['enabled'] = True
-        elif change == 'rules': remote.values[RULES]['rules'].pop()
-        elif change == 'rules_metadata': remote.values[RULES]['updated_at'] = '2026-10-20T01:00:00Z'
-        elif change == 'secret': remote.values[DOCS_SECRET]['updated_at'] = '2026-10-20T02:00:00Z'
+        if change == 'secret_missing': remote.values.pop(DOCS_SECRET)
+        elif change == 'secret_name': remote.values[DOCS_SECRET]['name'] = 'OTHER'
+        elif change == 'secret_timestamp': remote.values[DOCS_SECRET]['updated_at'] = None
         elif change == 'environment': remote.values[DOCS_ENVIRONMENT]['deployment_branch_policy'] = None
         elif change == 'head': remote.values[PR]['head']['sha'] = 'c' * 40
+        elif change == 'base': remote.values[PR]['base']['sha'] = 'c' * 40
         elif change == 'closed': remote.values[PR]['state'] = 'closed'
-        elif change == 'read_error': remote.values.pop(RULES)
+        elif change == 'read_error': remote.values.pop(DOCS_ENVIRONMENT)
         elif change == 'owner':
             with store._connect() as db: db.execute("UPDATE pr_watch SET owner_session='other'")
     if change == 'exit': remote.write_exit = 1
@@ -394,13 +391,15 @@ def test_unverified_write_or_any_readback_drift_stays_incomplete_without_retry(c
     assert len(incomplete) == 1 and incomplete[0]['exit_code'] == (1 if change == 'exit' else 0)
     assert 'private error' not in json.dumps(incomplete)
     assert CIPHERTEXT not in json.dumps(incomplete)
-    if change == 'read_error': assert 'classic' in incomplete[0]['after']
+    assert incomplete[0]['stage'] == ('write' if change == 'exit' else 'readback')
 
 
 @pytest.mark.parametrize('change', ['addition', 'rebind'])
-def test_concurrent_administrator_edit_is_not_overwritten_or_reported_verified(case, change):
-    """A matching post-write snapshot cannot prove an intervening edit was preserved."""
-    store, value, _, remote, _ = case
+@pytest.mark.parametrize('timing', ['after_payload', 'before_relay'])
+def test_concurrent_administrator_edit_is_not_overwritten_or_reported_verified(case, change, timing):
+    """Deny the unsafe operation, including the two previously failing interleavings."""
+    store, value, _, remote, request = case
+    request(DOCS_CHECKS)
     concurrent = {'context': 'concurrently-required', 'app_id': 98765}
     def interleave(argv, kwargs):
         if argv == ['gh', 'api', DOCS_CHECKS, '--method', 'PATCH', '--input', '-']:
@@ -411,13 +410,17 @@ def test_concurrent_administrator_edit_is_not_overwritten_or_reported_verified(c
             else:
                 required['checks'][0]['app_id'] = 98765
     remote.before_call = interleave
-    with patch('caller_pr_gates.cli.github_run', remote):
-        try:
-            gateway(value, store)
-        except (ValueError, RuntimeError):
-            pass
+    if timing == 'after_payload':
+        # Another writer can also change the authority after the caller saves its list.
+        interleave(['gh', 'api', DOCS_CHECKS, '--method', 'PATCH', '--input', '-'], {})
+    original = deepcopy(remote.values)
+    with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError, match='API gateway permits'):
+        gateway(value, store)
+    # Retain the lost-update assertions as regression traps if PATCH is ever re-admitted.
     if remote.writes:
         after = remote.values[DOCS_PROTECTION]['required_status_checks']['checks']
         if change == 'addition': assert concurrent in after
         else: assert after[0]['app_id'] == 98765
-    assert audits(store, 'verified') == []
+    assert remote.calls == [] and remote.writes == []
+    assert remote.values == original
+    assert audits(store, 'attempt') == [] and audits(store, 'verified') == []

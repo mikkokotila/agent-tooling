@@ -63,13 +63,13 @@ caller-pr-gates github --session "$OWNER_SESSION" --client codex \
 
 Read back before retrying any failed or ambiguous mutation; the gateway never retries it automatically. Release creation/deletion, uploads/assets, tag/title/target/draft/prerelease edits and unrelated API writes remain outside this capability. Existing PR gates, ownership and closed-reminder retirement are unchanged.
 
-## Authorized documentation publisher configuration
+## Authorized documentation environment and secret provisioning
 
-The existing `github` gateway admits only the three approved Limen publisher-cutover writes below. Use the actual recorded root owner, client and original checkout of an owned **open, non-draft, same-repository PR targeting main**. The checkout origin must identify `Vaquum/Limen`. This capability does not adopt a PR, create an approval, modify gate evidence or change reminder retirement.
+The existing `github` gateway admits only the two approved Limen provisioning writes below. Use the actual recorded root owner, client and original checkout of an owned **open, non-draft, same-repository PR targeting main**. The checkout origin must identify `Vaquum/Limen`. This capability does not adopt a PR, create an approval, modify gate evidence or change reminder retirement.
 
-Use the exact argument forms shown, with saved JSON files. Relative input paths resolve under `--cwd`. Extra flags, fields, endpoints, other repositories/environments/secrets, plaintext and unrelated protection changes are refused. The input is read and serialized once, and those admitted bytes go to the existing authenticated relay through stdin. No caller file is reopened by `gh`.
+Use the exact argument forms shown, with saved JSON files. Relative input paths resolve under `--cwd`. Extra flags, fields, endpoints, other repositories/environments/secrets, plaintext and protection writes are refused. The input is read and serialized once, and those admitted bytes go to the existing authenticated relay through stdin. No caller file is reopened by `gh`.
 
-Provision before removing the retired check:
+Provision the environment before the encrypted secret:
 
 1. Prepare a private JSON file containing exactly `{"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}`, then create/update the environment:
 
@@ -95,25 +95,13 @@ Provision before removing the retired check:
 
    The gateway requires the protected-branches-only policy and the current environment key ID. It checks ciphertext format and requires a successful GitHub response plus a fresh secret-metadata readback. It cannot verify the token's Cloudflare permissions or deployment behavior. Its receipt contains metadata and a payload digest, never the ciphertext or token.
 
-3. Read full classic protection and the independent ruleset, retaining the exact responses privately. Build a saved JSON object with **only** `checks`, preserving the existing ordered `context`/`app_id` pairs and removing exactly one `{"context":"Workers Builds: limen","app_id":85455}` entry. Keep every other binding, including the other extra classic contexts. Explicit numeric app IDs are required; no inferred app selection is admitted.
+Each operation checks the live PR identity before and after its write, rereads the environment policy, and rechecks the recorded ownership and checkout. The secret operation also reads back secret metadata. These are bounded operation-specific reads, without full PR/thread collection or routine polling. A transport error, unknown write outcome, missing readback or identity drift records an incomplete attempt and raises an error, without automatically retrying or rolling back. Reconcile actual fresh readbacks before any retry. Successful receipts establish only these writes/readbacks, not deployment success, product verification or task acceptance. The existing product owner retains those obligations and leaves the predecessor deployment and disconnected independent Git build unchanged.
 
-   ```sh
-   caller-pr-gates github --session "$OWNER_SESSION" --client codex \
-     --cwd "$REPOSITORY_CHECKOUT" \
-     -- api repos/Vaquum/Limen/branches/main/protection > "$CLASSIC_BEFORE_JSON"
-   caller-pr-gates github --session "$OWNER_SESSION" --client codex \
-     --cwd "$REPOSITORY_CHECKOUT" \
-     -- api repos/Vaquum/Limen/rulesets/5406995 > "$RULESET_BEFORE_JSON"
+### Deferred classic-protection dependency
 
-   caller-pr-gates github --session "$OWNER_SESSION" --client codex \
-     --cwd "$REPOSITORY_CHECKOUT" --target "$OWNED_OPEN_PR" \
-     -- api repos/Vaquum/Limen/branches/main/protection/required_status_checks \
-     --method PATCH --input "$CHECKS_ONLY_JSON" > "$PROTECTION_RECEIPT_JSON"
-   ```
+All classic-protection and ruleset writes remain denied, including `PATCH repos/Vaquum/Limen/branches/main/protection/required_status_checks`. The original full-list PATCH candidate could overwrite another administrator's intervening addition or app binding and still produce a matching stale readback. [PR #55's finding and failed-head evidence](https://github.com/mikkokotila/agent-tooling/pull/55#discussion_r4323240998) remain public. The capability was removed; no conditional PATCH guarantee or exclusive-writer assumption is made.
 
-   Admission independently reads the current environment policy, secret metadata, open PR, full classic protection and full Protect Main ruleset 5406995. It refuses stale or broader proposed lists, a missing/duplicate retired binding, missing protection evidence, or owner/PR changes. After the single PATCH, the receipt includes fresh **full before/after classic and ruleset objects**. Only the exact check entry and its corresponding legacy `contexts` mirror may differ; strict freshness, all other bindings/order, administrator/review/thread controls, every other classic field, and the entire independent ruleset must match. No protection authority is normalized.
-
-These are bounded operation-specific reads, without full PR/thread collection or routine polling. A transport error, unknown write outcome, missing readback or any drift records an incomplete attempt and raises an error, without automatically retrying or rolling back. GitHub does not provide an atomic transaction across these separate configuration resources: stop and reconcile actual fresh readbacks before any retry. An already removed binding is not permission to repeat or broaden the PATCH. Successful configuration receipts establish only these writes/readbacks, not deployment success, product verification or task acceptance. The existing product owner retains those obligations and leaves the predecessor deployment and disconnected independent Git build unchanged.
+This provisioning release does **not** complete the deferred `84220966-f2c1-4226-917a-dc0f455bf1c7` classic-protection obligation or the linked Limen #1073, #1080 and #1085 obligations. [Issue #54](https://github.com/mikkokotila/agent-tooling/issues/54) retains that incomplete dependency. Provisioning success is not permission to remove the obsolete check through another route.
 
 ## Retained post-merge qualification
 
