@@ -953,7 +953,8 @@ def main():
                     raise ValueError('Closed review receipt needs a verified current fix/nonfix and public conclusion: '
                                      + str(target or 'No independent review obligation'))
                 receipt.update(closed_head=args.closed_head,cwd=owner['cwd'],review_collected_at=snap['collected_at'],
-                               retirement_id=owner['identity']['retirement']['id'])
+                               retirement_id=owner['identity']['retirement']['id'],
+                               checkout_anchor=owner['identity']['checkout_anchor'])
                 store.disposition(sid, repo, num, receipt, closed_owner=owner)
                 output = {'receipt': receipt, 'review_gates': gates, 'completion_verified': False}
             else:
