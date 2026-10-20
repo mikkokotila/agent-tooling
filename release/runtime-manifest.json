@@ -2,7 +2,7 @@
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
     "caller_pr_gates/checklist.py": "7f975f591cd8259adb60c1ad7209f92cac35ff6182a8ad66285baa6707ecac57",
-    "caller_pr_gates/cli.py": "a8fdbe3599aab1f6c56051cdf112cab4323a9cc3e3d02c7fc7e5fb3de184257a",
+    "caller_pr_gates/cli.py": "290eff022084e99a89011f6159180ddaa00dd79f0b8c2e02fd85ac8af421b19d",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "5fbdd87d38f43d8f6219f26c813865cbda742535de72b75acb9719aa105922bd",
     "caller_pr_gates/copilot.py": "64dd5dc0a566a9337d55d977cf3e5798f4007e1452e1f33a21b265c296a2355a",
@@ -28,6 +28,6 @@
     "caller_pr_gates/workflow.py": "27799b1afeaeb6a5221923e298e8af3dbc7fba569229002ac9fe971893ff930d"
   },
   "known_defects": [],
-  "runtime_version": "1.7.46",
-  "version": "0.1.46"
+  "runtime_version": "1.7.47",
+  "version": "0.1.47"
 }

@@ -16,6 +16,10 @@ from .ghrelay import run as github_run
 
 REF = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(pull|issues)/(\d+)')
 DOC = re.compile(r'\b(?:PRD|product requirements document|slice(?:\s+\d+)?)\b', re.I)
+DOCS_ENVIRONMENT = 'repos/Vaquum/Limen/environments/documentation'
+DOCS_SECRET = DOCS_ENVIRONMENT + '/secrets/CLOUDFLARE_DOCS_API_TOKEN'
+DOCS_PROTECTION = 'repos/Vaquum/Limen/branches/main/protection'
+DOCS_CHECKS = DOCS_PROTECTION + '/required_status_checks'
 
 
 def reference(value):
@@ -148,6 +152,201 @@ def _update_release_body(args, store, sid, argv, endpoint, repository, release_i
     receipt = {'session_id': sid, 'repository': repository, 'release_id': int(release_id),
                'url': target, 'body_sha256': hashlib.sha256(payload['body'].encode()).hexdigest()}
     store.audit('github_release_body_updated', receipt)
+    return receipt
+
+
+def _documentation_configuration(args, store, sid, argv, endpoint, repo, number, issue):
+    """The authorized publisher cutover only; never adopt a PR or retry a write."""
+    method = 'PATCH' if endpoint == DOCS_CHECKS else 'PUT'
+    if (repo != 'Vaquum/Limen' or issue or len(argv) != 6
+            or argv != ['api', endpoint, '--method', method, '--input', argv[-1]]
+            or argv[-1] == '-'):
+        raise ValueError('Documentation configuration requires the exact owned PR and api ENDPOINT --method METHOD --input FILE')
+
+    def owner():
+        from .workflow import owned_pr
+        owned_pr(store, sid, repo, number)
+        session = store.session(sid)
+        with store._connect() as db:
+            watch = db.execute("SELECT * FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state='open'",
+                               (repo, number, sid)).fetchone()
+        cwd = Path(args.cwd).resolve()
+        if (not session or session['root_session'] != sid or session['client'] != args.client
+                or Path(session['cwd']).resolve() != cwd or not watch
+                or watch['client'] != args.client or Path(watch['cwd']).resolve() != cwd):
+            raise ValueError('Documentation configuration requires the recorded open-PR owner, client and checkout')
+        try:
+            origin = subprocess.run(['git', '-C', args.cwd, 'remote', 'get-url', 'origin'],
+                                    capture_output=True, text=True, timeout=3, check=True).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError('Documentation configuration requires the matching GitHub origin') from exc
+        if origin.removesuffix('.git').casefold() not in {
+                'https://github.com/vaquum/limen', 'git@github.com:vaquum/limen',
+                'ssh://git@github.com/vaquum/limen'}:
+            raise ValueError('Documentation configuration repository differs from the recorded checkout origin')
+
+    def encoded(value):
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+    def read(path):
+        result = github_run(['gh', 'api', path], runner=subprocess.run, cwd=args.cwd,
+                            text=True, capture_output=True, timeout=30)
+        if result.returncode:
+            raise ValueError('Documentation configuration read unavailable: ' + path)
+        try:
+            value = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Documentation configuration read is not verified JSON: ' + path) from exc
+        if not isinstance(value, dict):
+            raise ValueError('Documentation configuration read is not an object: ' + path)
+        return value
+
+    def live_pr():
+        path = f'repos/{repo}/pulls/{number}'
+        pr = read(path)
+        if (type(pr.get('number')) is not int or pr['number'] != number
+                or pr.get('url') != 'https://api.github.com/' + path
+                or pr.get('state') != 'open' or pr.get('merged') is not False
+                or pr.get('draft') is not False):
+            raise ValueError('Documentation configuration requires a live open non-draft PR')
+        identity = {}
+        for side in ('head', 'base'):
+            branch = pr.get(side) or {}
+            repository = branch.get('repo') or {}
+            if (repository.get('full_name') != repo or type(repository.get('id')) is not int
+                    or repository['id'] < 1 or not isinstance(branch.get('ref'), str)
+                    or not branch['ref'] or not re.fullmatch(r'[0-9a-f]{40}', str(branch.get('sha')))):
+                raise ValueError('Documentation configuration PR repository/ref identity is unavailable')
+            identity[side] = {key: branch[key] for key in ('ref', 'sha')}
+            identity[side]['repository_id'] = repository['id']
+        if identity['base']['ref'] != 'main' or identity['head']['repository_id'] != identity['base']['repository_id']:
+            raise ValueError('Documentation configuration requires a same-repository PR targeting main')
+        return identity
+
+    policy = {'protected_branches': True, 'custom_branch_policies': False}
+
+    def environment():
+        value = read(DOCS_ENVIRONMENT)
+        if (value.get('name') != 'documentation'
+                or value.get('url') != 'https://api.github.com/' + DOCS_ENVIRONMENT
+                or encoded(value.get('deployment_branch_policy')) != encoded(policy)):
+            raise ValueError('Provision the protected-branches-only documentation environment first')
+        return {'name': value['name'], 'deployment_branch_policy': value['deployment_branch_policy']}
+
+    def secret_metadata():
+        value = read(DOCS_SECRET)
+        if (value.get('name') != 'CLOUDFLARE_DOCS_API_TOKEN'
+                or not all(isinstance(value.get(key), str) and value[key] for key in ('created_at', 'updated_at'))):
+            raise ValueError('Provision the documentation environment secret before removing the retired check')
+        # Secret GET returns metadata only. Never retain a caller payload or unexpected value field.
+        return {key: value[key] for key in ('name', 'created_at', 'updated_at')}
+
+    owner()
+    source = Path(argv[-1])
+    if not source.is_absolute(): source = Path(args.cwd) / source
+    try:
+        payload = json.loads(source.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError('Documentation configuration needs a saved JSON object') from exc
+    if not isinstance(payload, dict):
+        raise ValueError('Documentation configuration needs a saved JSON object')
+    if endpoint == DOCS_ENVIRONMENT:
+        if encoded(payload) != encoded({'deployment_branch_policy': policy}):
+            raise ValueError('Only the protected-branches-only deployment_branch_policy is admitted')
+    elif endpoint == DOCS_SECRET:
+        if (set(payload) != {'key_id', 'encrypted_value'} or not isinstance(payload['key_id'], str)
+                or not payload['key_id'].strip() or not isinstance(payload['encrypted_value'], str)):
+            raise ValueError('Only encrypted_value and its environment key_id are admitted')
+        try:
+            valid = len(base64.b64decode(payload['encrypted_value'], validate=True)) > 48
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            raise ValueError('Documentation secret requires a nonempty base64 sealed-box ciphertext')
+    else:
+        checks = payload.get('checks')
+        if (set(payload) != {'checks'} or not isinstance(checks, list) or not checks
+                or any(not isinstance(check, dict) or set(check) != {'context', 'app_id'}
+                       or not isinstance(check['context'], str) or not check['context']
+                       or type(check['app_id']) is not int or check['app_id'] == 0 or check['app_id'] < -1
+                       for check in checks)):
+            raise ValueError('Only an ordered checks list with explicit context/app_id pairs is admitted')
+    # Read and serialize once. The child receives exactly these admitted bytes, never the file.
+    body = encoded(payload)
+    receipt = {'session_id': sid, 'repository': repo, 'number': number, 'endpoint': endpoint,
+               'method': method, 'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
+    rules_path = f'repos/{repo}/rulesets/5406995'
+    if endpoint != DOCS_ENVIRONMENT:
+        receipt['environment'] = environment()
+        if endpoint == DOCS_SECRET:
+            if read(DOCS_ENVIRONMENT + '/secrets/public-key').get('key_id') != payload['key_id']:
+                raise ValueError('Documentation secret key_id differs from the current environment public key')
+        else:
+            receipt['secret'] = secret_metadata()
+    pr = live_pr()
+    if endpoint == DOCS_CHECKS:
+        rules = read(rules_path)
+        if (rules.get('id') != 5406995 or rules.get('name') != 'Protect Main'
+                or rules.get('source') != repo or rules.get('source_type') != 'Repository'
+                or rules.get('target') != 'branch' or rules.get('enforcement') != 'active'
+                or rules.get('bypass_actors') != [] or not isinstance(rules.get('conditions'), dict)
+                or not isinstance(rules.get('rules'), list) or not rules['rules']):
+            raise ValueError('The complete independent Protect Main ruleset is required')
+        before = read(DOCS_PROTECTION)
+        required = before.get('required_status_checks') or {}
+        existing = required.get('checks')
+        retired = {'context': 'Workers Builds: limen', 'app_id': 85455}
+        reviews = before.get('required_pull_request_reviews') or {}
+        if (before.get('url') != 'https://api.github.com/' + DOCS_PROTECTION
+                or required.get('strict') is not True
+                or (before.get('enforce_admins') or {}).get('enabled') is not True
+                or (before.get('required_conversation_resolution') or {}).get('enabled') is not True
+                or reviews.get('dismiss_stale_reviews') is not True
+                or type(reviews.get('required_approving_review_count')) is not int
+                or reviews['required_approving_review_count'] < 1
+                or not isinstance(existing, list) or existing.count(retired) != 1
+                or any(not isinstance(check, dict) or set(check) != {'context', 'app_id'} for check in existing)
+                or encoded(payload['checks']) != encoded([check for check in existing if check != retired])
+                or required.get('contexts') != [check['context'] for check in existing]):
+            raise ValueError('Fresh classic protection must differ only by the one retired context/app_id binding')
+        expected = json.loads(encoded(before))
+        expected['required_status_checks']['checks'] = payload['checks']
+        expected['required_status_checks']['contexts'] = [check['context'] for check in payload['checks']]
+        receipt['before'] = {'classic': before, 'ruleset': rules}
+    # A bounded PR read, not full gate/thread collection. Recheck after administrative preflight.
+    if endpoint == DOCS_CHECKS and live_pr() != pr:
+        raise ValueError('PR identity changed during documentation configuration admission')
+    owner()
+    store.audit('github_documentation_configuration_attempt', receipt)
+    receipt['stage'] = 'write'
+    try:
+        result = github_run(['gh', 'api', endpoint, '--method', method, '--input', '-'],
+                            runner=subprocess.run, cwd=args.cwd, input=body,
+                            text=True, capture_output=True, timeout=90)
+        receipt['exit_code'] = result.returncode
+        if result.returncode:
+            raise ValueError('GitHub did not confirm the configuration write')
+        receipt['stage'] = 'readback'
+        if endpoint == DOCS_CHECKS:
+            receipt['after'] = {'classic': read(DOCS_PROTECTION)}
+            receipt['after']['ruleset'] = read(rules_path)
+            if (encoded(receipt['after']['classic']) != encoded(expected)
+                    or encoded(receipt['after']['ruleset']) != encoded(rules)):
+                raise ValueError('Protection readback differs beyond the authorized single delta')
+        receipt['environment'] = environment()
+        if endpoint != DOCS_ENVIRONMENT:
+            after_secret = secret_metadata()
+            if endpoint == DOCS_CHECKS and after_secret != receipt['secret']:
+                raise ValueError('Documentation secret metadata changed during protection removal')
+            receipt['secret'] = after_secret
+        if live_pr() != pr:
+            raise ValueError('PR identity changed during documentation configuration')
+        owner()
+    except Exception:
+        store.audit('github_documentation_configuration_incomplete', receipt)
+        raise RuntimeError('Documentation configuration is incomplete; read back the target and protections before retrying') from None
+    receipt['stage'] = 'verified'
+    store.audit('github_documentation_configuration_verified', receipt)
     return receipt
 
 
@@ -417,6 +616,8 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            if endpoint in {DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CHECKS}:
+                return _documentation_configuration(args, store, sid, argv, endpoint, repo, num, issue)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
             allowed_ci_rerun = _owned_ci_rerun_allowed(
                 store, sid, repo, num, issue, endpoint, method, argv)
