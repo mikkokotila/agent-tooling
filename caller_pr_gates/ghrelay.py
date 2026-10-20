@@ -63,7 +63,7 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
             self.send_header('Content-Length',str(len(body)));self.send_header('Connection','close');self.end_headers()
             self.wfile.write(body);self.close_connection=True
         def forward(self):
-            permit=None;metadata={}
+            permit=None;metadata={};settlement_attempted=False
             try:
                 host=self.headers.get('Host','').lower()
                 if host!='api.github.com':raise ValueError('Gate relay only accepts the configured GitHub API host')
@@ -75,6 +75,7 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 headers={k:v for k,v in self.headers.items() if k.lower() not in {'host','content-length','transfer-encoding','connection'}}
                 response=(upstream or httpx.request)(self.command,'https://'+host+self.path,headers=headers,content=body,timeout=15,follow_redirects=False)
                 error=diagnostic({'http_status':response.status_code,'message':response.text,'response_body':response.text,'rate_limit_headers':dict(response.headers)},self.path)
+                settlement_attempted=True
                 if error['kind']=='rate_limited':coordinator.throttle(permit,error)
                 elif not coordinator.finish(permit,success=response.status_code<400):raise RuntimeError('Request lease superseded; discard late evidence')
                 coordinator.audit(**metadata,outcome='fresh',requests=1,status=response.status_code)
@@ -83,8 +84,13 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 coordinator.audit(**metadata,outcome='cooldown',requests=0)
                 self.respond(error.args and int(str(error).split()[1].rstrip(':')) or 403,json.dumps({'message':str(error)}).encode(),{'Content-Type':'application/json'})
             except BaseException:
-                if permit:coordinator.finish(permit,success=False)
-                self.respond(502,b'{"message":"Gate request relay failed; mutation outcome may be unknown, reconcile before retry"}',{'Content-Type':'application/json'})
+                if permit and not settlement_attempted:
+                    try:coordinator.finish(permit,success=False)
+                    except Exception:
+                        # Unsettled leases keep their existing fencing/expiry.
+                        # Failed cleanup must not suppress the uncertainty response.
+                        pass
+                self.respond(502,b'{"message":"Gate request relay failed; accounting may be incomplete and mutation outcome may be unknown, reconcile before retry"}',{'Content-Type':'application/json'})
         do_GET=do_POST=do_PATCH=do_PUT=do_DELETE=do_HEAD=forward
     # A short path is required by macOS AF_UNIX. Never copy hosts.yml/tokens.
     with tempfile.TemporaryDirectory(prefix='cpg-',dir='/tmp') as directory:
