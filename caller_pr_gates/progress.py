@@ -337,6 +337,8 @@ def final_coverage(original, final, scope, payload):
         current = after[identifier]
         old_prefix, old_env, script, old_config, old_workers = _full_npm_gate(previous)
         prefix, environment, final_script, config, workers = _full_npm_gate(current)
+        if any(name != 'PATH' for name, _ in old_env):
+            raise ValueError('Final coverage only supports the evidenced inherited literal PATH assignment')
         if (prefix != old_prefix or environment[:len(old_env)] != old_env or script != final_script or config is not None
                 or (old_workers is not None and (workers is None or workers > old_workers))):
             raise ValueError('Preserve the runner, literal existing environment and full gate; only explicit native controls may differ')
@@ -357,9 +359,8 @@ def final_coverage(original, final, scope, payload):
         for field in ('argv', 'reason', 'cwd'):
             difference(f'checks/{identifier}/{field}', previous.get(field, '.' if field == 'cwd' else None),
                        current.get(field, '.' if field == 'cwd' else None))
-    if (set(new.get('input_paths', [])) != set(old.get('input_paths', [])) - removed_configs
-            or not set(old.get('env_names', [])).issubset(new.get('env_names', []))
-            or not (set(new.get('env_names', [])) - set(old.get('env_names', []))).issubset(added_names)):
+    if (set(old.get('input_paths', [])) != removed_configs or new.get('input_paths', [])
+            or old.get('env_names', []) or not set(new.get('env_names', [])).issubset(added_names)):
         raise ValueError('Only a replaced private browser configuration and declared native controls may change input declarations')
     for field in ('input_paths', 'env_names'):
         difference(field, old.get(field, []), new.get(field, []))

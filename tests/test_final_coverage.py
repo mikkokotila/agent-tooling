@@ -335,6 +335,7 @@ def test_coverage_metadata_rejects_command_waivers_and_silent_differences(subtes
     payload = declaration(original, final)
     assert progress.final_coverage(original, final, SCOPE, payload)['historical_input_continuity'] == 'not_established'
     for fault in ('missing_check', 'unknown_id', 'shell', 'env_flag', 'path_value', 'env_order', 'skip_env',
+                  'inherited_skip', 'inherited_node_options', 'inherited_browser', 'inherited_input', 'inherited_env_pin',
                   'empty_workers', 'bad_port', 'grep', 'config', 'extra_arg', 'cwd', 'script', 'reason',
                   'missing_change', 'invented_change', 'criteria', 'plan', 'input', 'named_subset', 'scope'):
         with subtests.test(fault=fault):
@@ -347,6 +348,17 @@ def test_coverage_metadata_rejects_command_waivers_and_silent_differences(subtes
             elif fault == 'path_value': check['argv'][1] = 'PATH=/other'
             elif fault == 'env_order': check['argv'][1:3] = reversed(check['argv'][1:3])
             elif fault == 'skip_env': check['argv'][2] = 'SKIP_TESTS=1'
+            elif fault in {'inherited_skip', 'inherited_node_options', 'inherited_browser'}:
+                index = 1 if fault == 'inherited_browser' else 0
+                assignment = 'NODE_OPTIONS=--require=private/filter.cjs' if fault == 'inherited_node_options' else 'SKIP_TESTS=1'
+                previous['plan']['checks'][index]['argv'].insert(2, assignment)
+                candidate['plan']['checks'][index]['argv'].insert(2, assignment)
+            elif fault == 'inherited_input':
+                previous['plan']['input_paths'].append('private/extra-fixture.json')
+                candidate['plan']['input_paths'].append('private/extra-fixture.json')
+            elif fault == 'inherited_env_pin':
+                previous['plan']['env_names'].append('SKIP_TESTS')
+                candidate['plan']['env_names'].append('SKIP_TESTS')
             elif fault == 'empty_workers': check['argv'][2] = 'VITEST_MAX_WORKERS=0'
             elif fault == 'bad_port': browser['argv'][2] = 'POISE_E2E_PORT=70000'
             elif fault == 'grep': browser['argv'].append('--grep=one')
