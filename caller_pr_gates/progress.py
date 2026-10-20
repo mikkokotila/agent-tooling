@@ -277,6 +277,101 @@ def plan_digest(plan: dict) -> str:
                                     ensure_ascii=False).encode()).hexdigest()
 
 
+def _full_npm_gate(check):
+    """The bounded final-coverage surface: full scripts, never filtered tests."""
+    argv = check['argv']
+    prefix, assignments, index = None, [], 0
+    if argv[0] in {'env', '/usr/bin/env'}:
+        prefix, index = argv[0], 1
+        while index < len(argv) and '=' in argv[index]:
+            name, value = argv[index].split('=', 1)
+            if not _ENV_NAME.fullmatch(name) or name in {n for n, _ in assignments}:
+                raise ValueError('Final coverage requires unique literal environment assignments')
+            assignments.append((name, value))
+            index += 1
+    command = argv[index:]
+    if (len(command) < 3 or command[:2] != ['npm', 'run'] or command[2] not in {'check', 'test:e2e'}
+            or check.get('cwd', '.') != '.' or any(k in check for k in ('input_paths', 'env_names', 'correction', 'input_digest'))):
+        raise ValueError('Final coverage supports only the declared full npm check/test:e2e gates at the repository root')
+    script, tail, config, workers = command[2], command[3:], None, None
+    if tail:
+        if script != 'test:e2e' or tail[0] != '--':
+            raise ValueError('Final coverage cannot replace, filter or add arguments to a full gate')
+        for flag in tail[1:]:
+            if flag.startswith('--config=') and config is None:
+                config = flag.removeprefix('--config=')
+                if not config or Path(config).is_absolute() or '..' in Path(config).parts:
+                    raise ValueError('The previous configuration must be a declared relative input')
+            elif re.fullmatch(r'--workers=[1-9][0-9]*', flag) and workers is None:
+                workers = int(flag.split('=', 1)[1])
+            else:
+                raise ValueError('Final coverage cannot replace, filter or add arguments to a full gate')
+    return prefix, assignments, script, config, workers
+
+
+def final_coverage(original, final, scope, payload):
+    """Explain current full-gate coverage; never assert old private bytes or runs."""
+    keys = {'original_plan_id', 'final_plan_id', 'scope_reason', 'checks', 'criteria', 'changes'}
+    text = lambda value: isinstance(value, str) and bool(value.strip())
+    if (not isinstance(payload, dict) or set(payload) != keys
+            or payload['original_plan_id'] != original['plan_id'] or payload['final_plan_id'] != final['plan_id']
+            or not text(payload['scope_reason'])):
+        raise ValueError('Final coverage requires exact original/final plan IDs and an explicit scope explanation')
+    old, new = original['plan'], final['plan']
+    before = {c['id']: c for c in old['checks']}
+    after = {c['id']: c for c in new['checks']}
+    if (set(old) - {'checks', 'input_paths', 'env_names'} or set(new) - {'checks', 'input_paths', 'env_names'}
+            or set(before) != set(after) or len(before) != len(old['checks']) or len(after) != len(new['checks'])
+            or not isinstance(payload['checks'], dict) or set(payload['checks']) != set(before)
+            or any(not text(reason) for reason in payload['checks'].values())):
+        raise ValueError('Every original required check needs its own same-identity final full-gate coverage')
+    criteria = scope.get('acceptance_criteria')
+    if (not isinstance(criteria, list) or not criteria or not isinstance(payload['criteria'], list)
+            or len(payload['criteria']) != len(criteria) or any(not text(reason) for reason in payload['criteria'])):
+        raise ValueError('Explain coverage of every original acceptance criterion in its recorded order')
+    differences, removed_configs, added_names, scripts = {}, set(), set(), {}
+    def difference(path, previous, current):
+        if previous != current:
+            differences[path] = {'previous': previous, 'final': current}
+    for identifier, previous in before.items():
+        current = after[identifier]
+        old_prefix, old_env, script, old_config, old_workers = _full_npm_gate(previous)
+        prefix, environment, final_script, config, workers = _full_npm_gate(current)
+        if (prefix != old_prefix or environment[:len(old_env)] != old_env or script != final_script or config is not None
+                or (old_workers is not None and (workers is None or workers > old_workers))):
+            raise ValueError('Preserve the runner, literal existing environment and full gate; only explicit native controls may differ')
+        # These are the evidenced native execution controls for this bounded
+        # route, not permission to infer harmlessness from an env-looking name.
+        allowed = {'VITEST_MAX_WORKERS': None} if script == 'check' else {'POISE_E2E_PORT': 65535}
+        for name, value in environment[len(old_env):]:
+            if name not in allowed or not re.fullmatch(r'[1-9][0-9]*', value) or (allowed[name] and int(value) > allowed[name]):
+                raise ValueError('Unsupported environment change in final full-gate coverage')
+            added_names.add(name)
+        if not any(re.search(r'(?<![\w:])' + re.escape('npm run ' + script) + r'(?![\w:])', criterion) for criterion in criteria):
+            raise ValueError('The immutable original acceptance must explicitly require this full repository gate')
+        if old_config:
+            if old_config not in old.get('input_paths', []):
+                raise ValueError('Retain the original private configuration declaration in the historical plan')
+            removed_configs.add(old_config)
+        scripts[identifier] = script
+        for field in ('argv', 'reason', 'cwd'):
+            difference(f'checks/{identifier}/{field}', previous.get(field, '.' if field == 'cwd' else None),
+                       current.get(field, '.' if field == 'cwd' else None))
+    if (set(new.get('input_paths', [])) != set(old.get('input_paths', [])) - removed_configs
+            or not set(old.get('env_names', [])).issubset(new.get('env_names', []))
+            or not (set(new.get('env_names', [])) - set(old.get('env_names', []))).issubset(added_names)):
+        raise ValueError('Only a replaced private browser configuration and declared native controls may change input declarations')
+    for field in ('input_paths', 'env_names'):
+        difference(field, old.get(field, []), new.get(field, []))
+    if (not isinstance(payload['changes'], dict) or set(payload['changes']) != set(differences)
+            or any(not text(reason) for reason in payload['changes'].values())):
+        raise ValueError('Explain every actual declaration difference; no undeclared or invented differences are accepted')
+    return {'scope_reason': payload['scope_reason'], 'checks': payload['checks'], 'scripts': scripts,
+            'criteria': [{'criterion': criterion, 'reason': reason} for criterion, reason in zip(criteria, payload['criteria'])],
+            'declaration_changes': {path: {**values, 'reason': payload['changes'][path]} for path, values in differences.items()},
+            'historical_input_continuity': 'not_established', 'historical_results_changed': False}
+
+
 def _git(root: Path, *args: str, data=None) -> bytes:
     result = subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True, timeout=10)
     if result.returncode:

@@ -48,7 +48,7 @@ THREAD_COMMENTS_QUERY = """query($id:ID!, $cursor:String) {
 REVIEWS_QUERY = """query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
   repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
     reviews(first:100, after:$cursor) { nodes {
-      id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login __typename ... on Bot { id } }
+      id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt commit { oid } author { login __typename ... on Bot { id } }
     } pageInfo { hasNextPage endCursor } }
   } }
 }"""
@@ -241,6 +241,22 @@ def _comment(raw: dict, kind: str, thread: dict | None = None) -> dict:
             "is_outdated": bool(thread and thread["isOutdated"]), "kind": kind, "replies": []}
 
 
+def _merged_source(pull):
+    """Retain identities already present on the required two REST reads."""
+    head, base = pull.get('head') or {}, pull.get('base') or {}
+    source, target = head.get('repo') or {}, base.get('repo') or {}
+    return dict(merge_commit_sha=pull.get('merge_commit_sha'), merged_at=pull.get('merged_at'),
+        head_ref=head.get('ref'), head_repository=source.get('full_name'), head_repository_id=source.get('id'),
+        base_ref=base.get('ref'), base_repository=target.get('full_name'), base_repository_id=target.get('id'))
+
+
+def _submitted_reviews(reviews):
+    return [dict(id=str(r.get('fullDatabaseId') or r.get('databaseId') or ''), state=r.get('state'),
+                 commit_sha=(r.get('commit') or {}).get('oid'), author_login=(r.get('author') or {}).get('login'),
+                 author_type=(r.get('author') or {}).get('__typename'), submitted_at=r.get('submittedAt'),
+                 updated_at=r.get('updatedAt'), url=r.get('url')) for r in reviews if r.get('state') != 'PENDING']
+
+
 def _check(raw: dict, kind: str, *, key: str | None = None, attempt: int = 1) -> dict:
     status = raw.get("state") if kind == "status" else raw.get("status")
     name = raw.get("context") if kind == "status" else raw.get("name")
@@ -429,6 +445,8 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     for field in ("state", "merged", "draft", "updated_at"):
         if raw.get(field) != after.get(field):
             raise EvidenceError(f"PR {field} changed during evidence collection; retry required")
+    if raw['merged'] and _merged_source(raw) != _merged_source(after):
+        raise EvidenceError('Merged source identity changed during evidence collection')
     branch_evidence = await _branch_final_read(client, prefix, branch_evidence)
     branch_error = branch_evidence.pop('branch_error', None)
     branch_evidence['base_ref_after'] = (after.get('base') or {}).get('ref')
@@ -456,7 +474,9 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
         "commit_shas": [commit["oid"] for commit in commits],
         "commit_dates": {commit["oid"]: commit["committedDate"] for commit in commits},
         "changed_files": [item["filename"] for item in files], "title": raw.get("title"),
-        "body": raw.get("body") or "", "created_at": raw.get("created_at")}
+        "body": raw.get("body") or "", "created_at": raw.get("created_at"),
+        "submitted_reviews": _submitted_reviews(reviews),
+        **{key: value for key, value in _merged_source(raw).items() if key != 'base_ref'}}
 
 
 async def collect_issue(repository: str, number: int, token_user: str | None = None) -> dict:
@@ -508,7 +528,7 @@ BATCH_QUERY = '''query($owner:String!, $repo:String!, $number:Int!) {
    reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) { nodes {
     id databaseId fullDatabaseId body url createdAt updatedAt author { login }
    } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } }
-   reviews(first:100) { nodes { id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login __typename ... on Bot { id } } } pageInfo { hasNextPage endCursor } }
+   reviews(first:100) { nodes { id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt commit { oid } author { login __typename ... on Bot { id } } } pageInfo { hasNextPage endCursor } }
    commits(first:100) { nodes { commit { oid committedDate } } pageInfo { hasNextPage endCursor } }
   }
  }
@@ -614,14 +634,15 @@ async def collect_review_with_client(client,repository,number):
                     base_repository_id=target_repo.get('id'))
     identity = source_identity(raw)
     if (any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base'))
-            or (after.get('head') or {}).get('sha')!=head or identity != source_identity(after)):
+            or (after.get('head') or {}).get('sha')!=head or identity != source_identity(after)
+            or raw.get('merged') and _merged_source(raw) != _merged_source(after)):
         raise EvidenceError('PR changed during review collection')
     actor_login=_mapping(actor,'authenticated actor').get('login');author=_mapping(raw.get('user'),'PR author').get('login')
     if not actor_login or not author or type(raw.get('merged')) is not bool or raw.get('state') not in {'open','closed'}:raise EvidenceError('Incomplete review actors/lifecycle')
     return dict(repository=repository,number=number,profile='review',state=raw['state'],merged=raw['merged'],
         head_sha=head,head_sha_after=head,actor_login=actor_login,author_login=author,comments=comments,
         commit_shas=[c['oid'] for c in commits],commit_dates={c['oid']:c['committedDate'] for c in commits},
-        collected_at=time.time(),**identity)
+        collected_at=time.time(),**identity,**{key: value for key, value in _merged_source(raw).items() if key not in identity})
 
 
 async def collect_review(repository,number,token_user=None):
