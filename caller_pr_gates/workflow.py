@@ -355,10 +355,17 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None,
             if any('correction' in check for check in plan['checks']):
                 raise ValueError('Source-bound checker correction receipts cannot transfer to a new source epoch')
             historical, published = progress.source_snapshots(cwd, from_head, merged_head)
+            canonical_fallback = False
             if progress.fingerprint(cwd, previous['plan'], source_snapshot=historical) != previous['input_digest']:
-                raise ValueError('Previous source and unchanged private inputs do not reproduce the retained fingerprint')
+                # Preserve the earlier canonical candidate for unresolved historical
+                # modes. Present matching files and private inputs keep current modes.
+                canonical_fallback = True
+                if progress.fingerprint(cwd, previous['plan'], source_snapshot=historical,
+                                        canonical_fallback=True) != previous['input_digest']:
+                    raise ValueError('Previous source and unchanged private inputs do not reproduce the retained fingerprint')
             old_pins = {check['id']: check['input_digest'] for check in previous['plan']['checks'] if 'input_digest' in check}
-            if any(progress.check_fingerprint(cwd, previous['plan'], check, source_snapshot=historical) != old_pins[check['id']]
+            if any(progress.check_fingerprint(cwd, previous['plan'], check, source_snapshot=historical,
+                                             canonical_fallback=canonical_fallback) != old_pins[check['id']]
                    for check in previous['plan']['checks'] if check['id'] in old_pins):
                 raise ValueError('Previous qualification control inputs no longer match their retained pins')
             if (progress.fingerprint(cwd, plan, source_snapshot=published) != digest
@@ -497,5 +504,3 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
                 'number': number, 'check': check_id, 'pid': child.pid, 'log': str(log)})
     return {'started': True, 'pid': child.pid, 'log': str(log), 'completion_verified': False,
             'next_action': render_prompt('validation_background')}
-
-

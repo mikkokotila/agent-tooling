@@ -158,3 +158,30 @@ def test_unknown_historical_permissions_never_replace_or_bypass_old_pin(restrict
     assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
     assert store.validation_runs(old['plan_id']) == []
     assert store.validation_evidence(old['plan_id']) == []
+
+
+@pytest.mark.parametrize('permission_drift', [False, True])
+def test_canonical_missing_mode_fallback_never_masks_current_permission_drift(restrictive_local, permission_drift):
+    store, root, snap, _ = restrictive_local
+    path = root / 'removed-canonical.dat'
+    path.write_bytes(b'canonical historical bytes')
+    path.chmod(0o644)
+    old = prepare(restrictive_local, inputs=True)
+    before = snap['head_sha']
+    path.unlink()
+    final_source(restrictive_local)
+    if permission_drift:
+        (root / 'src.txt').chmod(0o640)
+    historical, _ = progress.source_snapshots(root, before, snap['head_sha'])
+    assert progress.fingerprint(root, old['plan'], source_snapshot=historical) != old['input_digest']
+    candidate = progress.fingerprint(root, old['plan'], source_snapshot=historical, canonical_fallback=True)
+    if permission_drift:
+        assert candidate != old['input_digest']
+        with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+            epoch(restrictive_local, before)
+        assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    else:
+        assert candidate == old['input_digest']
+        new = epoch(restrictive_local, before)['plan']
+        assert new['plan_id'] != old['plan_id'] and store.validation_evidence(new['plan_id']) == []
+    assert store.validation_runs(old['plan_id']) == []

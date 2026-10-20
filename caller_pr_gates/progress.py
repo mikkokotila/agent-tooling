@@ -639,7 +639,7 @@ def _source_blobs(root, files):
         yield from read(batch)
 
 
-def _source_permissions(root, files):
+def _source_permissions(root, files, *, canonical_fallback=False):
     """Project Git bytes without replacing frozen filesystem permissions."""
     observed, choices = {}, {}
     for name, entry in files.items():
@@ -663,11 +663,12 @@ def _source_permissions(root, files):
         # the complete historical digest must still equal its frozen pin.
         # Ambiguity retains the previous canonical candidate, never a new pin.
         candidates = choices.get(entry[0], set())
-        observed[name] = next(iter(candidates)) if len(candidates) == 1 else stat.S_IMODE(entry[0])
+        observed[name] = (next(iter(candidates)) if not canonical_fallback and len(candidates) == 1
+                          else stat.S_IMODE(entry[0]))
     return observed
 
 
-def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
+def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None, canonical_fallback=False) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
     Every tracked and untracked nonignored repository file is included. Commit
@@ -681,7 +682,7 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
     source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, None)
     source_contents = iter(_source_blobs(repository, source_files))
-    source_permissions = _source_permissions(repository, source_files)
+    source_permissions = _source_permissions(repository, source_files, canonical_fallback=canonical_fallback)
     paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
@@ -780,12 +781,12 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     return digest.hexdigest()
 
 
-def check_fingerprint(cwd, plan, check, *, source_snapshot=None):
+def check_fingerprint(cwd, plan, check, *, source_snapshot=None, canonical_fallback=False):
     """Bind a control's added inputs without changing retained check identities."""
     scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
     for name in ("input_paths", "env_names"):
         scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
-    return fingerprint(cwd, scoped, source_snapshot=source_snapshot)
+    return fingerprint(cwd, scoped, source_snapshot=source_snapshot, canonical_fallback=canonical_fallback)
 
 
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:
