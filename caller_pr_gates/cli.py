@@ -854,6 +854,8 @@ def main():
     p = owned('scope'); p.add_argument('--file', required=True); p.add_argument('--work-item', help='Stable ID for a separately authorized work item; existing baselines remain immutable')
     p = owned('resolve'); p.add_argument('--pr', required=True); p.add_argument('--thread', required=True)
     p = owned('address'); p.add_argument('--pr', required=True); p.add_argument('--comment', required=True); p.add_argument('--disposition', choices=['fixed','nonfix'], required=True); p.add_argument('--commit'); p.add_argument('--reason', required=True); p.add_argument('--reply-url')
+    p.add_argument('--cwd', default=os.getcwd())
+    p.add_argument('--closed-head', help='Record a review receipt for the retained owner at this exact closed PR head')
     p = owned('post-review'); p.add_argument('url'); p.add_argument('--kind', choices=['prd','slice'], default='prd'); p.add_argument('--slice-id')
     p = sub.add_parser('review-read'); p.add_argument('--followup', required=True)
     p = owned('status'); p.add_argument('--fresh', action='store_true'); p.add_argument('--pr')
@@ -919,11 +921,13 @@ def main():
             from .github import collect_issue, collect_review
             repo, num, issue = reference(args.pr)
             sid=session_id(args)
+            owner = None
             if issue:
+                if args.closed_head is not None: raise ValueError('--closed-head applies only to retained PR review receipts')
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)):raise ValueError('Document is not owned by this task')
             else:
-                from .workflow import owned_pr
-                owned_pr(store,sid,repo,num)
+                from .workflow import review_owner
+                owner = review_owner(store,sid,repo,num,args.cwd,args.closed_head)
             snap = asyncio.run(asyncio.wait_for((collect_issue if issue else collect_review)(repo, num), 65))
             comments = [c for c in snap['comments'] if str(c['id']) == args.comment]
             if len(comments) != 1: raise ValueError('Comment ID not found in the complete live review inventory')
@@ -931,8 +935,30 @@ def main():
             if issue and args.disposition == 'fixed':
                 receipt.update(document_revision=snap['document_edited_at'], content_sha256=hashlib.sha256(snap['body'].encode()).hexdigest())
                 receipt['commit_sha'] = 'document:' + receipt['content_sha256']
-            store.disposition(session_id(args), repo, num, receipt)
-            output = receipt
+            if args.closed_head is not None:
+                from .copilot import is_service_review
+                from .policy import _handled, _concluded, evaluate_review
+                if review_owner(store,sid,repo,num,args.cwd,args.closed_head,snapshot=snap) != owner:
+                    raise ValueError('Retained review ownership changed during collection')
+                gates = evaluate_review(snap, [*store.dispositions(repo,num), receipt])
+                obligations = gates[0]['evidence'].get('obligations', [])
+                target = next((item for item in obligations if str(item['id']) == args.comment), None)
+                verified = bool(target and target['handled'] and target['concluded'])
+                if not verified and is_service_review(comments[0]):
+                    # A previously posted acknowledgement still needs its own
+                    # verifiable parent receipt; the service notice adds no duty.
+                    verified = (_handled(snap, comments[0], receipt, None)[0]
+                                and _concluded(snap, comments[0], receipt, reply_only=True)[0])
+                if not verified:
+                    raise ValueError('Closed review receipt needs a verified current fix/nonfix and public conclusion: '
+                                     + str(target or 'No independent review obligation'))
+                receipt.update(closed_head=args.closed_head,cwd=owner['cwd'],review_collected_at=snap['collected_at'],
+                               retirement_id=owner['identity']['retirement']['id'])
+                store.disposition(sid, repo, num, receipt, closed_owner=owner)
+                output = {'receipt': receipt, 'review_gates': gates, 'completion_verified': False}
+            else:
+                store.disposition(sid, repo, num, receipt)
+                output = receipt
         elif args.command == 'post-review':
             from .hook import _register_document
             repo, num, issue = reference(args.url)
@@ -1093,4 +1119,5 @@ def main():
         raise SystemExit(1)
 
 if __name__ == '__main__': main()
+
 

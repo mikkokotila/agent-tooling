@@ -7,15 +7,22 @@ import re
 import subprocess
 from urllib.parse import quote
 
-def source(cwd):
+def source(cwd, *, stable=False):
     def git(*args):
         r=subprocess.run(['git','-C',str(cwd),*args],capture_output=True,text=True,timeout=5,check=True)
         return r.stdout.strip()
     try:
         root=Path(git('rev-parse','--show-toplevel')).resolve()
         common=Path(git('rev-parse','--path-format=absolute','--git-common-dir')).resolve()
-        return dict(root=str(root),common=str(common),head=git('rev-parse','HEAD'),branch=git('branch','--show-current'),
-                    clean=not git('status','--porcelain=v1','--untracked-files=all'),origin=git('remote','get-url','origin'))
+        result = dict(root=str(root),common=str(common),head=git('rev-parse','HEAD'),branch=git('branch','--show-current'),
+                      clean=not git('status','--porcelain=v1','--untracked-files=all'),origin=git('remote','get-url','origin'))
+        if stable:
+            after = git('status', '--porcelain=v2', '--branch', '--untracked-files=all').splitlines()
+            heads = [line.removeprefix('# branch.oid ') for line in after if line.startswith('# branch.oid ')]
+            clean = not any(line for line in after if not line.startswith('#'))
+            if heads != [result['head']] or clean != result['clean']:
+                return None
+        return result
     except (OSError,ValueError,subprocess.SubprocessError):return None
 
 def branch_source(cwd, branch):
@@ -220,3 +227,4 @@ async def refresh(store, session_id, *, cwd=None, client=None):
         except Exception as exc:
             result['errors'].append(dict(repository=repository, error=str(exc)[:600]))
     return result
+

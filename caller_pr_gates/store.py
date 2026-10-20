@@ -279,7 +279,42 @@ class Store:
                     result.setdefault(key, dict(row))
             return list(result.values())
 
-    def disposition(self, session_id, repository, number, receipt):
+    def _closed_review_owner(self, db, sid, repo, num):
+        """Retirement preserves one canonical receipt owner, not active PR authority."""
+        parents = self._parents(db)
+        first = db.execute('''SELECT * FROM prs WHERE repository=? AND number=?
+                              ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
+        watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
+        retired = db.execute('''SELECT id, fields FROM audit WHERE event='pr_monitor_retired'
+                                AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
+                                ORDER BY id LIMIT 1''', (repo, num)).fetchone()
+        registration = db.execute('''SELECT MAX(id) FROM audit WHERE event='pr_registered'
+                                     AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?''',
+                                  (repo, num)).fetchone()[0]
+        if (not first or not watch or watch['state'] not in {'closed', 'merged'}
+                or not retired or registration is None or registration > retired['id']
+                or watch['owner_session'] != sid or self._root(sid, parents) != sid
+                or self._root(first['session_id'], parents) != sid
+                or first['status'] != 'retired_' + watch['state']):
+            raise ValueError('Closed review receipts require the exact retained owner and retired PR')
+        return {'registration': dict(first), 'retirement': {'id': retired['id'], **json.loads(retired['fields'])},
+                'watch': {key: watch[key] for key in
+                ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')}}
+
+    def closed_review_owner(self, sid, repo, num, cwd):
+        from .monitor import checkout
+        directory = str(Path(cwd).expanduser().resolve())
+        with self._connect() as db:
+            db.execute('BEGIN')
+            identity = self._closed_review_owner(db, sid, repo, num)
+        # Resolve the recorded checkout before the write transaction; the final
+        # source check is repeated there immediately before the receipt insert.
+        if (checkout(identity['watch']['cwd']) != directory
+                or checkout(identity['registration']['cwd']) != directory):
+            raise ValueError('Closed review receipts require the original recorded checkout')
+        return {'repository': repo, 'number': num, 'cwd': directory, 'identity': identity}
+
+    def disposition(self, session_id, repository, number, receipt, *, closed_owner=None):
         if not isinstance(receipt, dict) or not receipt.get("comment_id") or not receipt.get("comment_updated_at"):
             raise ValueError("receipt requires comment_id and comment_updated_at")
         if receipt.get("disposition") not in {"fixed", "nonfix"}:
@@ -290,11 +325,21 @@ class Store:
             raise ValueError("a fixed disposition requires commit_sha")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            owned = self._task_sessions(db, session_id)
-            pr_owned = any(row[0] in owned for row in db.execute("SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repository, number)))
-            followup_owned = any(row[0] in owned for row in db.execute("SELECT session_id FROM followups WHERE repository=? AND (number=? OR issue_number=?)", (repository, number, number)))
-            if not pr_owned and not followup_owned:
-                raise ValueError("PR or issue is not registered to this task")
+            if closed_owner is not None:
+                if self._closed_review_owner(db, session_id, repository, number) != closed_owner['identity']:
+                    raise ValueError('Retained review ownership changed before recording the receipt')
+                from .publication import source, exact_source
+                current = source(closed_owner['cwd'], stable=True)
+                if (not exact_source(closed_owner, current) or current != closed_owner['source']
+                        or current['head'] != receipt.get('closed_head')
+                        or current['head'] != closed_owner['identity']['retirement'].get('head_sha')):
+                    raise ValueError('Retained review source changed before recording the receipt')
+            else:
+                owned = self._task_sessions(db, session_id)
+                pr_owned = any(row[0] in owned for row in db.execute("SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repository, number)))
+                followup_owned = any(row[0] in owned for row in db.execute("SELECT session_id FROM followups WHERE repository=? AND (number=? OR issue_number=?)", (repository, number, number)))
+                if not pr_owned and not followup_owned:
+                    raise ValueError("PR or issue is not registered to this task")
             db.execute("""INSERT INTO dispositions VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repository, number, comment_id, comment_updated_at)
                 DO UPDATE SET session_id=excluded.session_id, receipt=excluded.receipt, recorded_at=excluded.recorded_at""",
@@ -1145,4 +1190,5 @@ class Store:
             db.execute("UPDATE followups SET status=?, fields=?, lease_until=?, updated_at=? WHERE id=?", (status, _json(merged), lease_until, now, id))
             self._audit(db, "followup_updated", {"id": id, "status": status, "fields": fields})
             return True
+
 

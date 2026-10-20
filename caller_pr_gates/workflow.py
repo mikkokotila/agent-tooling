@@ -46,6 +46,36 @@ def owned_pr(store, sid, repository, number):
     return row
 
 
+def review_owner(store, sid, repository, number, cwd, closed_head=None, *, snapshot=None):
+    if closed_head is None:
+        return owned_pr(store, sid, repository, number)
+    if not isinstance(closed_head, str) or not re.fullmatch(r'[0-9a-f]{40}', closed_head):
+        raise ValueError('--closed-head requires the full closed PR head SHA')
+    row = store.closed_review_owner(sid, repository, number, cwd)
+    from .publication import source, exact_source
+    local = source(cwd, stable=True)
+    if (not exact_source(row, local) or local['head'] != closed_head
+            or row['identity']['retirement'].get('head_sha') != closed_head
+            or row['identity']['retirement'].get('state') != row['identity']['watch']['state']):
+        raise ValueError('Closed review receipts require the clean recorded checkout at the pinned PR head')
+    if snapshot is not None:
+        stamp = snapshot.get('collected_at')
+        if (not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
+                or not 0 <= time.time() - stamp <= progress.REMOTE_EVIDENCE_TTL
+                or snapshot.get('profile') != 'review' or snapshot.get('state') != 'closed'
+                or snapshot.get('merged') is not (row['identity']['watch']['state'] == 'merged')
+                or snapshot.get('repository') != repository or snapshot.get('number') != number
+                or snapshot.get('head_sha') != closed_head or snapshot.get('head_sha_after') != closed_head
+                or snapshot.get('head_repository') != repository or snapshot.get('base_repository') != repository
+                or type(snapshot.get('head_repository_id')) is not int or snapshot['head_repository_id'] <= 0
+                or type(snapshot.get('base_repository_id')) is not int
+                or snapshot.get('base_repository_id') != snapshot['head_repository_id']
+                or not isinstance(snapshot.get('head_ref'), str) or not snapshot['head_ref']
+                or closed_head not in snapshot.get('commit_shas', [])):
+            raise ValueError('Closed review receipts require fresh coherent proof of the exact closed PR source')
+    return dict(row, source=local)
+
+
 def validation_owner(store, sid, repository, number, cwd, merged_head=None, *, preflight=False):
     if merged_head is None:
         return owned_pr(store, sid, repository, number)
@@ -302,4 +332,5 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
                 'number': number, 'check': check_id, 'pid': child.pid, 'log': str(log)})
     return {'started': True, 'pid': child.pid, 'log': str(log), 'completion_verified': False,
             'next_action': render_prompt('validation_background')}
+
 
