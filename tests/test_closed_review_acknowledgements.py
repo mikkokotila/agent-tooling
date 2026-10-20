@@ -22,9 +22,12 @@ def gateway_comment(local, monkeypatch, *, sid='s', cwd=None, client='codex', op
         return subprocess.CompletedProcess(argv, 0, stdout=closed.URL + '#issuecomment-12\n', stderr='')
 
     monkeypatch.setattr(cli, 'github_run', upstream)
-    body = ['--body', closed.REASON]
+    text = closed.REASON
+    if operation == 'edit':
+        text += '\n\nCloses #' + str(local[2]['closing_issues'][0]['number']) + '\n'
+    body = ['--body', text]
     if body_file is not None:
-        body_file.write_text(closed.REASON)
+        body_file.write_text(text)
         body = ['--body-file', str(body_file)]
     args = SimpleNamespace(session=sid, client=client, cwd=str(cwd or root), kind=None,
                            slice_id=None, target=None,
