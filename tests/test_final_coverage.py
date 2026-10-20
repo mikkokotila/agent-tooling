@@ -223,9 +223,15 @@ def test_truthful_source_proof_has_no_retroactive_execution_receipt(delivered, s
 
 @pytest.mark.parametrize('delivered', ['tracked_config'], indirect=True)
 def test_tracked_browser_configuration_is_not_a_private_input_replacement(delivered):
+    before = history(delivered['store'])
     with pytest.raises(ValueError, match='tracked browser configuration'):
         qualify(delivered)
-    assert delivered['store'].final_coverage_receipt('s', delivered['context']['original']['row']['plan_id']) is None
+    receipt = delivered['store'].final_coverage_receipt('s', delivered['context']['original']['row']['plan_id'])
+    assert receipt['proof'] is None
+    result = workflow.successor_progress(delivered['store'], delivered['context']['original']['row'])
+    assert result['phase'] == 'SUCCESSOR_INCOMPLETE' and result['blocked'] is True
+    assert result['qualification_verified'] is False and result['completion_verified'] is False
+    assert history(delivered['store']) == before
 
 
 @pytest.mark.parametrize('delivered', ['hidden_source'], indirect=True)
