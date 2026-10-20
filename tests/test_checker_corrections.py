@@ -31,7 +31,7 @@ def driver(*, corrected=False, suffix=""):
             "    Path('.results').write_text(str(index + 1))\n" + suffix)
 
 
-def prepare(local, *, outcome='fail', private=True, closed=True, arguments=None):
+def prepare(local, *, outcome='fail', private=True, closed=True, arguments=None, prefix=()):
     store, root, snap, plan = local
     with (root / '.git/info/exclude').open('a') as target:
         target.write('.frozen/\n.corrections/\n.results\n.started\n.release\n')
@@ -43,7 +43,7 @@ def prepare(local, *, outcome='fail', private=True, closed=True, arguments=None)
         body = 'import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n'
     (root / name).write_text(body)
     (root / 'src.txt').write_text('fixed')
-    plan.update(checks=[dict(id='native-matched', argv=[sys.executable, name, *(arguments or ['--mode', 'compare'])],
+    plan.update(checks=[dict(id='native-matched', argv=[*prefix, sys.executable, name, *(arguments or ['--mode', 'compare'])],
                             reason='Execute both isolated trials with all pinned producer assertions'),
                         dict(id='remaining', argv=[sys.executable, 'check.py'],
                              reason='Retain the other already-declared required check')],
@@ -56,7 +56,7 @@ def prepare(local, *, outcome='fail', private=True, closed=True, arguments=None)
     return row, result['run'], proof
 
 
-def correction(local, failed, *, identifier='native-matched-v2', payload=None, body=None):
+def correction(local, failed, *, identifier='native-matched-v2', payload=None, body=None, script_index=1):
     _, root, _, original = local
     payload = deepcopy(payload or original)
     target = next(c for c in payload['checks'] if c['id'] == failed['check_id'])
@@ -69,7 +69,7 @@ def correction(local, failed, *, identifier='native-matched-v2', payload=None, b
         "The first trial completed; name reuse prevented the second from starting. "
         "Give each trial a distinct name and preserve stderr. All producer assertions remain required.\n")
     check = {**deepcopy(target), 'id': identifier,
-             'argv': [target['argv'][0], script, *target['argv'][2:]],
+             'argv': [*target['argv'][:script_index], script, *target['argv'][script_index + 1:]],
              'input_paths': [*target.get('input_paths', []), script, evidence],
              'correction': dict(check_id=target['id'], run_id=failed['run_id'],
                  diagnosis='Repair the observed private name-reuse race without changing trial acceptance',
