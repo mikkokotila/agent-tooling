@@ -60,7 +60,39 @@ def _runner(argv: list[str], cwd: Path, root: Path):
     raise ValueError("validation command must name a common check runner or an actual repository script")
 
 
-def normalize_plan(payload: dict, cwd: str | Path) -> dict:
+def _ordinary_control_path(path, root):
+    # Resolving a private path would otherwise discard a link's identity.
+    # Keep this restriction local to the new per-check qualification surface.
+    for candidate in (path, *path.parents):
+        if candidate == root:
+            break
+        if candidate.is_symlink():
+            raise ValueError("Qualification control paths cannot traverse symlinks; pin ordinary local files")
+
+
+def _input_settings(payload, root, *, control=False):
+    inputs = payload.get("input_paths", [])
+    if not isinstance(inputs, list) or any(not isinstance(path, str) or not path for path in inputs):
+        raise ValueError("input_paths must be relative file or directory paths")
+    paths = []
+    for value in inputs:
+        path = Path(value)
+        if path.is_absolute():
+            raise ValueError("input_paths must remain relative to the working directory")
+        if control:
+            _ordinary_control_path(root / path, root)
+        candidate = _inside(root / path, root)
+        if candidate == root or candidate.name == ".git" or ".git" in candidate.relative_to(root).parts:
+            raise ValueError("input_paths cannot include the whole workspace or Git metadata")
+        paths.append(candidate.relative_to(root).as_posix())
+    environment = payload.get("env_names", [])
+    if (not isinstance(environment, list)
+            or any(not isinstance(name, str) or not _ENV_NAME.fullmatch(name) for name in environment)):
+        raise ValueError("env_names must contain environment variable names, not values")
+    return {"input_paths": sorted(set(paths)), "env_names": sorted(set(environment))}
+
+
+def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     """Freeze necessary commands and their reasons before any validation runs.
 
     Commands use argv, not shell text, so an exited check cannot be hidden by a
@@ -77,8 +109,11 @@ def normalize_plan(payload: dict, cwd: str | Path) -> dict:
         raise ValueError("validation plan requires at least one necessary check")
     normalized, identifiers = [], set()
     for check in checks:
-        if not isinstance(check, dict) or set(check) - {"id", "argv", "reason", "cwd"}:
-            raise ValueError("checks require id, argv, reason and optional cwd")
+        allowed = {"id", "argv", "reason", "cwd", "input_paths", "env_names"}
+        if stored:
+            allowed.add("input_digest")
+        if not isinstance(check, dict) or set(check) - allowed:
+            raise ValueError("checks require id, argv, reason and optional cwd/input_paths/env_names; input pins are recorded by the runner")
         identifier, argv, reason = check.get("id"), check.get("argv"), check.get("reason")
         if not isinstance(identifier, str) or not _CHECK_ID.fullmatch(identifier) or identifier in identifiers:
             raise ValueError("check IDs must be unique nonempty identifiers")
@@ -97,23 +132,24 @@ def normalize_plan(payload: dict, cwd: str | Path) -> dict:
         identifiers.add(identifier)
         normalized.append({"id": identifier, "argv": list(argv), "reason": reason.strip(),
                            "cwd": directory.relative_to(root).as_posix() or "."})
-    inputs = payload.get("input_paths", [])
-    if not isinstance(inputs, list) or any(not isinstance(path, str) or not path for path in inputs):
-        raise ValueError("input_paths must be relative file or directory paths")
-    paths = []
-    for value in inputs:
-        path = Path(value)
-        if path.is_absolute():
-            raise ValueError("input_paths must remain relative to the working directory")
-        candidate = _inside(root / path, root)
-        if candidate == root or candidate.name == ".git" or ".git" in candidate.relative_to(root).parts:
-            raise ValueError("input_paths cannot include the whole workspace or Git metadata")
-        paths.append(candidate.relative_to(root).as_posix())
-    environment = payload.get("env_names", [])
-    if (not isinstance(environment, list)
-            or any(not isinstance(name, str) or not _ENV_NAME.fullmatch(name) for name in environment)):
-        raise ValueError("env_names must contain environment variable names, not values")
-    return {"checks": normalized, "input_paths": sorted(set(paths)), "env_names": sorted(set(environment))}
+        if "input_paths" in check or "env_names" in check:
+            normalized[-1].update(_input_settings(check, root, control=True))
+            first = Path(argv[0]).name.lower()
+            is_script = (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
+                         and len(argv) > 1 and not argv[1].startswith("-"))
+            candidate = directory / (argv[1] if is_script else argv[0])
+            if is_script or candidate.is_relative_to(root):
+                _ordinary_control_path(candidate, root)
+            candidate = _inside(candidate, root) if is_script else candidate.resolve()
+            if (candidate.is_file() and candidate.is_relative_to(root)
+                    and not any(candidate == root / path or (root / path).is_dir() and candidate.is_relative_to(root / path)
+                                for path in normalized[-1]["input_paths"])):
+                raise ValueError("Include the local qualification driver in its check input_paths")
+        if "input_digest" in check:
+            if not isinstance(check["input_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", check["input_digest"]):
+                raise ValueError("stored qualification input pin is malformed")
+            normalized[-1]["input_digest"] = check["input_digest"]
+    return {"checks": normalized, **_input_settings(payload, root)}
 
 
 def plan_digest(plan: dict) -> str:
@@ -309,7 +345,7 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     before and after waiting for the actual process exit.
     """
     working = Path(cwd).expanduser().resolve()
-    normalized = normalize_plan(plan, working)
+    normalized = normalize_plan(plan, working, stored=True)
     repository = Path(repo_root(working))
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
     explicit = set()
@@ -375,6 +411,14 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     return digest.hexdigest()
 
 
+def check_fingerprint(cwd, plan, check):
+    """Bind a control's added inputs without changing retained check identities."""
+    scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
+    for name in ("input_paths", "env_names"):
+        scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
+    return fingerprint(cwd, scoped)
+
+
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:
     """Pure local decision; publication and review proof remain separate gates.
 
@@ -406,7 +450,8 @@ def validation_decision(plan: dict, runs: list[dict], current_digest: str, check
 
 def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                       snapshot: dict | None = None, review_gates: list[dict] | None = None,
-                      local_state: dict | None = None, preflight: dict | None = None, *, source_closed=False) -> dict:
+                      local_state: dict | None = None, preflight: dict | None = None, *, source_closed=False,
+                      check_digests: dict | None = None) -> dict:
     """Order validation, publication and proven review conclusions.
 
     A run may pass only after its managed process actually exited successfully
@@ -480,10 +525,15 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
     checks = {check.get("id") for check in plan["checks"] if isinstance(check, dict)}
     if None in checks or len(checks) != len(plan["checks"]):
         return result("VALIDATE_REQUIRED", "Necessary-check identities are missing or duplicated")
+    expected = {check["id"]: check.get("input_digest", current_digest) for check in plan["checks"]}
+    changed = [check["id"] for check in plan["checks"] if "input_digest" in check
+               and (check_digests or {}).get(check["id"]) != check["input_digest"]]
+    if changed:
+        return result("INPUTS_CHANGED", "Frozen qualification control inputs changed; retain their original pins and results", changed_checks=changed)
     latest = {}
     active = set()
     for run in runs:
-        if run.get("check_id") not in checks or run.get("input_digest") != current_digest:
+        if run.get("check_id") not in checks or run.get("input_digest") != expected[run["check_id"]]:
             continue
         latest[run["check_id"]] = run
         if run.get("status") == "running":
@@ -496,8 +546,8 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
         elif identifier in active:
             continue
         elif (run.get("status") == "pass" and type(run.get("exit_code")) is int
-              and run["exit_code"] == 0 and run.get("before_digest") == current_digest
-              and run.get("after_digest") == current_digest):
+              and run["exit_code"] == 0 and run.get("before_digest") == expected[identifier]
+              and run.get("after_digest") == expected[identifier]):
             passed.append(identifier)
         elif run.get("status") == "fail":
             failed.append(identifier)
