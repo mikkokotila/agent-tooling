@@ -421,14 +421,15 @@ class Store:
         for candidate in db.execute("""SELECT r.*, p.plan AS original_plan FROM validation_runs r
             JOIN validation_plans p ON p.plan_id=r.plan_id
             WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=?
-            AND p.input_digest=? AND r.input_digest=? ORDER BY r.started_at, r.run_id""",
+            AND p.input_digest=? ORDER BY r.started_at, r.run_id""",
             (row["session_id"], row["repository"], row["number"], row["cwd"],
-             row["input_digest"], row["input_digest"])):
+             row["input_digest"])):
             run = dict(candidate)
             original, original_checks = self._validation_checks(json.loads(run.pop("original_plan")))
             if ({key: value for key, value in original.items() if key != "checks"} == inputs
                     and run["check_id"] in checks
-                    and original_checks.get(run["check_id"]) == checks[run["check_id"]]):
+                    and original_checks.get(run["check_id"]) == checks[run["check_id"]]
+                    and run["input_digest"] == checks[run["check_id"]].get("input_digest", row["input_digest"])):
                 evidence.append(run)
         return evidence
 
@@ -472,6 +473,8 @@ class Store:
         if not isinstance(evidence_digest, str):
             raise ValueError("validation evidence_digest must be a string")
         normalized, checks = self._validation_checks(plan)
+        if not retained and any("input_digest" in check for check in checks.values()):
+            raise ValueError("Pinned qualification controls require explicit merged-source validation")
         directory = str(Path(cwd).expanduser().resolve())
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -517,10 +520,14 @@ class Store:
                 if same_input and same_evidence:
                     failed = db.execute("SELECT 1 FROM validation_runs WHERE plan_id=? AND status='fail'",
                                         (existing["plan_id"],)).fetchone()
-                    if not failed or set(checks) == set(old_checks):
+                    added = set(checks) - set(old_checks)
+                    controls = retained and added and all("input_digest" in checks[key] for key in added)
+                    if not added or not (failed or controls):
                         raise ValueError("unchanged validation plan is frozen; new input/evidence is required")
                     # A real failure can justify a distinct investigation, retaining
                     # the failed check and all completed evidence in this generation.
+                    # Explicit merged qualification may also append independently
+                    # pinned controls. Neither path resets an existing result.
                     db.execute("UPDATE validation_plans SET plan=?, updated_at=? WHERE plan_id=?",
                                (_json(normalized), now, existing["plan_id"]))
                     self._audit(db, "validation_plan_extended", {"plan_id": existing["plan_id"], "check_ids": list(checks)})
@@ -555,11 +562,13 @@ class Store:
                 raise ValueError("validation plan is owned by another task")
             if retained:
                 self._retained_validation_plan(db, session_id, plan['repository'], plan['number'], plan['cwd'])
-            if input_digest != plan["input_digest"]:
-                raise ValueError("validation input changed; save an updated plan first")
             _, checks = self._validation_checks(plan["plan"])
             if check_id not in checks:
                 raise ValueError("check is absent from the active required validation plan")
+            if "input_digest" in checks[check_id] and not retained:
+                raise ValueError("Pinned qualification controls require explicit merged-source validation")
+            if input_digest != checks[check_id].get("input_digest", plan["input_digest"]):
+                raise ValueError("validation input changed; save an updated plan first")
             if db.execute("SELECT 1 FROM validation_runs WHERE plan_id=? AND status='running'", (plan_id,)).fetchone():
                 raise ValueError("validation already has an active run")
             if any(run["check_id"] == check_id and run["status"] in {"running", "pass", "fail"}

@@ -111,7 +111,9 @@ def current_phase(store, row):
     return progress.evaluate_progress(row, store.validation_evidence(row['plan_id']),
         progress.fingerprint(row['cwd'], row['plan']), snapshot, gates,
         progress.working_state(row['cwd']),store.preflight(row['repository'],row['number']),
-        source_closed=bool(watch and watch['state'] in {'closed', 'merged'}))
+        source_closed=bool(watch and watch['state'] in {'closed', 'merged'}),
+        check_digests={check['id']: progress.check_fingerprint(row['cwd'], row['plan'], check)
+                       for check in row['plan']['checks'] if 'input_digest' in check})
 
 
 def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None):
@@ -125,6 +127,15 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None)
     if merged_head is None and (snapshot.get('state') != 'open' or snapshot.get('merged') is not False):
         raise ValueError('A validation plan requires verified live evidence of an open PR; completed work is not reopened')
     plan = progress.normalize_plan(payload, cwd)
+    for check in plan['checks']:
+        if 'input_paths' in check or 'env_names' in check:
+            if merged_head is None:
+                raise ValueError('Per-check qualification inputs require --merged-head and a retained plan')
+            if not check.get('input_paths'):
+                raise ValueError('An added qualification control requires explicit input_paths')
+            if any(not (Path(cwd) / path).exists() for path in check['input_paths']):
+                raise ValueError('Qualification control inputs must exist before they are pinned')
+            check['input_digest'] = progress.check_fingerprint(cwd, plan, check)
     previous = store.validation_plan(sid, repository, number, cwd)
     _recover_runs(store, previous)
     row = store.save_validation_plan(sid, repository, number, cwd, plan,
@@ -165,7 +176,8 @@ def run_check(store, sid, repository, number, cwd, check_id, *, manage_process_g
         group = os.getpgrp()
     if merged_head is not None:
         validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
-    run = store.begin_validation(row['plan_id'], check_id, digest, owner_pid=os.getpid(), owner_group=group,
+    before = progress.check_fingerprint(row['cwd'], row['plan'], check)
+    run = store.begin_validation(row['plan_id'], check_id, before, owner_pid=os.getpid(), owner_group=group,
                                  session_id=sid, retained=merged_head is not None)
     exit_code = None
     try:
@@ -173,7 +185,7 @@ def run_check(store, sid, repository, number, cwd, check_id, *, manage_process_g
         exit_code = completed.returncode
     finally:
         try:
-            after = progress.fingerprint(row['cwd'], row['plan'])
+            after = progress.check_fingerprint(row['cwd'], row['plan'], check)
         except Exception:
             after = 'unverifiable'
         source_valid = True
@@ -223,7 +235,9 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
         raise ValueError(f"PR_PROGRESS {phase['phase']}: {phase.get('next_action')}")
     if check_id not in {c['id'] for c in row['plan']['checks']}:
         raise ValueError('Check is absent from the declared plan')
-    if any(r['check_id'] == check_id and r['input_digest'] == digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
+    check = next(c for c in row['plan']['checks'] if c['id'] == check_id)
+    check_digest = check.get('input_digest', digest)
+    if any(r['check_id'] == check_id and r['input_digest'] == check_digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
         raise ValueError('This check is already running or completed for these inputs')
     logs = store.state_dir / 'validation-logs'
     logs.mkdir(mode=0o700, exist_ok=True)

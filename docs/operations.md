@@ -55,4 +55,36 @@ caller-pr-gates validate --session OWNER_SESSION \
 
 The retained plan stays necessary and frozen. `validation-plan` accepts the same `--merged-head` option to retain it or, after an actual failure, add a distinct diagnostic check under the existing rules. It cannot remove required checks, rewrite completed evidence or authorize replay of an unchanged failure. Inspect the actual failed result and diagnose it. A source change beyond the pinned merged product requires its own genuine scoped PR.
 
+### Additional private qualification controls
+
+If remaining acceptance needs a new local driver for the unchanged merged producer, append a new check to the existing plan file with its own `input_paths` (and, when needed, `env_names`). Keep every existing check and the top-level input/environment declarations unchanged. For example, append this check to the existing `checks` list:
+
+```json
+{
+  "id": "retry-cancel-range-v1",
+  "argv": ["python3.13", "storage/qualification-controls/retry-cancel-range-v1.py"],
+  "reason": "Verify cancellation during the already-supported retry delay for the pinned range",
+  "input_paths": [
+    "storage/qualification-controls/retry-cancel-range-v1.py",
+    "storage/qualification-controls/retry-cancel-range-v1.json"
+  ]
+}
+```
+
+Use the real interpreter, driver and dependencies for that check; the paths above illustrate the declaration only. Paths are relative to the recorded repository root. New files must be private ignored inputs outside previously frozen input directories, so creating them does not change the retained fingerprint. Do not edit tracked `.gitignore` or producer files to make this work. Explicitly include every additional dependency; keep outputs outside declared inputs. The runner computes the control's `input_digest` from the producer, retained inputs and its additional inputs/environment. Do not supply an `input_digest` or copy a receipt into the plan file.
+
+```sh
+caller-pr-gates validation-plan --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --file /absolute/private/plan.json \
+  --merged-head FULL_ORIGINAL_PR_HEAD_SHA
+
+caller-pr-gates validate --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --check retry-cancel-range-v1 \
+  --merged-head FULL_ORIGINAL_PR_HEAD_SHA --background
+```
+
+The appended control gets no historical pass. Its actual exit and before/after digests are recorded separately in the existing run history. Original checks retain their actual results and unchanged-failure retry prohibition; adding a passing control cannot waive a failure. All pins and existing check declarations remain immutable. A revised control needs a distinct frozen file/check identity and cannot replace an existing obligation. Let an active managed process finish naturally before extending its plan. This addition uses the existing preflight and background worker, with no extra GitHub reads.
+
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.

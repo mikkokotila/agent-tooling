@@ -724,6 +724,11 @@ def main():
                 digest=progress.fingerprint(args.cwd,row['plan'])
                 if args.merged_head is not None and digest!=row['input_digest']:
                     raise ValueError('Post-merge validation inputs changed; source repairs need their own scoped PR')
+                check=next(c for c in row['plan']['checks'] if c['id']==args.check)
+                if 'input_digest' in check:
+                    digest=progress.check_fingerprint(args.cwd,row['plan'],check)
+                    if digest!=check['input_digest']:
+                        raise ValueError('Frozen qualification control inputs changed; retain their original pins and results')
                 if any(r['check_id']==args.check and r['input_digest']==digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):
                     raise ValueError('This check already ran on unchanged inputs; inspect its recorded result')
             from .github import collect_validation
