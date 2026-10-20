@@ -7,6 +7,7 @@ import re
 from typing import Callable
 
 from .policy import _latest_checks, _outcome
+from .copilot import is_service_review
 
 JOB_URL = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/(\d+)/job/(\d+)(?:\?.*)?\Z')
 
@@ -17,7 +18,8 @@ def gate_fingerprint(snapshot: dict, gates: list[dict]) -> str:
               for check in _latest_checks(snapshot.get('checks') or []) if _outcome(check) == 'failed']
     value = {'head': snapshot.get('head_sha'),
              'comments': sorted([{'id': c.get('id'), 'updated_at': c.get('updated_at'),
-                                   'resolved': c.get('is_resolved')} for c in snapshot.get('comments') or []], key=lambda c: str(c['id'])),
+                                   'resolved': c.get('is_resolved')} for c in snapshot.get('comments') or []
+                                  if not is_service_review(c)], key=lambda c: str(c['id'])),
              'gates': sorted([{'gate': gate.get('gate'), 'status': gate.get('status'),
                                'details': sorted(gate.get('details') or [], key=str)} for gate in gates
                               if gate.get('gate') not in {'MERGE_CONFLICT', 'BRANCH_UP_TO_DATE', 'ISSUE_CLOSURE', 'MERGE_READY'} or gate.get('status') == 'FAIL'], key=lambda g: str(g['gate'])),

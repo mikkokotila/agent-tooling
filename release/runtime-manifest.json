@@ -7,7 +7,7 @@
     "caller_pr_gates/collections.py": "5fbdd87d38f43d8f6219f26c813865cbda742535de72b75acb9719aa105922bd",
     "caller_pr_gates/copilot.py": "64dd5dc0a566a9337d55d977cf3e5798f4007e1452e1f33a21b265c296a2355a",
     "caller_pr_gates/errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
-    "caller_pr_gates/external.py": "3ba7729c19b122936790f6350df1c90545e174636f38f356f629c839b9c28516",
+    "caller_pr_gates/external.py": "e996daf5c889fd5e69c80ab05503d4338fd02d2ec30228da8a5297675e351f96",
     "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
     "caller_pr_gates/github.py": "35a90674ff8f526c95f266e5b8c59f366e2e48baf73382a033ca1e78bd23028b",
     "caller_pr_gates/handoff.py": "1e4a471063584ecda43527fb25aad78ed6261b4823ca3dc9aafac65d2fc28843",
