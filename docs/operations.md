@@ -38,6 +38,12 @@ Release 0.1.27 adds a five-minute receipt deadline to Codex checklist deliveries
 
 Release 0.1.29 adds `caller-pr-gates link-issues PARENT_URL CHILD_URL --session SESSION` for native issue hierarchy. The child must be the chat's recorded PRD/slice; both URLs must identify distinct issues in the same repository. The operation verifies remote identities and the current parent, never replaces a parent, skips an existing correct edge, and verifies readback after one POST. No arbitrary API-write permission or PR ownership is added. The shared checklist tells both clients to repair routine tooling gaps without another permission request and continue the next authorized task while retaining incomplete blocked work. Repeated actionable hook delivery and merge/validation gates are unchanged.
 
+## Whole-suite verification wait
+
+`tools/manage.py verify`, including the verification required before `install`, gives its entire pytest subprocess a finite **900-second** parent wait. This is cumulative suite execution time, not an individual test or product performance allowance. Every test/assertion and its own deadline remains unchanged; the generic command default remains 180 seconds. The CI job retains its separate 10-minute deadline.
+
+The increase from 600 seconds addresses a retained local installation attempt that reached the parent limit while still making late-suite progress. It does not establish which test was slow, attribute a host cause, or credit that interrupted suite as a pass. A timeout or nonzero pytest exit still propagates before worker admission or deployment and cannot produce a new successful verification receipt. The separate `install --wait-for-workers` option (default 600 seconds) applies only after successful verification and never bypasses an active worker lease.
+
 ## Existing release body updates
 
 Release 0.1.45 permits an authorized task to update only the body of an existing release through the existing GitHub API gateway. Use the numeric release ID and its exact API URL as `--target`; a related PR is not a surrogate release owner. The exact session must already be recorded with the same client and working directory, whose GitHub `origin` must match the target repository. No PR registration is needed or performed.
