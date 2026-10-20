@@ -70,7 +70,7 @@ def snapshot(number, head, *, merged=False, merge=None):
 
 
 @pytest.fixture
-def delivered(tmp_path, monkeypatch):
+def delivered(tmp_path, monkeypatch, request):
     common = tmp_path / 'common'
     common.mkdir()
     git(common, 'init', '-q')
@@ -90,6 +90,11 @@ def delivered(tmp_path, monkeypatch):
     git(common, 'worktree', 'add', '-qb', 'original', str(original), base)
     (original / 'src.txt').write_text('old')
     git(original, 'commit', '-qam', 'Feature before its genuine repair')
+    if getattr(request, 'param', None) == 'tracked_config':
+        (original / 'private').mkdir()
+        (original / 'private/browser.mjs').write_text('historical private configuration bytes')
+        git(original, 'add', '-f', 'private/browser.mjs')
+        git(original, 'commit', '-qm', 'Tracked configuration is a source obligation')
     old_head = git(original, 'rev-parse', 'HEAD')
     old_tree = git(original, 'rev-parse', 'HEAD^{tree}')
     # An actual squash-like merge: the published branch head is not an ancestor.
@@ -110,7 +115,7 @@ def delivered(tmp_path, monkeypatch):
     store.register('s', 'codex', REPO, 1, original)
     old_live = snapshot(1, old_head)
     store.set_snapshot(REPO, 1, old_live, evaluate_pr(old_live, []))
-    (original / 'private').mkdir()
+    (original / 'private').mkdir(exist_ok=True)
     (original / 'private/browser.mjs').write_text('historical private configuration bytes')
     old_row = workflow.save_plan(store, 's', REPO, 1, original, declarations(prefix))['plan']
     assert workflow.run_check(store, 's', REPO, 1, original, 'check')['run']['status'] == 'fail'
@@ -120,6 +125,11 @@ def delivered(tmp_path, monkeypatch):
     (final / 'src.txt').write_text('fixed')
     git(final, 'commit', '-qam', 'Actual final feature and proof repair')
     head = git(final, 'rev-parse', 'HEAD')
+    if getattr(request, 'param', None) == 'hidden_source':
+        git(final, 'update-index', '--assume-unchanged', 'gate.py')
+        (final / 'gate.py').write_text("from pathlib import Path\nPath('results').mkdir(exist_ok=True)\n"
+                                     "Path('results/changed-gate').write_text('different assertions actually ran')\n")
+        assert not git(final, 'status', '--porcelain')
     final_scope = dict(SCOPE, agreed_scope='Repair the final deterministic probe only',
                        acceptance_criteria=['Retain every assertion and qualify the final repair'], slice_ids=['probe'], approved_at=200)
     store.record_scope('s', final_scope, work_item='probe')
@@ -206,6 +216,21 @@ def test_truthful_source_proof_has_no_retroactive_execution_receipt(delivered, s
     assert data['store'].final_coverage_receipt('s', data['context']['original']['row']['plan_id']) is None
 
 
+@pytest.mark.parametrize('delivered', ['tracked_config'], indirect=True)
+def test_tracked_browser_configuration_is_not_a_private_input_replacement(delivered):
+    with pytest.raises(ValueError, match='tracked browser configuration'):
+        qualify(delivered)
+    assert delivered['store'].final_coverage_receipt('s', delivered['context']['original']['row']['plan_id']) is None
+
+
+@pytest.mark.parametrize('delivered', ['hidden_source'], indirect=True)
+def test_real_passes_on_hidden_tracked_edits_do_not_qualify_published_source(delivered):
+    assert {run['status'] for run in delivered['context']['final']['runs']} == {'pass'}
+    with pytest.raises(ValueError, match='published final tree'):
+        qualify(delivered)
+    assert delivered['store'].final_coverage_receipt('s', delivered['context']['original']['row']['plan_id']) is None
+
+
 def test_real_failed_final_process_is_not_qualification(delivered):
     data = delivered
     # Retain the fixture's original actual passes, then declare and execute a
@@ -234,7 +259,8 @@ def test_real_failed_final_process_is_not_qualification(delivered):
 def test_remote_identity_review_ci_closure_and_delivered_ancestry_stay_required(delivered, subtests):
     data = delivered
     for fault in ('foreign_repo', 'open', 'unmerged', 'head', 'identity', 'stale', 'approval', 'self_approval',
-                  'other_head_approval', 'changes_requested', 'finding', 'ci', 'pending_ci', 'issue', 'ancestry', 'tree'):
+                  'other_head_approval', 'changes_requested', 'finding', 'ci', 'pending_ci', 'service_only',
+                  'skipped_ci', 'neutral_ci', 'issue', 'ancestry', 'tree'):
         with subtests.test(fault=fault):
             proof = deepcopy(data['proof']); final = proof['final']
             if fault == 'foreign_repo': final['repository'] = 'Other/Repo'
@@ -250,10 +276,20 @@ def test_remote_identity_review_ci_closure_and_delivered_ancestry_stay_required(
             elif fault == 'finding': final['comments'] = [{'id': 'review:8', 'body': 'Real unresolved finding'}]
             elif fault == 'ci': final['checks'][0]['conclusion'] = 'failure'
             elif fault == 'pending_ci': final['checks'][0].update(status='in_progress', conclusion=None)
+            elif fault == 'service_only':
+                final['checks'][0].update(name='Running Copilot Code Review', conclusion='failure',
+                    workflow_event='dynamic', workflow_path='dynamic/agents/copilot-pull-request-reviewer', workflow_id='5')
+                final['expected_checks'] = ['Running Copilot Code Review']
+            elif fault == 'skipped_ci': final['checks'][0]['conclusion'] = 'skipped'
+            elif fault == 'neutral_ci': final['checks'][0]['conclusion'] = 'neutral'
             elif fault == 'issue': proof['original_closure']['closing_issues'][0]['state'] = 'OPEN'
             elif fault == 'ancestry': proof['ancestry'].update(behind_by=1, status='diverged')
             else: proof['merge']['tree']['sha'] = '0' * 40
             with pytest.raises(ValueError): workflow._final_coverage_evidence(data['context'], proof, data['final'])
+    proof = deepcopy(data['proof'])
+    proof['final']['checks'].append(dict(proof['final']['checks'][0], id='2', name='Running Copilot Code Review',
+        conclusion='failure', workflow_event='dynamic', workflow_path='dynamic/agents/copilot-pull-request-reviewer', workflow_id='5'))
+    assert workflow._final_coverage_evidence(data['context'], proof, data['final'])['qualification_verified']
 
 
 def test_owner_checkout_active_run_and_transaction_races_do_not_record_coverage(delivered, tmp_path, monkeypatch, subtests):
@@ -293,7 +329,7 @@ def test_coverage_metadata_rejects_command_waivers_and_silent_differences(subtes
     assert progress.final_coverage(original, final, SCOPE, payload)['historical_input_continuity'] == 'not_established'
     for fault in ('missing_check', 'unknown_id', 'shell', 'env_flag', 'path_value', 'env_order', 'skip_env',
                   'empty_workers', 'bad_port', 'grep', 'config', 'extra_arg', 'cwd', 'script', 'reason',
-                  'missing_change', 'invented_change', 'criteria', 'plan', 'input', 'scope'):
+                  'missing_change', 'invented_change', 'criteria', 'plan', 'input', 'named_subset', 'scope'):
         with subtests.test(fault=fault):
             previous, candidate, fields, scope = deepcopy(original), deepcopy(final), deepcopy(payload), deepcopy(SCOPE)
             check, browser = candidate['plan']['checks']
@@ -317,6 +353,7 @@ def test_coverage_metadata_rejects_command_waivers_and_silent_differences(subtes
             elif fault == 'criteria': fields['criteria'] = []
             elif fault == 'plan': fields['original_plan_id'] = 'unrelated'
             elif fault == 'input': candidate['plan']['input_paths'] = ['private/new-driver.py']
+            elif fault == 'named_subset': scope['acceptance_criteria'] = ['npm run check-subset and npm run test:e2e pass.']
             else: scope['acceptance_criteria'] = ['Only a subset is required']
             with pytest.raises(ValueError): progress.final_coverage(previous, candidate, scope, fields)
 

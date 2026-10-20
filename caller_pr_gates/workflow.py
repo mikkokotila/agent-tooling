@@ -154,6 +154,11 @@ def _final_coverage_local(context, cwd):
     if (not exact_source(row, local) or local['head'] != context['final']['identity']['retirement']['head_sha']
             or progress.fingerprint(cwd, row['plan']) != row['input_digest'] or source(cwd, stable=True) != local):
         raise ValueError('Final coverage requires the exact clean successor checkout, source and current frozen inputs')
+    files, directories = progress.source_tree(cwd, local['head'])
+    if (any((Path(cwd) / path).is_symlink() for path in directories)
+            or progress.fingerprint(cwd, row['plan'], source_snapshot=(files, None)) != row['input_digest']
+            or source(cwd, stable=True) != local):
+        raise ValueError('Final qualification inputs do not match the exact published final tree')
     return local
 
 
@@ -189,6 +194,10 @@ def _final_coverage_evidence(context, proof, cwd):
     gates = evaluate_pr(final, context['final']['dispositions'])
     if any(g['status'] != 'PASS' for g in gates if g['gate'] != 'MERGE_READY'):
         raise ValueError('Final qualification requires every actual CI, review and issue-closure gate')
+    real_checks = next(g for g in gates if g['gate'] == 'CI_FAILED')['evidence'].get('checks', [])
+    if not any(check.get('head_sha') == final['head_sha'] and check.get('status') == 'completed'
+               and check.get('conclusion') == 'success' for check in real_checks):
+        raise ValueError('Final qualification requires successful non-service CI execution on the exact final head')
     decisions = {}
     for review in sorted(final.get('submitted_reviews', []), key=lambda r: str(r.get('submitted_at') or '')):
         if review.get('state') in {'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'}:
@@ -229,6 +238,17 @@ def _final_coverage_evidence(context, proof, cwd):
                 or not row['created_at'] <= stamps[0] <= stamps[1] <= time.time()):
             raise ValueError('Final coverage cannot promote missing, failed, unknown, stale or fabricated execution evidence')
     coverage = progress.final_coverage(context['original']['row'], row, context['original']['scope'], proof['declaration'])
+    for value in coverage['replaced_private_configs']:
+        path = Path(value)
+        # Establish only that this was a private/untracked declaration, not a
+        # tracked source config or a path through a tracked link/submodule.
+        # Missing historical private bytes remain explicitly unverified.
+        for candidate in (path, *(parent for parent in path.parents if parent != Path('.'))):
+            entries = progress._git(Path(cwd), '--no-replace-objects', 'ls-tree', '-z', proof['original']['head_sha'],
+                                    '--', candidate.as_posix())
+            for entry in entries.split(b'\0'):
+                if entry and (candidate == path or entry.split(b' ', 1)[0] != b'040000'):
+                    raise ValueError('Final coverage cannot replace a tracked browser configuration or linked source path')
     if any(not isinstance(manifests[1].get(script), str) or not manifests[1][script].strip() for script in coverage['scripts'].values()):
         raise ValueError('A declared full gate is absent from the published package scripts')
     local = _final_coverage_local(context, cwd)

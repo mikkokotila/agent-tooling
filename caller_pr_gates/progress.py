@@ -347,7 +347,7 @@ def final_coverage(original, final, scope, payload):
             if name not in allowed or not re.fullmatch(r'[1-9][0-9]*', value) or (allowed[name] and int(value) > allowed[name]):
                 raise ValueError('Unsupported environment change in final full-gate coverage')
             added_names.add(name)
-        if not any(re.search(r'(?<![\w:])' + re.escape('npm run ' + script) + r'(?![\w:])', criterion) for criterion in criteria):
+        if not any(re.search(r'(?<![\w:-])' + re.escape('npm run ' + script) + r'(?![\w:-])', criterion) for criterion in criteria):
             raise ValueError('The immutable original acceptance must explicitly require this full repository gate')
         if old_config:
             if old_config not in old.get('input_paths', []):
@@ -367,6 +367,7 @@ def final_coverage(original, final, scope, payload):
             or any(not text(reason) for reason in payload['changes'].values())):
         raise ValueError('Explain every actual declaration difference; no undeclared or invented differences are accepted')
     return {'scope_reason': payload['scope_reason'], 'checks': payload['checks'], 'scripts': scripts,
+            'replaced_private_configs': sorted(removed_configs),
             'criteria': [{'criterion': criterion, 'reason': reason} for criterion, reason in zip(criteria, payload['criteria'])],
             'declaration_changes': {path: {**values, 'reason': payload['changes'][path]} for path, values in differences.items()},
             'historical_input_continuity': 'not_established', 'historical_results_changed': False}
@@ -551,6 +552,26 @@ def validation_command(command: str) -> bool:
     return False
 
 
+def source_tree(cwd, head):
+    """Read one exact Git tree for comparison with current working bytes."""
+    if not isinstance(head, str) or not re.fullmatch(r'[0-9a-f]{40}', head):
+        raise ValueError('A published source tree requires a full commit SHA')
+    root, files, directories = Path(cwd), {}, set()
+    for entry in _git(root, '--no-replace-objects', 'ls-tree', '-r', '-t', '-l', '-z', '--full-tree', head).split(b'\0'):
+        if not entry:
+            continue
+        header, path = entry.split(b'\t', 1)
+        mode, kind, blob, size = header.split()
+        path = os.fsdecode(path)
+        if mode == b'040000' and kind == b'tree':
+            directories.add(path)
+        elif mode in {b'100644', b'100755', b'120000'} and kind == b'blob':
+            files[path] = (int(mode, 8), blob, int(size))
+        else:
+            raise ValueError('A published tree requires reconstructable ordinary Git source files')
+    return files, directories
+
+
 def source_snapshots(cwd, previous_head, final_head):
     """Read both published trees without trusting index hints or running filters."""
     if (any(not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
@@ -558,22 +579,7 @@ def source_snapshots(cwd, previous_head, final_head):
         raise ValueError("--from-head requires a distinct full previous source SHA")
     root = Path(cwd)
     _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", previous_head, final_head)
-    trees = []
-    for head in (previous_head, final_head):
-        files, directories = {}, set()
-        for entry in _git(root, "--no-replace-objects", "ls-tree", "-r", "-t", "-l", "-z", "--full-tree", head).split(b"\x00"):
-            if not entry:
-                continue
-            header, path = entry.split(b"\t", 1)
-            mode, kind, blob, size = header.split()
-            path = os.fsdecode(path)
-            if mode == b"040000" and kind == b"tree":
-                directories.add(path)
-            elif mode in {b"100644", b"100755", b"120000"} and kind == b"blob":
-                files[path] = (int(mode, 8), blob, int(size))
-            else:
-                raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
-        trees.append((files, directories))
+    trees = [source_tree(root, head) for head in (previous_head, final_head)]
     old, final = trees[0][0], trees[1][0]
     for path in old.keys() | final.keys():
         if (any(entry and stat.S_ISLNK(entry[0]) for entry in (old.get(path), final.get(path)))
