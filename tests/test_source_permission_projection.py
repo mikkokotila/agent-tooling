@@ -102,12 +102,17 @@ def test_changed_permission_bits_remain_changed_frozen_inputs(restrictive_local,
     assert store.validation_runs(row['plan_id']) == []
 
 
-@pytest.mark.parametrize('change', ['delete', 'mode', 'rename', 'directory'])
+@pytest.mark.parametrize('change', ['delete', 'mode', 'rename', 'directory', 'directory-file'])
 def test_historical_candidate_must_reproduce_full_old_pin_and_keeps_real_failure(restrictive_local, change):
     store, root, snap, _ = restrictive_local
     path = root / 'published.dat'
-    path.write_bytes(b'original published bytes')
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if change == 'directory-file':
+        path.mkdir()
+        original = path / 'child.dat'
+    else:
+        original = path
+    original.write_bytes(b'original published bytes')
+    assert stat.S_IMODE(original.stat().st_mode) == 0o600
     old = prepare(restrictive_local, inputs=True, failing=True)
     before = snap['head_sha']
     failed = workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'native-live-crash')['run']
@@ -119,6 +124,10 @@ def test_historical_candidate_must_reproduce_full_old_pin_and_keeps_real_failure
         path.chmod(0o755)
     elif change == 'rename':
         path.rename(root / 'renamed.dat')
+    elif change == 'directory-file':
+        original.unlink()
+        path.rmdir()
+        path.write_bytes(b'new published regular file')
     else:
         path.unlink()
         path.mkdir()

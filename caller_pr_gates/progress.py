@@ -647,7 +647,7 @@ def _source_permissions(root, files, *, canonical_fallback=False):
             continue
         try:
             current = (root / name).lstat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             continue
         # Git records the owner-executable class, not all POSIX permissions.
         if (stat.S_ISREG(current.st_mode)
