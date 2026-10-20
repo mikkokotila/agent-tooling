@@ -113,7 +113,10 @@ def test_coverage_correction_preserves_runner_and_requires_fresh_actual_exit(loc
     if exit_code == 0:
         assert result['progress']['corrected_failures'][0]['failed_run_id'] == failed['run_id']
         assert result['progress']['corrected_failures'][0]['passed_run_id'] == actual['run_id']
-        assert result['progress']['passed'] == [check['id']] and result['progress']['completion_verified'] is False
+        assert result['progress']['passed'] == [check['id']]
+        assert result['progress']['phase'] == 'VALIDATE_REQUIRED' and result['progress']['blocked'] is True
+        assert result['progress']['pending'] == ['regression']
+        assert workflow.task_progress(store, 's')[0]['status'] == 'WAIT'
     else:
         assert result['progress']['failed'] == ['profile', check['id']]
         assert not result['progress'].get('corrected_failures')

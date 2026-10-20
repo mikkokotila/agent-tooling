@@ -154,7 +154,52 @@ The current requested checkout must resolve to both retained registration/watch 
 
 This is a present-time review receipt, not a certificate of uninterrupted historical checkout identity. An earlier same-owner acknowledgement from another directory does not permanently revoke the owner's receipt access after the current retained checkout/source is restored. A legacy plan declared in another directory identifies that recorded qualification checkout, without reconstructing the unrecorded first registration. Neither case transfers an execution result or changes a failed/pending obligation. No native transcript or operator attestation is imported. The complete admitted registration/retirement history and checkout anchor, plus the clean pinned source, are checked again in the write transaction immediately before insertion. Another observed cycle during collection or insertion requires fresh evidence even when it uses the same owner and head. All original audit and validation records remain unchanged.
 
-The source helper compares a trailing porcelain-v2 status report's HEAD and cleanliness with its first observations and refuses either observed change. This bounded check does not lock unrelated filesystem writers or grant execution credit. Source plans, failures, passes, closed reminders and task acceptance remain unchanged. This command does not relate successor PR qualification to an earlier PR or transfer any execution evidence. Such a relation remains a separate unsupported operation.
+The source helper compares a trailing porcelain-v2 status report's HEAD and cleanliness with its first observations and refuses either observed change. This bounded check does not lock unrelated filesystem writers or grant execution credit. Source plans, failures, passes, closed reminders and task acceptance remain unchanged. This command does not relate successor PR qualification to an earlier PR or transfer any execution evidence. Final coverage has the separate explicit boundary below.
+
+## Final successor qualification coverage
+
+Release 0.1.55 adds an explicit conclusion for an original task whose delivered repairs were qualified in a later, separately recorded PR. It supports the same full `npm run check` and `npm run test:e2e` gates expressly required by the immutable original acceptance. It does not copy execution records or assert that different scopes, commands, private inputs or checkouts were identical.
+
+```sh
+caller-pr-gates qualify-successor --session ORIGINAL_ROOT_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/ORIGINAL \
+  --successor https://github.com/OWNER/REPO/pull/FINAL \
+  --cwd /absolute/recorded/final-checkout \
+  --file /absolute/private/coverage.json
+```
+
+Both PRs must already belong to the exact same canonical root owner and repository, be retired as merged, and retain their own unambiguous plan, checkout and immutable scope. No registration, adoption, reopening or monitor restart occurs. The original checkout may be absent: its recorded scope and declarations establish the obligation, not current evidence that its historical private bytes or execution passed. The final checkout must exist, match its own recorded origin and exact merged PR head, and reproduce its actual final-plan fingerprint. Every necessary final check must have its own real exit-zero run in that exact final plan, with equal input/before/after digests. Missing, failed, unknown, running, duplicate or other-plan results cannot supply this proof.
+
+Write the coverage file outside the frozen inputs. It identifies both existing plan IDs, explains each original check and acceptance criterion, and acknowledges **every actual declaration difference**. `criteria` explanations follow the original recorded acceptance-criteria order. `checks` must contain exactly the required original check IDs, also present as identities in the final plan. Missing, extra or empty explanations are refused. For a two-gate case with these actual changes:
+
+```json
+{
+  "original_plan_id": "EXISTING_ORIGINAL_PLAN_ID",
+  "final_plan_id": "EXISTING_FINAL_PLAN_ID",
+  "scope_reason": "Explain how the delivered final repair and full gates cover the original scope while retaining the separate final scope.",
+  "checks": {
+    "check": "Explain the actual full application gate on final source.",
+    "browser": "Explain the actual full official browser gate on final source."
+  },
+  "criteria": ["Explain the first original acceptance criterion; add one entry for every remaining criterion."],
+  "changes": {
+    "checks/check/argv": "Explain the native worker control with the unchanged existing literal environment.",
+    "checks/check/reason": "Explain the same full application obligation.",
+    "checks/browser/argv": "Explain the full official gate, native isolated port and worker count.",
+    "checks/browser/reason": "Explain the same full browser obligation.",
+    "input_paths": "Explain replacement of the original private configuration by the current official full gate; do not claim unknown historical bytes were equal.",
+    "env_names": "Explain the final native worker environment pin."
+  }
+}
+```
+
+`changes` keys describe actual differences: `input_paths`, `env_names`, or `checks/ID/argv`, `checks/ID/reason`, `checks/ID/cwd`. The route requires identical published `package.json` script definitions, an identical inherited literal `PATH` assignment (or no inherited assignment) and root-relative check cwd. Other inherited environment assignments are refused even if unchanged; unchanged does not prove that a variable cannot skip tests. It permits the evidenced native `VITEST_MAX_WORKERS` positive integer, `POISE_E2E_PORT` integer 1–65535, and a reduced positive Playwright `--workers` value. It can replace a previously declared private `--config=...` input with the final official full gate only when the original published Git tree proves the path was untracked and did not traverse a tracked link or submodule. This does not claim historical ignored-file contents were verified. The original shared private inputs must consist only of those replaced browser configurations, and it must have no shared environment-name pins; the final plan has no shared private inputs and may pin only the admitted native controls. Extra historical private inputs or environment pins require unsupported continuity proof and are refused, not silently mapped. Arbitrary commands, wrappers, environment changes, test selection/filter arguments, new private drivers or per-check correction chains are outside this route. An explanation cannot override these boundaries. The owner still owes a truthful substantive assessment of the original criteria; matching check IDs or explanatory text alone does not establish feature correctness.
+
+The command performs one bounded fresh original review read, one full final CI/review/closure collection, original issue-closure proof, and authoritative delivered-merge ancestry/tree reads. The original **merge commit** must be an ancestor of the final published head; the original branch head need not be. The actual final merge tree must equal the qualified final-head tree. Actual review findings and public conclusions on both PRs, original issue closure, final CI/issue closure and an independent exact-head approval remain required. At least one latest non-service CI result must have actually succeeded on that head; service-only, skipped or neutral results cannot establish it. Current working bytes must also reproduce the published final tree, independently of clean-status index hints. Closure never fabricates `MERGE_READY`.
+
+An admitted refresh first appends a pending audit record after rechecking both contexts and final source, so any earlier successful receipt stops applying before remote collection. Successful current evidence appends its conclusion only if that attempt remains the latest; a failed, interrupted or superseded refresh cannot replay an earlier success. It changes no plan, scope, run, registration or monitor row. The receipt reports actual final run IDs and `historical_input_continuity: not_established`; old failures, passes and pending declarations retain their exact outcomes. `PR_PROGRESS` can report `QUALIFIED_SUCCESSOR`/`PASS` only for the explicitly covered original plan, with original history and final proof attached. The successor plan continues through its own unchanged progress evaluation; this receipt cannot discharge its different scope. `completion_verified: false` remains explicit: this is not blanket completion of the owner's other acceptance, PRs or work items. The final PR's closed `MERGE_READY` remains `WAIT`/not applicable.
+
+Ordinary status reads check the recorded context, current final inputs and existing remote-evidence freshness without adding polling. Changed or stale proof becomes `SUCCESSOR_INCOMPLETE`; reconcile the specific gap and explicitly repeat `qualify-successor` to collect fresh evidence. It never retries a test, reopens a monitor or changes an old failure. Use a separate file/command for each original plan; the same actual final executions can prove the same full-gate obligations without duplicate computation, while each original scope and explanation stays separately recorded.
 
 ## Retained post-merge qualification
 

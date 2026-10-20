@@ -860,6 +860,9 @@ def main():
     p = sub.add_parser('review-read'); p.add_argument('--followup', required=True)
     p = owned('status'); p.add_argument('--fresh', action='store_true'); p.add_argument('--pr')
     p = owned('publication-reconcile'); p.add_argument('--cwd', required=True)
+    p = owned('qualify-successor'); p.add_argument('--pr', required=True); p.add_argument('--successor', required=True)
+    p.add_argument('--cwd', required=True, help='Exact recorded final qualification checkout')
+    p.add_argument('--file', required=True, help='Explicit coverage of the original scope and declaration differences')
     p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
@@ -1007,6 +1010,15 @@ def main():
         elif args.command == 'publication-reconcile':
             from .publication import refresh as refresh_publication
             output = asyncio.run(asyncio.wait_for(refresh_publication(store, session_id(args), cwd=args.cwd), timeout=35))
+        elif args.command == 'qualify-successor':
+            from .workflow import qualify_successor
+            repo, number, issue = reference(args.pr)
+            final_repo, final, final_issue = reference(args.successor)
+            if issue or final_issue or repo != final_repo:
+                raise ValueError('Final coverage requires two recorded PRs in the same repository')
+            payload = json.loads(Path(args.file).read_text())
+            output = asyncio.run(asyncio.wait_for(qualify_successor(store, session_id(args), repo, number,
+                                final, args.cwd, payload), timeout=90))
         elif args.command == 'blocked':
             from .github import collect_pr
             from .policy import evaluate_pr
