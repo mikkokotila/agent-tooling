@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from caller_pr_gates.cli import DOCS_ENVIRONMENT, DOCS_SECRET, gateway, main
+from caller_pr_gates.cli import DOCS_CONTEXTS, DOCS_ENVIRONMENT, DOCS_SECRET, gateway, main
 from caller_pr_gates.store import Store
 
 REPO = 'Vaquum/Limen'
@@ -69,6 +69,8 @@ class Remote:
             return {'deployment_branch_policy': deepcopy(POLICY)}
         if endpoint == DOCS_SECRET:
             return {'key_id': '123456789', 'encrypted_value': CIPHERTEXT}
+        if endpoint == DOCS_CONTEXTS:
+            return {'contexts': [RETIRED['context']]}
         return {'checks': [deepcopy(c) for c in self.values[DOCS_PROTECTION]['required_status_checks']['checks']
                            if c != RETIRED]}
 
@@ -80,7 +82,8 @@ class Remote:
             if path not in self.values:
                 return subprocess.CompletedProcess(argv, 1, '', 'unavailable')
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.values[path]), '')
-        assert argv == ['gh', 'api', path, '--method', 'PATCH' if path == DOCS_CHECKS else 'PUT', '--input', '-']
+        method = {DOCS_CHECKS: 'PATCH', DOCS_CONTEXTS: 'DELETE'}.get(path, 'PUT')
+        assert argv == ['gh', 'api', path, '--method', method, '--input', '-']
         assert kwargs['text'] is True and kwargs['capture_output'] is True
         self.writes.append((argv, kwargs['input']))
         if self.write_exit:
@@ -91,6 +94,11 @@ class Remote:
         elif path == DOCS_SECRET:
             self.values[path] = {'name': 'CLOUDFLARE_DOCS_API_TOKEN',
                 'created_at': '2026-10-20T00:00:00Z', 'updated_at': '2026-10-20T01:00:00Z'}
+        elif path == DOCS_CONTEXTS:
+            # Model the documented name DELETE; actual service outcomes require live readback.
+            required = self.values[DOCS_PROTECTION]['required_status_checks']
+            required['checks'] = [c for c in required['checks'] if c['context'] not in payload['contexts']]
+            required['contexts'] = [name for name in required['contexts'] if name not in payload['contexts']]
         else:
             required = self.values[DOCS_PROTECTION]['required_status_checks']
             required['checks'] = payload['checks']
@@ -113,7 +121,7 @@ def case(tmp_path):
 
     def request(endpoint=DOCS_ENVIRONMENT, payload=None):
         path.write_text(json.dumps(remote.payload(endpoint) if payload is None else payload))
-        value.arguments = ['api', endpoint, '--method', 'PATCH' if endpoint == DOCS_CHECKS else 'PUT',
+        value.arguments = ['api', endpoint, '--method', {DOCS_CHECKS: 'PATCH', DOCS_CONTEXTS: 'DELETE'}.get(endpoint, 'PUT'),
                            '--input', str(path)]
         return value
 

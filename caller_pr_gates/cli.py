@@ -18,6 +18,9 @@ REF = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(pull|i
 DOC = re.compile(r'\b(?:PRD|product requirements document|slice(?:\s+\d+)?)\b', re.I)
 DOCS_ENVIRONMENT = 'repos/Vaquum/Limen/environments/documentation'
 DOCS_SECRET = DOCS_ENVIRONMENT + '/secrets/CLOUDFLARE_DOCS_API_TOKEN'
+DOCS_PROTECTION = 'repos/Vaquum/Limen/branches/main/protection'
+DOCS_CONTEXTS = DOCS_PROTECTION + '/required_status_checks/contexts'
+DOCS_RETIRED_CONTEXT = 'Workers Builds: limen'
 
 
 def reference(value):
@@ -154,9 +157,10 @@ def _update_release_body(args, store, sid, argv, endpoint, repository, release_i
 
 
 def _documentation_configuration(args, store, sid, argv, endpoint, repo, number, issue):
-    """Environment and encrypted-secret provisioning only; never adopt a PR or retry."""
-    method = 'PUT'
-    if (endpoint not in {DOCS_ENVIRONMENT, DOCS_SECRET}
+    """Approved provisioning and one retired name; never adopt a PR, retry or replace lists."""
+    retire = endpoint == DOCS_CONTEXTS
+    method = 'DELETE' if retire else 'PUT'
+    if (endpoint not in {DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CONTEXTS}
             or repo != 'Vaquum/Limen' or issue or len(argv) != 6
             or argv != ['api', endpoint, '--method', method, '--input', argv[-1]]
             or argv[-1] == '-'):
@@ -240,6 +244,20 @@ def _documentation_configuration(args, store, sid, argv, endpoint, repo, number,
         # Secret GET returns metadata only. Never retain a caller payload or unexpected value field.
         return {key: value[key] for key in ('name', 'created_at', 'updated_at')}
 
+    rules_path = f'repos/{repo}/rulesets/5406995'
+
+    def authorities(snapshot):
+        # Retain each actual response, even when the other authority is unavailable.
+        unavailable = []
+        for name, path in (('classic', DOCS_PROTECTION), ('ruleset', rules_path)):
+            try:
+                snapshot[name] = read(path)
+            except Exception:
+                unavailable.append(name)
+        if unavailable:
+            snapshot['unavailable'] = unavailable
+            raise ValueError('Full classic protection and independent ruleset reads are required')
+
     owner()
     source = Path(argv[-1])
     if not source.is_absolute(): source = Path(args.cwd) / source
@@ -262,6 +280,8 @@ def _documentation_configuration(args, store, sid, argv, endpoint, repo, number,
             valid = False
         if not valid:
             raise ValueError('Documentation secret requires a nonempty base64 sealed-box ciphertext')
+    elif encoded(payload) != encoded({'contexts': [DOCS_RETIRED_CONTEXT]}):
+        raise ValueError('Only the exact retired documentation context name is admitted')
     # Read and serialize once. The child receives exactly these admitted bytes, never the file.
     body = encoded(payload)
     receipt = {'session_id': sid, 'repository': repo, 'number': number, 'endpoint': endpoint,
@@ -270,27 +290,92 @@ def _documentation_configuration(args, store, sid, argv, endpoint, repo, number,
         receipt['environment'] = environment()
         if read(DOCS_ENVIRONMENT + '/secrets/public-key').get('key_id') != payload['key_id']:
             raise ValueError('Documentation secret key_id differs from the current environment public key')
+    elif retire:
+        receipt['environment'] = environment()
+        receipt['secret'] = secret_metadata()
     # Bounded PR reads, not full gate/thread collection.
     pr = live_pr()
+    if retire:
+        receipt['stage'] = 'preflight'
+        receipt['retired_context'] = DOCS_RETIRED_CONTEXT
+        receipt['before'] = {}
+        try:
+            authorities(receipt['before'])
+            before, rules = receipt['before']['classic'], receipt['before']['ruleset']
+            required = before.get('required_status_checks') or {}
+            reviews = before.get('required_pull_request_reviews') or {}
+            if not all(isinstance(value, dict) for value in (
+                    required, reviews, before.get('enforce_admins'), before.get('required_conversation_resolution'))):
+                raise ValueError('Complete classic protection controls are required')
+            existing, contexts = required.get('checks'), required.get('contexts')
+            if (before.get('url') != 'https://api.github.com/' + DOCS_PROTECTION
+                    or required.get('strict') is not True
+                    or (before.get('enforce_admins') or {}).get('enabled') is not True
+                    or (before.get('required_conversation_resolution') or {}).get('enabled') is not True
+                    or reviews.get('dismiss_stale_reviews') is not True
+                    or type(reviews.get('required_approving_review_count')) is not int
+                    or reviews['required_approving_review_count'] < 1
+                    or not isinstance(existing, list) or not existing
+                    or any(not isinstance(check, dict) or set(check) != {'context', 'app_id'}
+                           or not isinstance(check['context'], str) or not check['context']
+                           or (check['app_id'] is not None and
+                               (type(check['app_id']) is not int or check['app_id'] == 0 or check['app_id'] < -1))
+                           for check in existing)
+                    or not isinstance(contexts, list) or not all(isinstance(name, str) for name in contexts)
+                    or set(contexts) != {check['context'] for check in existing}
+                    or DOCS_RETIRED_CONTEXT not in contexts):
+                raise ValueError('Complete strict classic protection with the retired name is required')
+            if (rules.get('id') != 5406995 or rules.get('name') != 'Protect Main'
+                    or rules.get('source') != repo or rules.get('source_type') != 'Repository'
+                    or rules.get('target') != 'branch' or rules.get('enforcement') != 'active'
+                    or rules.get('bypass_actors') != [] or not isinstance(rules.get('conditions'), dict)
+                    or not isinstance(rules.get('rules'), list) or not rules['rules']):
+                raise ValueError('The complete independent Protect Main ruleset is required')
+            # Expected readback only. Never send this snapshot or the unrelated list to GitHub.
+            expected = json.loads(encoded(before))
+            expected['required_status_checks']['checks'] = [check for check in existing
+                if check['context'] != DOCS_RETIRED_CONTEXT]
+            expected['required_status_checks']['contexts'] = [name for name in contexts
+                if name != DOCS_RETIRED_CONTEXT]
+            if live_pr() != pr:
+                raise ValueError('PR identity changed during documentation configuration admission')
+        except Exception:
+            store.audit('github_documentation_configuration_incomplete', receipt)
+            raise
     owner()
     store.audit('github_documentation_configuration_attempt', receipt)
     receipt['stage'] = 'write'
     try:
-        result = github_run(['gh', 'api', endpoint, '--method', method, '--input', '-'],
-                            runner=subprocess.run, cwd=args.cwd, input=body,
-                            text=True, capture_output=True, timeout=90)
-        receipt['exit_code'] = result.returncode
+        try:
+            result = github_run(['gh', 'api', endpoint, '--method', method, '--input', '-'],
+                                runner=subprocess.run, cwd=args.cwd, input=body,
+                                text=True, capture_output=True, timeout=90)
+            receipt['exit_code'] = result.returncode
+            if not result.returncode:
+                receipt['stage'] = 'readback'
+        finally:
+            if retire:
+                receipt['after'] = {}
+                authorities(receipt['after'])
         if result.returncode:
             raise ValueError('GitHub did not confirm the configuration write')
         receipt['stage'] = 'readback'
+        if retire and (encoded(receipt['after']['classic']) != encoded(expected)
+                       or encoded(receipt['after']['ruleset']) != encoded(rules)):
+            raise ValueError('Protection readback differs beyond retirement of the authorized name')
         receipt['environment'] = environment()
-        if endpoint == DOCS_SECRET:
-            receipt['secret'] = secret_metadata()
+        if endpoint == DOCS_SECRET or retire:
+            after_secret = secret_metadata()
+            if retire and after_secret != receipt['secret']:
+                raise ValueError('Documentation secret metadata changed during name retirement')
+            receipt['secret'] = after_secret
         if live_pr() != pr:
             raise ValueError('PR identity changed during documentation configuration')
         owner()
     except Exception:
         store.audit('github_documentation_configuration_incomplete', receipt)
+        if retire:
+            raise RuntimeError('Documentation configuration is incomplete; read back both protection authorities and provisioning metadata before any new operation; no automatic retry or rollback') from None
         raise RuntimeError('Documentation configuration is incomplete; read back the environment and secret metadata before retrying') from None
     receipt['stage'] = 'verified'
     store.audit('github_documentation_configuration_verified', receipt)
@@ -557,13 +642,16 @@ def gateway(args, store):
         endpoint, method, field_values, input_file = _api_request(argv)
         fields = bool(field_values) or input_file is not None
         api_write = method.upper() not in {'GET', 'HEAD'} if method else fields
+        if endpoint == DOCS_CONTEXTS and fields:
+            # A read-method spelling cannot bypass this operation's frozen-body admission.
+            api_write = True
         if api_write:
             release = re.fullmatch(r'repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/([1-9][0-9]*)', endpoint)
             if release:
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
-            if endpoint in {DOCS_ENVIRONMENT, DOCS_SECRET}:
+            if endpoint in {DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CONTEXTS}:
                 return _documentation_configuration(args, store, sid, argv, endpoint, repo, num, issue)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
             allowed_ci_rerun = _owned_ci_rerun_allowed(

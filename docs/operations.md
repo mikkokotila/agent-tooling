@@ -69,11 +69,18 @@ caller-pr-gates github --session "$OWNER_SESSION" --client codex \
 
 Read back before retrying any failed or ambiguous mutation; the gateway never retries it automatically. Release creation/deletion, uploads/assets, tag/title/target/draft/prerelease edits and unrelated API writes remain outside this capability. Existing PR gates, ownership and closed-reminder retirement are unchanged.
 
-## Authorized documentation environment and secret provisioning
+## Authorized documentation publisher configuration
 
-The existing `github` gateway admits only the two approved Limen provisioning writes below. Use the actual recorded root owner, client and original checkout of an owned **open, non-draft, same-repository PR targeting main**. The checkout origin must identify `Vaquum/Limen`. This capability does not adopt a PR, create an approval, modify gate evidence or change reminder retirement.
+The existing `github` gateway admits the two approved Limen provisioning writes and the exact retired-name DELETE below. Use the actual recorded root owner, client and original checkout of an owned **open, non-draft, same-repository PR targeting main**. The checkout origin must identify `Vaquum/Limen`. This capability does not adopt a PR, create an approval, modify gate evidence or change reminder retirement.
 
-Use the exact argument forms shown, with saved JSON files. Relative input paths resolve under `--cwd`. Extra flags, fields, endpoints, other repositories/environments/secrets, plaintext and protection writes are refused. The input is read and serialized once, and those admitted bytes go to the existing authenticated relay through stdin. No caller file is reopened by `gh`.
+Use the exact argument forms shown, with saved JSON files. Relative input paths resolve under `--cwd`. Extra flags, fields, endpoints, other repositories/environments/secrets, plaintext and other protection writes are refused. The input is read and serialized once, and those admitted bytes go to the existing authenticated relay through stdin. No caller file is reopened by `gh`.
+
+If the same owner session currently records its primary launch directory, refresh its **already-owned** PR context with the supported registration command in the same execution before the configuration command. Use the original PR worktree for both. Registration preserves the existing owner, scope and validation records; the configuration guard still requires the exact recorded context.
+
+```sh
+caller-pr-gates register "$OWNED_OPEN_PR" --session "$OWNER_SESSION" \
+  --client codex --cwd "$REPOSITORY_CHECKOUT"
+```
 
 Provision the environment before the encrypted secret:
 
@@ -103,11 +110,26 @@ Provision the environment before the encrypted secret:
 
 Each operation checks the live PR identity before and after its write, rereads the environment policy, and rechecks the recorded ownership and checkout. The secret operation also reads back secret metadata. These are bounded operation-specific reads, without full PR/thread collection or routine polling. A transport error, unknown write outcome, missing readback or identity drift records an incomplete attempt and raises an error, without automatically retrying or rolling back. Reconcile actual fresh readbacks before any retry. Successful receipts establish only these writes/readbacks, not deployment success, product verification or task acceptance. The existing product owner retains those obligations and leaves the predecessor deployment and disconnected independent Git build unchanged.
 
-### Deferred classic-protection dependency
+### Retire the authorized check name after provisioning
 
-All classic-protection and ruleset writes remain denied, including `PATCH repos/Vaquum/Limen/branches/main/protection/required_status_checks`. The original full-list PATCH candidate could overwrite another administrator's intervening addition or app binding and still produce a matching stale readback. [PR #55's finding and failed-head evidence](https://github.com/mikkokotila/agent-tooling/pull/55#discussion_r4323240998) remain public. The capability was removed; no conditional PATCH guarantee or exclusive-writer assumption is made.
+The human subsequently approved retiring the **name** `Workers Builds: limen`, including every app binding at that same name, even a concurrent binding. This replaces the former app-85455-only requirement. GitHub's official [Remove status check contexts](https://docs.github.com/en/rest/branches/branch-protection#remove-status-check-contexts) endpoint accepts names, not app IDs. No other required-check name is authorized for removal.
 
-This provisioning release does **not** complete the deferred `84220966-f2c1-4226-917a-dc0f455bf1c7` classic-protection obligation or the linked Limen #1073, #1080 and #1085 obligations. [Issue #54](https://github.com/mikkokotila/agent-tooling/issues/54) retains that incomplete dependency. Provisioning success is not permission to remove the obsolete check through another route.
+After the environment and secret are provisioned, save a JSON file containing exactly `{"contexts":["Workers Builds: limen"]}`. The original owner uses:
+
+```sh
+caller-pr-gates github --session "$OWNER_SESSION" --client codex \
+  --cwd "$REPOSITORY_CHECKOUT" --target "$OWNED_OPEN_PR" \
+  -- api repos/Vaquum/Limen/branches/main/protection/required_status_checks/contexts \
+  --method DELETE --input "$RETIRED_CONTEXT_JSON"
+```
+
+Admission requires fresh protected-branches-only environment policy, secret **metadata** existence, full classic protection containing the retired name, and independent Protect Main ruleset 5406995. The gateway never reads a plaintext secret. The only write body contains the retired name; it never submits, unsets or replaces the unrelated check list and never writes the ruleset. The full-list `PATCH .../required_status_checks`, other context methods/names and generic protection/ruleset writes remain denied.
+
+The receipt retains full actual classic/ruleset snapshots before and after the bounded DELETE, including readbacks after a nonzero or unknown write outcome. A verified receipt requires exit 0, exactly the name removal in both classic check representations, unchanged order/app bindings for every other name, unchanged strict/admin/review/thread controls and unchanged independent ruleset. It also rechecks provisioning metadata, live PR identity and recorded ownership. Multiple bindings at the retired name are intentionally removed. Already-absent names refuse admission instead of creating a new mutation receipt.
+
+Concurrent changes to **other** names are not replayed or overwritten by this targeted request. Any observed difference beyond the authorized removal, unavailable authority or unknown write outcome remains incomplete with the actual available snapshots. There is no conditional-write claim, exclusive-writer assumption, automatic mutation retry or full-list rollback. Reconcile fresh readbacks before any new operation. Isolated interleaving tests establish what the gateway sends and how it treats responses; they do not prove undocumented GitHub server semantics.
+
+[PR #55's P1 and failed-head evidence](https://github.com/mikkokotila/agent-tooling/pull/55#discussion_r4323240998) and the full-list lost-update countertests remain intact. [Issue #54](https://github.com/mikkokotila/agent-tooling/issues/54) records the changed human authorization and retained history. Source release and installation do not establish a live cutover or complete the linked Limen #1073, #1080 and #1085 obligations; the original product owner performs the authorized operation and assesses its actual readbacks.
 
 ## Retained post-merge qualification
 
