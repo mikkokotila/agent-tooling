@@ -639,6 +639,34 @@ def _source_blobs(root, files):
         yield from read(batch)
 
 
+def _source_permissions(root, files):
+    """Project Git bytes without replacing frozen filesystem permissions."""
+    observed, choices = {}, {}
+    for name, entry in files.items():
+        if entry is None or not stat.S_ISREG(entry[0]):
+            continue
+        try:
+            current = (root / name).lstat()
+        except FileNotFoundError:
+            continue
+        # Git records the owner-executable class, not all POSIX permissions.
+        if (stat.S_ISREG(current.st_mode)
+                and (current.st_mode & stat.S_IXUSR) == (entry[0] & stat.S_IXUSR)):
+            permissions = stat.S_IMODE(current.st_mode)
+            observed[name] = permissions
+            choices.setdefault(entry[0], set()).add(permissions)
+    for name, entry in files.items():
+        if entry is None or not stat.S_ISREG(entry[0]) or name in observed:
+            continue
+        # A removed/type-changed/executable-changed historical file has no
+        # directly matching mode. A uniform current mode is only a candidate:
+        # the complete historical digest must still equal its frozen pin.
+        # Ambiguity retains the previous canonical candidate, never a new pin.
+        candidates = choices.get(entry[0], set())
+        observed[name] = next(iter(candidates)) if len(candidates) == 1 else stat.S_IMODE(entry[0])
+    return observed
+
+
 def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
@@ -653,6 +681,7 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
     source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, None)
     source_contents = iter(_source_blobs(repository, source_files))
+    source_permissions = _source_permissions(repository, source_files)
     paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
@@ -715,7 +744,7 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
                 elif path.exists():
                     raise ValueError("directory symlink inputs require explicit file inputs")
             else:
-                append(str(stat.S_IMODE(mode)).encode())
+                append(str(source_permissions[value]).encode())
                 append(b"file")
                 append(body)
             continue
