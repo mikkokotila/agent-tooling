@@ -197,6 +197,8 @@ Append a fresh check copied from the failed check. Keep its `reason`, Python int
 
 The example path is illustrative: use ordinary ignored files inside the recorded checkout, outside all previously frozen input directories. The new plan file must also remain outside those pins. Do not supply an `input_digest`. Admission verifies the current actual finished failed run, the original private driver and a different Python program; copied, renamed, whitespace-only or comment-only programs cannot authorize a retry. The old driver, new driver and evidence file must be private ordinary files without symlink traversal. A tracked checker or producer correction still needs a genuine product repair PR. Python programs must use a literal script argument immediately after the unchanged interpreter; this does not admit arbitrary command replacement.
 
+Release 0.1.51 also accepts an existing literal `env NAME=VALUE ...` prefix before that interpreter. Copy the complete prefix byte-for-byte, including assignment names, values and order; change only the Python driver argument. For example, an argv shaped as `["env", "CHECK_MODE=full", "WORKER_COUNT=2", "/absolute/python", "private/original.py", "--mode", "compare"]` keeps its first four and final two elements unchanged. This supports bare `env` with one or more literal assignments, without flags, shell expansion or another wrapper. Adding, removing or changing an assignment, interpreter, trailing argument, `cwd` or acceptance reason is not a checker correction. Keep actual values in the private plan; do not copy them into public reports. The existing failure/run, input-pinning and fresh-execution requirements apply unchanged.
+
 Bind and execute through the existing commands:
 
 ```sh

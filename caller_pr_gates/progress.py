@@ -37,10 +37,33 @@ def _inside(path: Path, root: Path) -> Path:
     return resolved
 
 
+def _python_script_index(argv):
+    """Locate a literal Python script, optionally after bare env assignments."""
+    interpreter = 0
+    if argv and argv[0] == "env":
+        interpreter = 1
+        while interpreter < len(argv):
+            name, separator, _ = argv[interpreter].partition("=")
+            if not separator or not _ENV_NAME.fullmatch(name):
+                break
+            interpreter += 1
+        if interpreter == 1:
+            return None
+    if (len(argv) > interpreter + 1
+            and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(argv[interpreter]).name)
+            and not argv[interpreter + 1].startswith("-")):
+        return interpreter + 1
+    return None
+
+
 def _runner(argv: list[str], cwd: Path, root: Path):
     first = Path(argv[0]).name.lower()
     if first in _FORBIDDEN_RUNNERS or any(re.search(r"&&|\|\||[;`\n\r]|\$\(", argument) or argument in {"|", ">", ">>", "<", "&"} for argument in argv):
         raise ValueError("validation commands cannot use shell/no-op runners or shell control operators")
+    script_index = _python_script_index(argv)
+    if script_index is not None:
+        argv = argv[script_index - 1:]
+        first = Path(argv[0]).name.lower()
     interpreter = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
     if interpreter and any(re.match(r"-(?:c|e)(?:$|.)|--(?:eval|print)(?:=|$)", argument) for argument in argv[1:]):
         raise ValueError("inline programs cannot substitute for real validation runners")
@@ -111,12 +134,12 @@ def private_checker_correction(cwd, plan, check, original):
     root = Path(cwd).resolve()
     correction = correction_metadata(check.get("correction"))
     old, new = original["argv"], check["argv"]
-    if (len(old) < 2 or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(old[0]).name)
-            or old[1].startswith("-") or len(new) != len(old) or new[1].startswith("-")
-            or new[:1] != old[:1] or new[2:] != old[2:]
+    script_index = _python_script_index(old)
+    if (script_index is None or len(new) != len(old) or new[script_index].startswith("-")
+            or new[:script_index] != old[:script_index] or new[script_index + 1:] != old[script_index + 1:]
             or check.get("cwd", ".") != original.get("cwd", ".")
             or check["reason"] != original["reason"]):
-        raise ValueError("A checker correction must preserve its Python interpreter, arguments, cwd and acceptance reason")
+        raise ValueError("A checker correction must preserve its literal env prefix, Python interpreter, arguments, cwd and acceptance reason")
     for name in ("input_paths", "env_names"):
         if not set(original.get(name, [])).issubset(check.get(name, [])):
             raise ValueError("A checker correction must retain every original check dependency and environment name")
@@ -141,7 +164,7 @@ def private_checker_correction(cwd, plan, check, original):
                    for value in paths)
 
     directory = Path(original.get("cwd", "."))
-    before, after = private_file(directory / old[1]), private_file(directory / new[1])
+    before, after = private_file(directory / old[script_index]), private_file(directory / new[script_index])
     evidence = private_file(correction["evidence_path"])
     if (before == after or not included(before, plan.get("input_paths", []) + original.get("input_paths", []))
             or not included(after, check.get("input_paths", []))
@@ -212,12 +235,14 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         if "input_paths" in check or "env_names" in check:
             normalized[-1].update(_input_settings(check, root, control=True))
             first = Path(argv[0]).name.lower()
-            is_script = (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
-                         and len(argv) > 1 and not argv[1].startswith("-"))
-            candidate = directory / (argv[1] if is_script else argv[0])
-            if is_script or candidate.is_relative_to(root):
+            script_index = _python_script_index(argv)
+            if (script_index is None and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
+                    and len(argv) > 1 and not argv[1].startswith("-")):
+                script_index = 1
+            candidate = directory / argv[script_index if script_index is not None else 0]
+            if script_index is not None or candidate.is_relative_to(root):
                 _ordinary_control_path(candidate, root)
-            candidate = _inside(candidate, root) if is_script else candidate.resolve()
+            candidate = _inside(candidate, root) if script_index is not None else candidate.resolve()
             if (candidate.is_file() and candidate.is_relative_to(root)
                     and not any(candidate == root / path or (root / path).is_dir() and candidate.is_relative_to(root / path)
                                 for path in normalized[-1]["input_paths"])):
