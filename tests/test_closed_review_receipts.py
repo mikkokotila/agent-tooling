@@ -10,7 +10,7 @@ import pytest
 from caller_pr_gates import cli, github, monitor, progress, workflow
 from caller_pr_gates.policy import evaluate_pr, evaluate_review
 from test_github import Client
-from test_workflow import local, git
+from test_workflow import local, git, publish
 
 URL = 'https://github.com/Owner/Repo/pull/1'
 REASON = 'These reviews report no blocking findings and request no source changes.'
@@ -105,8 +105,10 @@ def test_closed_owner_records_existing_reviews_and_conclusion_without_rearming(l
 
 def test_receipt_does_not_change_real_pass_failure_pending_or_source(local, monkeypatch, capsys):
     store, root, snap, _ = local
+    (root / 'passing.py').write_text("from pathlib import Path\nassert Path('src.txt').read_text() == 'old'\n")
+    publish(local)
     plan = {'checks': [
-        dict(id='passing', argv=[sys.executable, '-c', "from pathlib import Path; assert Path('src.txt').read_text() == 'old'"], reason='Existing source assertion'),
+        dict(id='passing', argv=[sys.executable, 'passing.py'], reason='Existing source assertion'),
         dict(id='failing', argv=[sys.executable, 'check.py'], reason='Retain the actual failed assertion'),
         dict(id='pending', argv=[sys.executable, 'check.py', 'pending'], reason='Still required and unexecuted')]}
     row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
