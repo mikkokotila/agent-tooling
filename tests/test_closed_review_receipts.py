@@ -420,3 +420,76 @@ def test_review_collection_reuses_two_reads_and_rejects_identity_races(race):
         assert result['head_repository'] == result['base_repository'] == 'mikkokotila/caller'
     assert client.reads == 2 and len(client.paths) == 4
 
+def service_notice(comment):
+    return dict(comment, body='Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.',
+                author_login='copilot-pull-request-reviewer', author_type='Bot',
+                author_node_id='BOT_kgDOCnlnWA', review_state='COMMENTED')
+
+
+def test_closed_quota_acknowledgement_records_verified_parent_without_new_obligation(local, monkeypatch, capsys):
+    store, _, _, _ = local
+    review = review_snapshot(local)
+    review['comments'] = [service_notice(review['comments'][0]), review['comments'][-1]]
+    before = evaluate_review(inventory(review), [])
+    assert {g['status'] for g in before} == {'FAIL'}
+    assert [o['id'] for o in before[0]['evidence']['obligations']] == ['issue:12']
+    result, _ = address(local, monkeypatch, capsys, review)
+    assert {g['status'] for g in result['review_gates']} == {'PASS'}
+    proof = result['review_gates'][0]['evidence']
+    assert proof['obligations'] == []
+    assert proof['verified_conclusion_replies'] == [URL + '#issuecomment-12']
+    assert [c['id'] for c in proof['nonblocking_service_reviews']] == ['review:10']
+    assert len(store.dispositions('Owner/Repo', 1)) == 1
+
+
+@pytest.mark.parametrize('change', ['missing', 'body', 'actor', 'time'])
+def test_service_receipt_still_requires_its_actual_current_acknowledgement(local, monkeypatch, capsys, change):
+    store, _, _, _ = local
+    review = review_snapshot(local)
+    review['comments'] = [service_notice(review['comments'][0]), review['comments'][-1]]
+    if change == 'missing':
+        review['comments'].pop()
+        assert {g['status'] for g in evaluate_review(inventory(review), [])} == {'PASS'}
+    elif change == 'body':
+        review['comments'][-1]['body'] = 'Unrelated text.'
+    elif change == 'actor':
+        review['comments'][-1]['author_login'] = 'another-actor'
+    else:
+        review['comments'][-1]['created_at'] = '2026-10-20T07:59:00Z'
+    with pytest.raises(SystemExit):
+        address(local, monkeypatch, capsys, review)
+    assert store.dispositions('Owner/Repo', 1) == []
+
+
+def test_verified_reply_for_other_parent_cannot_authorize_invalid_service_receipt(local, monkeypatch, capsys):
+    store, _, _, _ = local
+    review = review_snapshot(local)
+    review['comments'][0] = service_notice(review['comments'][0])
+    address(local, monkeypatch, capsys, review, comment='review:11')
+    before = store.dispositions('Owner/Repo', 1)
+    with pytest.raises(SystemExit):
+        address(local, monkeypatch, capsys, review, reason='Different explanation absent from the reply.')
+    assert store.dispositions('Owner/Repo', 1) == before
+
+
+@pytest.mark.parametrize('change', ['mixed', 'unknown_provenance', 'changes_requested'])
+def test_quota_acknowledgement_never_exempts_other_review_feedback(local, monkeypatch, capsys, change):
+    store, _, _, _ = local
+    review = review_snapshot(local)
+    review['comments'][0] = service_notice(review['comments'][0])
+    other = service_notice(review['comments'][1])
+    if change == 'mixed':
+        other['body'] += ' Fix the missing ownership check.'
+    elif change == 'unknown_provenance':
+        other['author_node_id'] = 'UNKNOWN'
+    else:
+        other['review_state'] = 'CHANGES_REQUESTED'
+    review['comments'][1] = other
+    result, _ = address(local, monkeypatch, capsys, review)
+    proof = result['review_gates'][0]['evidence']
+    assert [c['id'] for c in proof['nonblocking_service_reviews']] == ['review:10']
+    obligations = {o['id']: o for o in proof['obligations']}
+    assert not obligations['review:11']['handled']
+    assert {g['status'] for g in result['review_gates']} == {'FAIL'}
+
+

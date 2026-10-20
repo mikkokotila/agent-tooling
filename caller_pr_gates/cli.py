@@ -936,13 +936,20 @@ def main():
                 receipt.update(document_revision=snap['document_edited_at'], content_sha256=hashlib.sha256(snap['body'].encode()).hexdigest())
                 receipt['commit_sha'] = 'document:' + receipt['content_sha256']
             if args.closed_head is not None:
-                from .policy import evaluate_review
+                from .copilot import is_service_review
+                from .policy import _handled, _concluded, evaluate_review
                 if review_owner(store,sid,repo,num,args.cwd,args.closed_head,snapshot=snap) != owner:
                     raise ValueError('Retained review ownership changed during collection')
                 gates = evaluate_review(snap, [*store.dispositions(repo,num), receipt])
                 obligations = gates[0]['evidence'].get('obligations', [])
                 target = next((item for item in obligations if str(item['id']) == args.comment), None)
-                if not target or not target['handled'] or not target['concluded']:
+                verified = bool(target and target['handled'] and target['concluded'])
+                if not verified and is_service_review(comments[0]):
+                    # A previously posted acknowledgement still needs its own
+                    # verifiable parent receipt; the service notice adds no duty.
+                    verified = (_handled(snap, comments[0], receipt, None)[0]
+                                and _concluded(snap, comments[0], receipt, reply_only=True)[0])
+                if not verified:
                     raise ValueError('Closed review receipt needs a verified current fix/nonfix and public conclusion: '
                                      + str(target or 'No independent review obligation'))
                 receipt.update(closed_head=args.closed_head,cwd=owner['cwd'],review_collected_at=snap['collected_at'],
