@@ -39,7 +39,7 @@ def _inside(path: Path, root: Path) -> Path:
 
 
 def _python_script_index(argv):
-    """Locate a literal Python script, optionally after bare env assignments."""
+    """Locate a literal Python script, including the retained coverage run form."""
     interpreter = 0
     if argv and argv[0] == "env":
         interpreter = 1
@@ -50,10 +50,19 @@ def _python_script_index(argv):
             interpreter += 1
         if interpreter == 1:
             return None
-    if (len(argv) > interpreter + 1
-            and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(argv[interpreter]).name)
-            and not argv[interpreter + 1].startswith("-")):
-        return interpreter + 1
+    if (len(argv) <= interpreter + 1
+            or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(argv[interpreter]).name)):
+        return None
+    script = interpreter + 1
+    if argv[script:script + 3] == ["-m", "coverage", "run"]:
+        # Only this already-declared option spelling is supported. Everything
+        # before and after the script remains byte-for-byte frozen at correction.
+        if (len(argv) <= script + 4 or not argv[script + 3].startswith("--data-file=")
+                or not argv[script + 3].partition("=")[2].strip()):
+            return None
+        script += 4
+    if not argv[script].startswith("-"):
+        return script
     return None
 
 
@@ -247,8 +256,9 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
                 _ordinary_control_path(candidate, root)
             candidate = _inside(candidate, root) if script_index is not None else candidate.resolve()
             driver_inputs = normalized[-1]["input_paths"]
-            if argv[0] == "env" and script_index is not None:
-                # Retain an already shared env-driver pin without rewriting
+            if script_index is not None and (argv[0] == "env"
+                    or argv[script_index - 4:script_index - 1] == ["-m", "coverage", "run"]):
+                # Retain an already shared wrapped-driver pin without rewriting
                 # a frozen check's separate dependency declaration.
                 driver_inputs = driver_inputs + shared["input_paths"]
             if (candidate.is_file() and candidate.is_relative_to(root)
