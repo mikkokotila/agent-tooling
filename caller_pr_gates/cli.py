@@ -325,12 +325,12 @@ def _documentation_configuration(args, store, sid, argv, endpoint, repo, number,
                     or set(contexts) != {check['context'] for check in existing}
                     or DOCS_RETIRED_CONTEXT not in contexts):
                 raise ValueError('Complete strict classic protection with the retired name is required')
-            if (rules.get('id') != 5406995 or rules.get('name') != 'Protect Main'
+            if (rules.get('id') != 5406995 or rules.get('name') != 'Protect-Main'
                     or rules.get('source') != repo or rules.get('source_type') != 'Repository'
                     or rules.get('target') != 'branch' or rules.get('enforcement') != 'active'
                     or rules.get('bypass_actors') != [] or not isinstance(rules.get('conditions'), dict)
                     or not isinstance(rules.get('rules'), list) or not rules['rules']):
-                raise ValueError('The complete independent Protect Main ruleset is required')
+                raise ValueError('The complete independent Protect-Main ruleset is required')
             # Expected readback only. Never send this snapshot or the unrelated list to GitHub.
             expected = json.loads(encoded(before))
             expected['required_status_checks']['checks'] = [check for check in existing

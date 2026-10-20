@@ -47,7 +47,7 @@ class Remote:
                 'required_conversation_resolution': {'enabled': True},
                 'required_linear_history': {'enabled': True}, 'restrictions': None,
                 'allow_force_pushes': {'enabled': False}, 'allow_deletions': {'enabled': False}},
-            RULES: {'id': 5406995, 'name': 'Protect Main', 'target': 'branch', 'source_type': 'Repository',
+            RULES: {'id': 5406995, 'name': 'Protect-Main', 'target': 'branch', 'source_type': 'Repository',
                 'source': REPO, 'enforcement': 'active', 'bypass_actors': [],
                 'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
                 'rules': [{'type': 'required_status_checks', 'parameters': {
