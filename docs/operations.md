@@ -131,6 +131,25 @@ Concurrent changes to **other** names are not replayed or overwritten by this ta
 
 [PR #55's P1 and failed-head evidence](https://github.com/mikkokotila/agent-tooling/pull/55#discussion_r4323240998) and the full-list lost-update countertests remain intact. [Issue #54](https://github.com/mikkokotila/agent-tooling/issues/54) records the changed human authorization and retained history. Source release and installation do not establish a live cutover or complete the linked Limen #1073, #1080 and #1085 obligations; the original product owner performs the authorized operation and assesses its actual readbacks.
 
+## Review receipts after PR closure
+
+Release 0.1.53 lets the exact retained owner record an existing public fix/nonfix conclusion after normal PR retirement. Use the original recorded checkout, clean at the full PR head GitHub currently records for that closed PR:
+
+```sh
+caller-pr-gates address --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --closed-head FULL_CLOSED_PR_HEAD_SHA \
+  --comment review:REVIEW_DATABASE_ID --disposition nonfix \
+  --reason 'Exact substantive explanation present in the public reply' \
+  --reply-url https://github.com/OWNER/REPO/pull/NUMBER#issuecomment-REPLY_DATABASE_ID
+```
+
+Use the actual normalized comment ID (`review:`, `inline:` or `issue:`). For a real fix, use `--disposition fixed --commit FULL_FIX_COMMIT_SHA`; the existing policy still requires that commit in this PR's history with valid chronology and an actual public conclusion. No new code may be attributed to the closed PR. The command uses the existing bounded review collection, including its current comment revisions, authenticated reply author, content and timing. Missing or stale proof, another owner/checkout/origin, altered source, an open target or an unresolved selected thread refuse this continuation. It is limited to same-repository PRs and does not add a closed-thread mutation route.
+
+The command returns `receipt`, current `review_gates` and `completion_verified: false`. Other findings remain required even if the selected receipt verifies. Record the parent review dispositions with their actual reply URL; the existing policy recognizes a verified owner conclusion reply, so that reply does not need a new self-referential disposition. Do not use a broad "no findings" claim for actual unresolved feedback.
+
+No re-registration, reopening, adoption or monitor restart is required or performed. The original retirement audit must retain the same head and lifecycle; any later re-registration refuses this route. The receipt retains that retirement identity, exact source head and checkout; ownership is checked again in its write transaction. Source plans, failures, passes, closed reminders and task acceptance remain unchanged. This command does not relate successor PR qualification to an earlier PR or transfer any execution evidence. Such a relation remains a separate unsupported operation.
+
 ## Retained post-merge qualification
 
 External merge can retire a PR watch while an already declared local check is still running. Let that managed process finish naturally. Retirement preserves its real exit, before/after input digests, validation plan and review evidence; it does not complete the original task.
@@ -272,4 +291,5 @@ The original remains in the plan with no invented run. Once its correction is ad
 Each correction names exactly one original check. Distinct required IDs keep distinct obligations and fresh execution requirements; the tool does not infer equivalence or assign one receipt to several checks. This path does not change Python command-wrapper support, product-source requirements, review gates, closed-PR retirement or task-acceptance rules.
 
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
+
 

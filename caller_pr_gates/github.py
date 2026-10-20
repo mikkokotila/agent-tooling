@@ -606,13 +606,22 @@ async def collect_review_with_client(client,repository,number):
     for c in comments:
         if c['kind']!='inline':c['replies']=[dict(r) for r in issue_comments if r['id']!=c['id'] and str(r.get('created_at') or '')>str(c['updated_at'])]
     after=_mapping(await client.get(path),'final review PR')
-    if any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base')) or (after.get('head') or {}).get('sha')!=head:
+    def source_identity(pull):
+        source, target = pull.get('head') or {}, pull.get('base') or {}
+        source_repo, target_repo = source.get('repo') or {}, target.get('repo') or {}
+        return dict(head_ref=source.get('ref'), head_repository=source_repo.get('full_name'),
+                    head_repository_id=source_repo.get('id'), base_repository=target_repo.get('full_name'),
+                    base_repository_id=target_repo.get('id'))
+    identity = source_identity(raw)
+    if (any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base'))
+            or (after.get('head') or {}).get('sha')!=head or identity != source_identity(after)):
         raise EvidenceError('PR changed during review collection')
     actor_login=_mapping(actor,'authenticated actor').get('login');author=_mapping(raw.get('user'),'PR author').get('login')
     if not actor_login or not author or type(raw.get('merged')) is not bool or raw.get('state') not in {'open','closed'}:raise EvidenceError('Incomplete review actors/lifecycle')
     return dict(repository=repository,number=number,profile='review',state=raw['state'],merged=raw['merged'],
         head_sha=head,head_sha_after=head,actor_login=actor_login,author_login=author,comments=comments,
-        commit_shas=[c['oid'] for c in commits],commit_dates={c['oid']:c['committedDate'] for c in commits},collected_at=time.time())
+        commit_shas=[c['oid'] for c in commits],commit_dates={c['oid']:c['committedDate'] for c in commits},
+        collected_at=time.time(),**identity)
 
 
 async def collect_review(repository,number,token_user=None):
@@ -621,4 +630,5 @@ async def collect_review(repository,number,token_user=None):
     client=GitHubClient(token_user)
     return await Collections(client.coordinator,client.account).run('review',f'{repository}/pull/{number}',
         lambda:collect_review_with_client(client,repository,number))
+
 

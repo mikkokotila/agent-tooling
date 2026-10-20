@@ -5,11 +5,12 @@ backend-path = ["tools"]
 
 [project]
 name = "agent-tooling"
-version = "0.1.52"
+version = "0.1.53"
 description = "Captured local PR orchestration hooks for Codex and Claude"
 requires-python = ">=3.13,<3.14"
 readme = "README.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
 
