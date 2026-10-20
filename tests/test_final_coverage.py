@@ -265,7 +265,7 @@ def test_remote_identity_review_ci_closure_and_delivered_ancestry_stay_required(
     data = delivered
     for fault in ('foreign_repo', 'open', 'unmerged', 'head', 'identity', 'stale', 'approval', 'self_approval',
                   'other_head_approval', 'changes_requested', 'finding', 'ci', 'pending_ci', 'service_only',
-                  'skipped_ci', 'neutral_ci', 'issue', 'ancestry', 'tree'):
+                  'skipped_ci', 'neutral_ci', 'wrong_ci_head', 'issue', 'ancestry', 'tree'):
         with subtests.test(fault=fault):
             proof = deepcopy(data['proof']); final = proof['final']
             if fault == 'foreign_repo': final['repository'] = 'Other/Repo'
@@ -287,6 +287,7 @@ def test_remote_identity_review_ci_closure_and_delivered_ancestry_stay_required(
                 final['expected_checks'] = ['Running Copilot Code Review']
             elif fault == 'skipped_ci': final['checks'][0]['conclusion'] = 'skipped'
             elif fault == 'neutral_ci': final['checks'][0]['conclusion'] = 'neutral'
+            elif fault == 'wrong_ci_head': final['checks'][0]['head_sha'] = '0' * 40
             elif fault == 'issue': proof['original_closure']['closing_issues'][0]['state'] = 'OPEN'
             elif fault == 'ancestry': proof['ancestry'].update(behind_by=1, status='diverged')
             else: proof['merge']['tree']['sha'] = '0' * 40
@@ -294,6 +295,9 @@ def test_remote_identity_review_ci_closure_and_delivered_ancestry_stay_required(
     proof = deepcopy(data['proof'])
     proof['final']['checks'].append(dict(proof['final']['checks'][0], id='2', name='Running Copilot Code Review',
         conclusion='failure', workflow_event='dynamic', workflow_path='dynamic/agents/copilot-pull-request-reviewer', workflow_id='5'))
+    assert workflow._final_coverage_evidence(data['context'], proof, data['final'])['qualification_verified']
+    proof['final']['checks'] = [github._check(dict(id=9, context='full', state='success',
+        head_sha=proof['final']['head_sha']), 'status')]
     assert workflow._final_coverage_evidence(data['context'], proof, data['final'])['qualification_verified']
 
 
@@ -306,13 +310,14 @@ def test_owner_checkout_active_run_and_transaction_races_do_not_record_coverage(
     with pytest.raises(ValueError): workflow._final_coverage_local(data['context'], data['original'])
     before = history(store)
     real = store.record_final_coverage
-    def race(context, proof, guard):
-        with store._connect() as db:
-            db.execute("UPDATE validation_runs SET status='running' WHERE run_id=?", (context['final']['runs'][0]['run_id'],))
-        return real(context, proof, guard)
+    def race(context, proof, guard, **kwargs):
+        if proof is not None:
+            with store._connect() as db:
+                db.execute("UPDATE validation_runs SET status='running' WHERE run_id=?", (context['final']['runs'][0]['run_id'],))
+        return real(context, proof, guard, **kwargs)
     monkeypatch.setattr(store, 'record_final_coverage', race)
     with pytest.raises(ValueError, match='active execution'): qualify(data)
-    assert store.final_coverage_receipt('s', data['context']['original']['row']['plan_id']) is None
+    assert store.final_coverage_receipt('s', data['context']['original']['row']['plan_id'])['proof'] is None
     assert history(store)['validation_plans'] == before['validation_plans']
 
 
@@ -325,6 +330,71 @@ def test_current_final_input_and_review_drift_invalidate_only_the_coverage_recei
     assert result[1]['status'] == 'WAIT' and result[1]['evidence']['phase'] == 'SUCCESSOR_INCOMPLETE'
     assert result[2]['evidence']['phase'] == workflow.current_phase(store, data['context']['final']['row'])['phase']
     assert 'qualification_verified' not in result[2]['evidence']
+    assert history(store) == before
+
+
+def test_failed_refresh_revokes_prior_success_without_rewriting_results(delivered, monkeypatch, subtests):
+    data = delivered; store = data['store']; before = history(store)
+    good = deepcopy(data['proof'])
+    for fault in ('ci', 'review', 'closure', 'collection'):
+        with subtests.test(fault=fault):
+            data['proof'].clear(); data['proof'].update(deepcopy(good))
+            previous = qualify(data)
+            assert workflow.successor_progress(store, data['context']['original']['row'])['qualification_verified']
+            if fault == 'ci': data['proof']['final']['checks'][0]['conclusion'] = 'failure'
+            elif fault == 'review': data['proof']['final']['submitted_reviews'][0]['state'] = 'CHANGES_REQUESTED'
+            elif fault == 'closure': data['proof']['original_closure']['closing_issues'][0]['state'] = 'OPEN'
+            with monkeypatch.context() as patch:
+                if fault == 'collection':
+                    async def unavailable(*args):
+                        raise github.EvidenceError('Current review collection unavailable')
+                    patch.setattr(github, 'collect_review', unavailable)
+                with pytest.raises((ValueError, github.EvidenceError)):
+                    qualify(data)
+            result = workflow.successor_progress(store, data['context']['original']['row'])
+            assert result['phase'] == 'SUCCESSOR_INCOMPLETE' and result['qualification_verified'] is False
+            assert result['receipt_id'] > previous['receipt_id'] and result['completion_verified'] is False
+            with store._connect() as db:
+                saved = json.loads(db.execute('SELECT fields FROM audit WHERE id=?', (previous['receipt_id'],)).fetchone()[0])
+            assert saved['proof'] is not None  # Preserve the earlier genuine conclusion, without replaying it.
+            assert history(store) == before
+
+
+def test_older_inflight_refresh_cannot_overwrite_newer_failed_refresh(delivered, monkeypatch):
+    data = delivered; store = data['store']; before = history(store)
+    qualify(data)
+    async def exercise():
+        started, release = asyncio.Event(), asyncio.Event()
+        count = 0
+        async def collect(*args):
+            nonlocal count
+            count += 1
+            proof = deepcopy(data['proof']['final'])
+            if count == 1:
+                started.set()
+                await release.wait()
+            else:
+                proof['checks'][0]['conclusion'] = 'failure'
+            return proof
+        monkeypatch.setattr(github, 'collect_pr', collect)
+        def refresh():
+            return workflow.qualify_successor(store, 's', REPO, 1, 2, data['final'],
+                data['proof']['declaration'], client=data['client'])
+        older = asyncio.create_task(refresh())
+        await started.wait()
+        try:
+            pending = workflow.successor_progress(store, data['context']['original']['row'])
+            assert pending['phase'] == 'SUCCESSOR_INCOMPLETE' and not pending['qualification_verified']
+            with pytest.raises(ValueError, match='CI, review'):
+                await refresh()
+            latest = store.final_coverage_receipt('s', data['context']['original']['row']['plan_id'])
+        finally:
+            release.set()
+        with pytest.raises(ValueError, match='newer final coverage refresh'):
+            await older
+        assert store.final_coverage_receipt('s', data['context']['original']['row']['plan_id']) == latest
+    asyncio.run(exercise())
+    assert not workflow.successor_progress(store, data['context']['original']['row'])['qualification_verified']
     assert history(store) == before
 
 
@@ -415,3 +485,28 @@ def test_collector_retains_empty_exact_head_approval_and_source_identity_without
     assert client.reads == 2 and result['submitted_reviews'][0]['commit_sha'] == SHA
     assert result['merge_commit_sha'] == 'd' * 40 and result['head_repository_id'] == 7
     assert not any(c['id'] == 'review:10' for c in result['comments'])
+
+
+def test_commit_status_identity_comes_from_the_existing_exact_head_read(subtests):
+    from test_github import Client, SHA, OTHER
+    class StatusOnly(Client):
+        async def get(self, path, params=None):
+            if path.endswith('/check-runs'): return {'total_count': 0, 'check_runs': []}
+            if path.endswith('/actions/runs'): return {'total_count': 0, 'workflow_runs': []}
+            if path.endswith('/statuses'):
+                assert path == f'/repos/mikkokotila/caller/commits/{SHA}/statuses'
+                self.status_reads += 1
+                return [dict(id=12, context='test', state='success', **self.status_head)]
+            return await super().get(path, params)
+    for supplied in ({}, {'head_sha': SHA}, {'head_sha': OTHER}):
+        with subtests.test(supplied=supplied):
+            client = StatusOnly(); client.status_reads = 0; client.status_head = supplied
+            if supplied.get('head_sha') == OTHER:
+                with pytest.raises(github.EvidenceError, match='different head'):
+                    asyncio.run(github.collect_with_client(client, 'mikkokotila/caller', 50))
+            else:
+                result = asyncio.run(github.collect_with_client(client, 'mikkokotila/caller', 50))
+                assert client.reads == 2 and len(result['checks']) == 1
+                assert result['checks'][0]['head_sha'] == SHA and result['checks'][0]['kind'] == 'status'
+                assert result['checks'][0]['conclusion'] == 'success'
+            assert client.status_reads == 1

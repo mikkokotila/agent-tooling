@@ -590,26 +590,34 @@ class Store:
             db.execute('BEGIN')
             return self._final_coverage_context(db, sid, repo, original, final)
 
-    def record_final_coverage(self, context, proof, source_guard):
-        """Append one conclusion; never update registrations, plans or executions."""
+    def record_final_coverage(self, context, proof, source_guard, *, attempt_id=None):
+        """Append an attempt or conclusion; never rewrite historical evidence."""
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             actual = self._final_coverage_context(db, context['session_id'], context['repository'],
                 context['original']['row']['number'], context['final']['row']['number'])
             if actual != context:
                 raise ValueError('Final coverage ownership, scope, plan, results or review receipts changed during collection')
+            if proof is not None:
+                prior = self._final_coverage_receipt(db, context['session_id'], context['original']['row']['plan_id'])
+                if prior is None or prior['id'] != attempt_id or prior['proof'] is not None:
+                    raise ValueError('A newer final coverage refresh superseded this collection')
             source_guard()
             fields = {'context': context, 'proof': proof}
             self._audit(db, 'validation_final_coverage', fields)
             return {'id': db.execute('SELECT last_insert_rowid()').fetchone()[0], **fields}
 
-    def final_coverage_receipt(self, sid, plan_id):
-        with self._connect() as db:
-            row = db.execute('''SELECT id,fields FROM audit WHERE event='validation_final_coverage'
+    @staticmethod
+    def _final_coverage_receipt(db, sid, plan_id):
+        row = db.execute('''SELECT id,fields FROM audit WHERE event='validation_final_coverage'
                 AND json_extract(fields,'$.context.session_id')=?
                 AND json_extract(fields,'$.context.original.row.plan_id')=? ORDER BY id DESC LIMIT 1''',
                 (sid, plan_id)).fetchone()
-            return {'id': row['id'], **json.loads(row['fields'])} if row else None
+        return {'id': row['id'], **json.loads(row['fields'])} if row else None
+
+    def final_coverage_receipt(self, sid, plan_id):
+        with self._connect() as db:
+            return self._final_coverage_receipt(db, sid, plan_id)
 
     def _checker_corrections(self, db, existing, plan, checks, old_checks):
         """Validate fresh correction links inside the same plan-write transaction."""

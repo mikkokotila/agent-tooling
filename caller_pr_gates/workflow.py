@@ -272,6 +272,9 @@ async def qualify_successor(store, sid, repository, original, final, cwd, payloa
     context = store.final_coverage_context(sid, repository, original, final)
     progress.final_coverage(context['original']['row'], context['final']['row'], context['original']['scope'], payload)
     _final_coverage_local(context, cwd)
+    # Supersede any earlier success before remote reads, including failed or
+    # interrupted refreshes. Only this latest attempt may append a conclusion.
+    attempt = store.record_final_coverage(context, None, lambda: _final_coverage_local(context, cwd))
     previous, successor, closure = await asyncio.gather(collect_review(repository, original), collect_pr(repository, final),
                                                        read_live(repository, original))
     client = client or GitHubClient()
@@ -284,7 +287,8 @@ async def qualify_successor(store, sid, repository, original, final, cwd, payloa
     proof = {'original': previous, 'final': successor, 'original_closure': closure,
              'ancestry': ancestry, 'merge': merge, 'declaration': payload}
     result = _final_coverage_evidence(context, proof, cwd)
-    receipt = store.record_final_coverage(context, proof, lambda: _final_coverage_evidence(context, proof, cwd))
+    receipt = store.record_final_coverage(context, proof, lambda: _final_coverage_evidence(context, proof, cwd),
+                                          attempt_id=attempt['id'])
     return {'receipt_id': receipt['id'], **result}
 
 
@@ -294,6 +298,8 @@ def successor_progress(store, row):
         return None
     context = receipt['context']
     try:
+        if receipt['proof'] is None:
+            raise ValueError('Final coverage refresh is pending or failed; prior successful coverage cannot be reused')
         current = store.final_coverage_context(context['session_id'], context['repository'],
             context['original']['row']['number'], context['final']['row']['number'])
         if current != context:

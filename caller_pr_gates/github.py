@@ -436,7 +436,11 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
         service = services_by_check.get(str(item['id']), {}) if app.get('id') == 15368 and app.get('slug') == 'github-actions' else {}
         checks.append(dict(_check(item, "check", key=f"check:{app.get('id')}:{item.get('name')}",
                              attempt=attempts_by_check.get(str(item["id"]), 1)), **service))
-    checks.extend(_check(item, "status") for item in statuses)
+    for item in statuses:
+        if item.get("head_sha") not in {None, head}:
+            raise EvidenceError("Commit status belongs to a different head")
+        # REST statuses omit head_sha; the queried commit supplies that identity.
+        checks.append(_check(dict(item, head_sha=head), "status"))
     after = _mapping(await client.get(path), "final pull request read")
     after_head = _mapping(after.get("head"), "final pull request head").get("sha")
     if not after_head:
