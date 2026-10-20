@@ -201,6 +201,8 @@ Release 0.1.51 also accepts an existing literal `env NAME=VALUE ...` prefix befo
 
 For this retained `env` form, trailing script options such as `-c config.json` stay in their original argv positions after the script path. They remain driver arguments. Python interpreter options before the script are outside this correction route; the existing direct-runner guards also remain unchanged.
 
+An original `env` driver already pinned in the plan's shared `input_paths` stays there; retain the check's separate dependency declarations exactly. Do not add a redundant driver entry to an immutable original check. The corrected driver and diagnosis evidence still need their own new per-check input pins.
+
 Bind and execute through the existing commands:
 
 ```sh
