@@ -546,20 +546,26 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     for value in normalized["input_paths"]:
         candidate = working / value
         relative = candidate.relative_to(repository).as_posix()
-        directory = (relative in source_directories if source_directories is not None and relative in source_files else
-                     candidate.is_dir() and not candidate.is_symlink())
+        directory = candidate.is_dir() and not candidate.is_symlink()
+        input_files = set()
         if directory:
-            for directory, folders, files in os.walk(candidate, followlinks=False):
+            for current, folders, files in os.walk(candidate, followlinks=False):
                 folders[:] = [folder for folder in folders if folder != ".git"]
-                for name in files + [folder for folder in folders if (Path(directory) / folder).is_symlink()]:
-                    relative = (Path(directory) / name).relative_to(repository)
+                for name in files + [folder for folder in folders if (Path(current) / folder).is_symlink()]:
+                    child = (Path(current) / name).relative_to(repository)
                     # Vitest regenerates execution timings inside its dependency tree.
                     # Tracked files and individually declared inputs still take precedence.
-                    if (len(relative.parts) >= 5 and relative.parts[-5:-2] == ("node_modules", ".vite", "vitest")
-                            and re.fullmatch(r"[0-9a-f]{40}", relative.parts[-2]) and name == "results.json"):
+                    if (len(child.parts) >= 5 and child.parts[-5:-2] == ("node_modules", ".vite", "vitest")
+                            and re.fullmatch(r"[0-9a-f]{40}", child.parts[-2]) and name == "results.json"):
                         continue
-                    paths.add(relative.as_posix())
-        else:
+                    input_files.add(child.as_posix())
+        # Never omit current private contents while reconstructing a historical
+        # file/missing path. The old pin must prove those contents unchanged.
+        paths.update(input_files)
+        if source_directories is not None and relative in source_files:
+            directory = (relative in source_directories or source_files[relative] is None
+                         and bool(input_files - source_files.keys()))
+        if not directory:
             paths.add(relative)
             explicit.add(relative)
     digest = hashlib.sha256()

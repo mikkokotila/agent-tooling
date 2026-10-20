@@ -502,6 +502,45 @@ def test_private_directory_remains_after_its_last_tracked_child_is_deleted(local
     assert store.validation_runs(old['plan_id']) == []
 
 
+@pytest.mark.parametrize('prior, change', [('missing', 'added'), ('file', 'added'),
+    ('private-directory', 'unchanged'), ('private-directory', 'changed'), ('private-directory', 'added')])
+def test_first_tracked_child_cannot_hide_private_input_changes(local, prior, change):
+    store, root, snap, plan = local
+    directory = root / 'declared-source'
+    with (root / '.gitignore').open('a') as ignored:
+        ignored.write('declared-source/*.private\n')
+    if prior == 'file':
+        directory.write_bytes(b'original tracked file')
+    elif prior == 'private-directory':
+        directory.mkdir()
+        (directory / 'original.private').write_bytes(b'original private pin')
+    plan['input_paths'] = [directory.name]
+    old = prepare(local)
+    before = snap['head_sha']
+    if prior == 'file':
+        directory.unlink()
+    directory.mkdir(exist_ok=True)
+    (directory / 'tracked.dat').write_bytes(b'first published tracked child')
+    final_source(local)
+    if change == 'added':
+        (directory / 'new.private').write_bytes(b'new unadmitted private input')
+    elif change == 'changed':
+        (directory / 'original.private').write_bytes(b'changed private input')
+    assert git(root, 'status', '--porcelain') == ''
+    workflow.validation_owner(store, 's', 'Owner/Repo', 1, root, snap['head_sha'], preflight=True)
+    if change == 'unchanged':
+        new = epoch(local, before)['plan']
+        assert store.validation_evidence(new['plan_id']) == []
+        actual = execute(local, 'remaining')['run']
+        assert actual['status'] == 'pass' and actual['exit_code'] == 0
+        assert actual['before_digest'] == actual['after_digest'] == new['input_digest']
+    else:
+        with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+            epoch(local, before)
+        assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == []
+
+
 def test_source_reconstruction_processes_bounded_real_git_batches(local, monkeypatch):
     store, root, snap, _ = local
     for index in range(6):
