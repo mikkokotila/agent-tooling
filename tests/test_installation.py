@@ -463,10 +463,15 @@ def test_generated_launcher_child_discovers_actual_physical_cores(tmp_path):
 @pytest.mark.parametrize('active_worker',[False,True])
 def test_launcher_only_upgrade_preserves_worker_admission_and_rollback(installed,active_worker):
     home,service=installed;launcher=home/'.local/bin/caller-pr-gates'
+    # Normalize the fixture's legacy instructions before isolating this asset.
+    manage.deploy(home,service)
     desired=manage.render('launcher.sh',home)
     previous=desired.replace(b':/usr/sbin:',b':')
     assert previous!=desired
     launcher.write_bytes(previous)
+    current=json.loads((home/'.local/share/agent-tooling/current.json').read_text())
+    pending=manage.desired_assets(home,current)
+    assert {name for name,data in pending.items() if Path(name).read_bytes()!=data}=={str(launcher)}
     state=home/'.local/state/caller-pr-gates/registry.sqlite3'
     if active_worker:
         with sqlite3.connect(state) as db:
