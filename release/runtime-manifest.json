@@ -8,7 +8,7 @@
     "caller_pr_gates/copilot.py": "64dd5dc0a566a9337d55d977cf3e5798f4007e1452e1f33a21b265c296a2355a",
     "caller_pr_gates/errors.py": "1858cf3af71cc47a63413abe9c405375f39d1a2d8a7bb828137c561bc117fccc",
     "caller_pr_gates/external.py": "e996daf5c889fd5e69c80ab05503d4338fd02d2ec30228da8a5297675e351f96",
-    "caller_pr_gates/ghrelay.py": "c92b1dae303fbbecd939e911410d81d1f7505726a66ef78ddb898497ad1f195b",
+    "caller_pr_gates/ghrelay.py": "afaa989aed4630a2ef5017e59ee78ca905b4bcd70909b9ca30cd14111f423b5c",
     "caller_pr_gates/github.py": "35a90674ff8f526c95f266e5b8c59f366e2e48baf73382a033ca1e78bd23028b",
     "caller_pr_gates/handoff.py": "1e4a471063584ecda43527fb25aad78ed6261b4823ca3dc9aafac65d2fc28843",
     "caller_pr_gates/hierarchy.py": "72f13c9843430de6249659c2307a4155784ad2d42df77d357b477402a7b793ba",
@@ -28,6 +28,6 @@
     "caller_pr_gates/workflow.py": "27799b1afeaeb6a5221923e298e8af3dbc7fba569229002ac9fe971893ff930d"
   },
   "known_defects": [],
-  "runtime_version": "1.7.48",
-  "version": "0.1.48"
+  "runtime_version": "1.7.49",
+  "version": "0.1.49"
 }

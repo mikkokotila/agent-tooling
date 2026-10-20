@@ -83,8 +83,13 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 coordinator.audit(**metadata,outcome='cooldown',requests=0)
                 self.respond(error.args and int(str(error).split()[1].rstrip(':')) or 403,json.dumps({'message':str(error)}).encode(),{'Content-Type':'application/json'})
             except BaseException:
-                if permit:coordinator.finish(permit,success=False)
-                self.respond(502,b'{"message":"Gate request relay failed; mutation outcome may be unknown, reconcile before retry"}',{'Content-Type':'application/json'})
+                if permit:
+                    try:coordinator.finish(permit,success=False)
+                    except Exception:
+                        # Unsettled leases keep their existing fencing/expiry.
+                        # Failed cleanup must not suppress the uncertainty response.
+                        pass
+                self.respond(502,b'{"message":"Gate request relay failed; accounting may be incomplete and mutation outcome may be unknown, reconcile before retry"}',{'Content-Type':'application/json'})
         do_GET=do_POST=do_PATCH=do_PUT=do_DELETE=do_HEAD=forward
     # A short path is required by macOS AF_UNIX. Never copy hosts.yml/tokens.
     with tempfile.TemporaryDirectory(prefix='cpg-',dir='/tmp') as directory:

@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import httpx
 import pytest
@@ -117,6 +118,96 @@ def test_gh_mutation_is_not_retried_on_ambiguous_transport_failure(tmp_path):
     def fail(*args,**kwargs):calls.append(args);raise httpx.ReadTimeout('ambiguous write')
     result=ghrelay.run(['gh','api','repos/o/r/issues/1/comments','-X','POST','-f','body=test'],coordinator=Coordinator(tmp_path,boot='test'),upstream=fail,text=True,capture_output=True,timeout=10)
     assert result.returncode and len(calls)==1
+
+@pytest.mark.parametrize('recovery', [False, True])
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, monkeypatch, recovery, cleanup_fails):
+    now, make = clocked
+    coordinator = make()
+    account = account_key('https://api.github.com', 'isolated-test-credential')
+    if recovery:
+        error = limited()
+        error['rate_limit_headers']['x-ratelimit-resource'] = 'graphql'
+        coordinator.throttle(coordinator.admit(account, 'graphql'), error)
+        now[:] = [1102, 202]
+    coordinator.audit(operation='previous-request', outcome='fresh', requests=1)
+    with coordinator.db() as db:
+        previous_audit = [tuple(row) for row in db.execute('SELECT * FROM attribution')]
+
+    calls, completions, admitted = [], [], []
+    finish = coordinator.finish
+
+    def unavailable(permit, *, success):
+        completions.append((permit, success))
+        if success or cleanup_fails:
+            raise sqlite3.OperationalError('database is locked')
+        return finish(permit, success=False)
+
+    monkeypatch.setattr(coordinator, 'finish', unavailable)
+
+    def upstream(method, url, **kwargs):
+        calls.append((method, url, json.loads(kwargs['content'])))
+        with coordinator.db() as db:
+            admitted.extend(dict(row) for row in db.execute('SELECT * FROM cooldowns'))
+        return httpx.Response(200, json={'data': {'updatePullRequest': {'pullRequest': {'body': 'updated'}}}})
+
+    query = 'mutation { updatePullRequest(input: {pullRequestId: "fixture", body: "updated"}) { pullRequest { body } } }'
+    result = ghrelay.run(['gh', 'api', 'graphql', '-f', 'query=' + query],
+                         coordinator=coordinator, upstream=upstream, text=True, capture_output=True, timeout=10)
+    assert result.returncode != 0
+    message = json.loads(result.stdout)['message']
+    assert 'accounting may be incomplete' in message
+    assert 'mutation outcome may be unknown' in message and 'reconcile before retry' in message
+    assert 'HTTP 502' in result.stderr and 'EOF' not in result.stderr
+    assert calls == [('POST', 'https://api.github.com/graphql', {'query': query})]
+    assert [success for _, success in completions] == [True, False]
+    assert completions[0][0] == completions[1][0]
+    assert bool(completions[0][0].token) is recovery
+    with coordinator.db() as db:
+        after = [dict(row) for row in db.execute('SELECT * FROM cooldowns')]
+        assert [tuple(row) for row in db.execute('SELECT * FROM attribution')] == previous_audit
+    if cleanup_fails or not recovery:
+        assert after == admitted  # Neither a successful receipt nor lease release was invented.
+    else:
+        assert admitted[0]['lease_token'] == completions[0][0].token
+        assert after[0]['epoch'] == admitted[0]['epoch']
+        assert after[0]['lease_token'] is None
+        assert after[0]['deadline'] > now[0] and after[0]['duration'] > 0
+
+    if recovery:
+        with pytest.raises(CoolingDown):
+            make().admit(account, 'graphql')
+        denied = ghrelay.run(['gh', 'api', 'graphql', '--method', 'GET'],
+                            coordinator=coordinator, upstream=upstream, text=True, capture_output=True, timeout=10)
+        assert denied.returncode != 0 and 'cooldown' in denied.stdout + denied.stderr
+        assert len(calls) == 1 and len(completions) == 2
+        with coordinator.db() as db:
+            assert [dict(row) for row in db.execute('SELECT * FROM cooldowns')] == after
+            audit = [json.loads(row[0]) for row in db.execute('SELECT fields FROM attribution ORDER BY id')]
+        assert audit[-1]['outcome'] == 'cooldown' and audit[-1]['requests'] == 0
+
+
+def test_gh_success_still_settles_matching_recovery_and_records_one_request(clocked):
+    now, make = clocked
+    coordinator = make()
+    account = account_key('https://api.github.com', 'isolated-test-credential')
+    coordinator.throttle(coordinator.admit(account, 'core'), limited())
+    now[:] = [1102, 202]
+    calls = []
+
+    def upstream(method, url, **kwargs):
+        calls.append((method, url))
+        return httpx.Response(201, json={'id': 1, 'body': 'updated'})
+
+    result = ghrelay.run(['gh', 'api', 'repos/o/r/issues/1/comments', '-X', 'POST', '-f', 'body=updated'],
+                         coordinator=coordinator, upstream=upstream, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0 and json.loads(result.stdout) == {'id': 1, 'body': 'updated'}
+    assert calls == [('POST', 'https://api.github.com/repos/o/r/issues/1/comments')]
+    assert make().admit(account, 'core').token is None
+    with coordinator.db() as db:
+        audit = [json.loads(row[0]) for row in db.execute('SELECT fields FROM attribution')]
+    assert len(audit) == 1 and audit[0]['outcome'] == 'fresh'
+    assert audit[0]['requests'] == 1 and audit[0]['status'] == 201
 
 def test_probe_waiter_cancellation_cannot_release_owner_lease(clocked):
     now,make=clocked;c=make();c.throttle(c.admit('a','core'),limited());now[:]=[1102,202]
