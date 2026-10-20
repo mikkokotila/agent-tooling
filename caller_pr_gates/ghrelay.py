@@ -63,7 +63,7 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
             self.send_header('Content-Length',str(len(body)));self.send_header('Connection','close');self.end_headers()
             self.wfile.write(body);self.close_connection=True
         def forward(self):
-            permit=None;metadata={}
+            permit=None;metadata={};finish_attempted=False
             try:
                 host=self.headers.get('Host','').lower()
                 if host!='api.github.com':raise ValueError('Gate relay only accepts the configured GitHub API host')
@@ -76,14 +76,16 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 response=(upstream or httpx.request)(self.command,'https://'+host+self.path,headers=headers,content=body,timeout=15,follow_redirects=False)
                 error=diagnostic({'http_status':response.status_code,'message':response.text,'response_body':response.text,'rate_limit_headers':dict(response.headers)},self.path)
                 if error['kind']=='rate_limited':coordinator.throttle(permit,error)
-                elif not coordinator.finish(permit,success=response.status_code<400):raise RuntimeError('Request lease superseded; discard late evidence')
+                else:
+                    finish_attempted=True
+                    if not coordinator.finish(permit,success=response.status_code<400):raise RuntimeError('Request lease superseded; discard late evidence')
                 coordinator.audit(**metadata,outcome='fresh',requests=1,status=response.status_code)
                 self.respond(response.status_code,response.content,dict(response.headers))
             except CoolingDown as error:
                 coordinator.audit(**metadata,outcome='cooldown',requests=0)
                 self.respond(error.args and int(str(error).split()[1].rstrip(':')) or 403,json.dumps({'message':str(error)}).encode(),{'Content-Type':'application/json'})
             except BaseException:
-                if permit:
+                if permit and not finish_attempted:
                     try:coordinator.finish(permit,success=False)
                     except Exception:
                         # Unsettled leases keep their existing fencing/expiry.

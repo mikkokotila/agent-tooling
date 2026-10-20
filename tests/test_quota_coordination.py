@@ -120,8 +120,8 @@ def test_gh_mutation_is_not_retried_on_ambiguous_transport_failure(tmp_path):
     assert result.returncode and len(calls)==1
 
 @pytest.mark.parametrize('recovery', [False, True])
-@pytest.mark.parametrize('cleanup_fails', [False, True])
-def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, monkeypatch, recovery, cleanup_fails):
+@pytest.mark.parametrize('failure,cleanup_fails', [('completion', True), ('transport', True), ('transport', False)])
+def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, monkeypatch, recovery, failure, cleanup_fails):
     now, make = clocked
     coordinator = make()
     account = account_key('https://api.github.com', 'isolated-test-credential')
@@ -149,6 +149,8 @@ def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, mo
         calls.append((method, url, json.loads(kwargs['content'])))
         with coordinator.db() as db:
             admitted.extend(dict(row) for row in db.execute('SELECT * FROM cooldowns'))
+        if failure == 'transport':
+            raise httpx.ReadTimeout('Mutation response was lost')
         return httpx.Response(200, json={'data': {'updatePullRequest': {'pullRequest': {'body': 'updated'}}}})
 
     query = 'mutation { updatePullRequest(input: {pullRequestId: "fixture", body: "updated"}) { pullRequest { body } } }'
@@ -160,8 +162,7 @@ def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, mo
     assert 'mutation outcome may be unknown' in message and 'reconcile before retry' in message
     assert 'HTTP 502' in result.stderr and 'EOF' not in result.stderr
     assert calls == [('POST', 'https://api.github.com/graphql', {'query': query})]
-    assert [success for _, success in completions] == [True, False]
-    assert completions[0][0] == completions[1][0]
+    assert [success for _, success in completions] == [failure == 'completion']
     assert bool(completions[0][0].token) is recovery
     with coordinator.db() as db:
         after = [dict(row) for row in db.execute('SELECT * FROM cooldowns')]
@@ -180,11 +181,57 @@ def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, mo
         denied = ghrelay.run(['gh', 'api', 'graphql', '--method', 'GET'],
                             coordinator=coordinator, upstream=upstream, text=True, capture_output=True, timeout=10)
         assert denied.returncode != 0 and 'cooldown' in denied.stdout + denied.stderr
-        assert len(calls) == 1 and len(completions) == 2
+        assert len(calls) == 1 and len(completions) == 1
         with coordinator.db() as db:
             assert [dict(row) for row in db.execute('SELECT * FROM cooldowns')] == after
             audit = [json.loads(row[0]) for row in db.execute('SELECT fields FROM attribution ORDER BY id')]
         assert audit[-1]['outcome'] == 'cooldown' and audit[-1]['requests'] == 0
+
+
+def test_real_sqlite_lock_does_not_repeat_completion_wait(clocked, monkeypatch):
+    now, make = clocked
+    coordinator = make()
+    account = account_key('https://api.github.com', 'isolated-test-credential')
+    coordinator.throttle(coordinator.admit(account, 'core'), limited())
+    now[:] = [1102, 202]
+    locker = sqlite3.connect(coordinator.path, check_same_thread=False)
+    attempts, errors, calls, admitted = [], [], [], []
+    original_finish = coordinator.finish
+
+    def finish(permit, *, success):
+        attempts.append(success)
+        try:
+            return original_finish(permit, success=success)
+        except sqlite3.OperationalError as error:
+            errors.append((error.sqlite_errorcode, error.sqlite_errorname))
+            raise
+
+    monkeypatch.setattr(coordinator, 'finish', finish)
+
+    def upstream(method, url, **kwargs):
+        calls.append((method, url))
+        locker.execute('BEGIN IMMEDIATE')
+        with coordinator.db() as db:
+            admitted.extend(dict(row) for row in db.execute('SELECT * FROM cooldowns'))
+        return httpx.Response(201, json={'id': 1, 'body': 'updated'})
+
+    try:
+        result = ghrelay.run(['gh', 'api', 'repos/o/r/issues/1/comments', '-X', 'POST', '-f', 'body=updated'],
+                             coordinator=coordinator, upstream=upstream, text=True, capture_output=True, timeout=30)
+    finally:
+        locker.rollback()
+        locker.close()
+    assert result.returncode != 0 and 'HTTP 502' in result.stderr
+    assert 'reconcile before retry' in json.loads(result.stdout)['message']
+    assert attempts == [True]  # The real 10-second busy wait must not be attempted twice.
+    assert errors == [(sqlite3.SQLITE_BUSY, 'SQLITE_BUSY')]
+    assert calls == [('POST', 'https://api.github.com/repos/o/r/issues/1/comments')]
+    with coordinator.db() as db:
+        assert [dict(row) for row in db.execute('SELECT * FROM cooldowns')] == admitted
+        assert db.execute('SELECT COUNT(*) FROM attribution').fetchone()[0] == 0
+    assert admitted[0]['lease_token']
+    with pytest.raises(CoolingDown):
+        make().admit(account, 'core')
 
 
 def test_gh_success_still_settles_matching_recovery_and_records_one_request(clocked):
