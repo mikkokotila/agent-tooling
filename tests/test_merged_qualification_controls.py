@@ -331,7 +331,7 @@ def test_control_requires_real_declared_local_inputs(local, bad_inputs):
     assert store.validation_runs(row['plan_id']) == []
 
 
-@pytest.mark.parametrize('kind', ['fixture', 'parent', 'driver'])
+@pytest.mark.parametrize('kind', ['fixture', 'parent', 'driver', 'driver-outside'])
 def test_symlink_controls_refuse_pinning_before_target_identity_can_be_lost(local, kind):
     store, root, _, _ = local
     original, _ = retained(local)
@@ -356,17 +356,32 @@ def test_symlink_controls_refuse_pinning_before_target_identity_can_be_lost(loca
     else:
         first = root / control['input_paths'][0]
         second = directory / 'another.py'
+        if kind == 'driver-outside':
+            first, second = root.parent / 'test-first.py', root.parent / 'test-second.py'
+            first.write_text((root / control['input_paths'][0]).read_text())
         second.write_text(first.read_text())
-        link = directory / 'selected.py'
+        link = directory / 'test-selected.py'
         link.symlink_to(first)
         # Even listing the resolved target must not leave the actual argv
         # symlink unpinned and mutable.
-        control['argv'][1] = '.qualification/selected.py'
+        control['argv'][1] = '.qualification/test-selected.py'
     with pytest.raises(ValueError, match='cannot traverse symlinks'):
         save(local, payload)
     link.unlink()
     link.symlink_to(second, target_is_directory=kind == 'parent')
     with pytest.raises(ValueError, match='cannot traverse symlinks'):
+        save(local, payload)
+    assert store.validation_runs(original['plan_id']) == []
+
+
+def test_common_check_name_cannot_admit_an_unpinned_external_control_script(local):
+    store, root, _, _ = local
+    original, _ = retained(local)
+    payload, control = add_control(local)
+    outside = root.parent / 'test-external.py'
+    outside.write_text("raise AssertionError('unowned script must not execute')\n")
+    control['argv'][1] = str(outside)
+    with pytest.raises(ValueError, match='inside the working directory'):
         save(local, payload)
     assert store.validation_runs(original['plan_id']) == []
 

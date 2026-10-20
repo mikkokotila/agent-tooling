@@ -135,12 +135,12 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         if "input_paths" in check or "env_names" in check:
             normalized[-1].update(_input_settings(check, root, control=True))
             first = Path(argv[0]).name.lower()
-            script = argv[1] if (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
-                                      and len(argv) > 1 and not argv[1].startswith("-")) else argv[0]
-            candidate = directory / script
-            if candidate.is_file() and candidate.resolve().is_relative_to(root):
+            is_script = (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?|node|nodejs|ruby|perl", first)
+                         and len(argv) > 1 and not argv[1].startswith("-"))
+            candidate = directory / (argv[1] if is_script else argv[0])
+            if is_script or candidate.is_relative_to(root):
                 _ordinary_control_path(candidate, root)
-            candidate = candidate.resolve()
+            candidate = _inside(candidate, root) if is_script else candidate.resolve()
             if (candidate.is_file() and candidate.is_relative_to(root)
                     and not any(candidate == root / path or (root / path).is_dir() and candidate.is_relative_to(root / path)
                                 for path in normalized[-1]["input_paths"])):
