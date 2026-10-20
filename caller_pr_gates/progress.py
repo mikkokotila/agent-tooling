@@ -94,14 +94,16 @@ def _input_settings(payload, root, *, control=False):
 
 
 def correction_metadata(value):
-    """An explicit diagnosis of one actual failed required check, never a waiver."""
-    keys = {"check_id", "run_id", "diagnosis", "evidence_path"}
-    if (not isinstance(value, dict) or set(value) != keys
+    """Diagnose an actual failed or explicitly unexecuted checker, never waive it."""
+    keys = {"check_id", "diagnosis", "evidence_path"}
+    if (not isinstance(value, dict) or set(value) not in (keys | {"run_id"}, keys | {"unexecuted"})
             or any(not isinstance(value[key], str) or not value[key].strip() for key in keys)
             or not _CHECK_ID.fullmatch(value["check_id"])
-            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["run_id"])):
-        raise ValueError("correction requires check_id, actual failed run_id, diagnosis and evidence_path")
-    return {key: value[key].strip() for key in sorted(keys)}
+            or ("unexecuted" in value and value["unexecuted"] is not True)
+            or ("run_id" in value and (not isinstance(value["run_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["run_id"])))):
+        raise ValueError("correction requires check_id, diagnosis, evidence_path and either actual failed run_id or unexecuted: true")
+    return {key: item.strip() if isinstance(item, str) else item for key, item in sorted(value.items())}
 
 
 def private_checker_correction(cwd, plan, check, original):
@@ -533,7 +535,7 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
     on unchanged before/after inputs. Remote merge state is never completion
     proof. Missing or stale remote evidence stays WAIT_REMOTE.
     """
-    corrected_failures = []
+    corrected_failures, corrected_unexecuted = [], []
     def result(phase, reason, **fields):
         actions = {"INPUTS_CHANGED": render_prompt('validation_inputs_changed'),
                    "VALIDATE_REQUIRED": render_prompt('validation_required'),
@@ -547,7 +549,8 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                    "WAIT_REMOTE": render_prompt('validation_wait_remote'),
                    "COMPLETE": render_prompt('validation_complete')}
         return {"phase": phase, "blocked": phase != "COMPLETE", "next_action": actions[phase],
-                "reason": reason, **({"corrected_failures": corrected_failures} if corrected_failures else {}), **fields}
+                "reason": reason, **({"corrected_failures": corrected_failures} if corrected_failures else {}),
+                **({"corrected_unexecuted": corrected_unexecuted} if corrected_unexecuted else {}), **fields}
     def fresh_remote():
         if not isinstance(snapshot, dict):
             return False
@@ -632,10 +635,11 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
             failed.append(identifier)
         else:
             missing.append(identifier)
-    # A correction never rewrites a run or labels its failed predecessor PASS.
+    # A correction never rewrites a run or labels its predecessor PASS.
     # Follow only admitted, nonbranching links to an actual passing successor;
     # every unexecuted, failed or unverifiable end of the chain stays required.
     coverage = {identifier: latest[identifier] for identifier in passed}
+    executed = {run.get("check_id") for run in runs}
     for _ in checks:
         extended = False
         for check in plan["checks"]:
@@ -644,20 +648,30 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                 continue
             target = correction.get("check_id")
             previous = latest.get(target)
-            if (target in coverage or not previous or previous.get("run_id") != correction.get("run_id")
+            if target not in checks or target in coverage:
+                continue
+            unexecuted = correction.get("unexecuted") is True
+            if unexecuted:
+                if target in executed:
+                    continue
+            elif (not previous or previous.get("run_id") != correction.get("run_id")
                     or previous.get("status") != "fail" or type(previous.get("exit_code")) is not int
                     or previous["exit_code"] <= 0 or previous.get("before_digest") != expected[target]
                     or previous.get("after_digest") != expected[target]):
                 continue
             proof = coverage[check["id"]]
             coverage[target] = proof
-            corrected_failures.append({"check_id": target, "failed_run_id": previous["run_id"],
-                "exit_code": previous["exit_code"], "corrected_by": check["id"],
-                "passed_check_id": proof["check_id"], "passed_run_id": proof["run_id"]})
+            receipt = {"check_id": target, "corrected_by": check["id"],
+                "passed_check_id": proof["check_id"], "passed_run_id": proof["run_id"]}
+            if unexecuted:
+                corrected_unexecuted.append({**receipt, "unexecuted": True})
+            else:
+                corrected_failures.append({**receipt, "failed_run_id": previous["run_id"], "exit_code": previous["exit_code"]})
             extended = True
         if not extended:
             break
     failed = [identifier for identifier in failed if identifier not in coverage]
+    missing = [identifier for identifier in missing if identifier not in coverage]
     if failed:
         return result("VALIDATE_FAILED", "Fix the actual failed check, push the fix promptly, then rerun its required validation", failed=failed, pending=sorted(failed + missing), passed=passed, running=sorted(active))
     if missing:

@@ -147,4 +147,25 @@ An appended, running, failed or unverifiable correction does not discharge the o
 
 A passing control cannot acquire this relation retroactively. Each failed check has at most one correction; if that successor genuinely fails because of another evidenced checker defect, correct that failed successor with another fresh pinned identity. An unrelated passing control, a changed diagnosis alone or an unchanged failed retry cannot satisfy the original work. Let all active managed execution finish before changing the plan. Real checker quality and unchanged acceptance still require diagnosis and review; a changed Python syntax tree alone does not prove a valid fix. Closed-PR local success remains incomplete task acceptance and does not create `MERGE_READY`.
 
+### Correct an unexecuted private checker without destroying evidence
+
+Release 0.1.46 extends the same correction route to a known-invalid private Python checker that has never executed. For example, a retained verifier might open an existing measurement trace for writing. Do not execute that defective checker or manufacture a failed run to gain admission. Preserve its entire declaration, original files, shared input/environment pins and acceptance obligation.
+
+Prepare a materially corrected ordinary ignored driver and a private evidence file outside every frozen input directory. The evidence must explain the concrete defect, why the original cannot safely establish its intended result, the corrected behavior and how all original acceptance remains required. Copy the original check to a fresh ID, retaining its exact interpreter, trailing arguments, `cwd`, `reason`, per-check dependencies and environment names. Change only the Python script argument, append the new driver and evidence file to `input_paths`, omit `input_digest`, and use this metadata instead of a failed `run_id`:
+
+```json
+"correction": {
+  "check_id": "original-required-check",
+  "unexecuted": true,
+  "diagnosis": "Identify the evidence-overwriting checker defect and the concrete preservation fix",
+  "evidence_path": "storage/qualification-corrections/checker-evidence.txt"
+}
+```
+
+Use the same `validation-plan ... --merged-head ...` and `validate ... --check FRESH_CORRECTED_CHECK_ID --merged-head ... --background` commands above. The plan file must remain outside the frozen pins. Admission checks all run history for the original check under the exact recorded owner, repository, PR and checkout, including previous plan generations. A running, passed, failed, interrupted or unverifiable original is not unexecuted; a real finished failure must use the existing `run_id` route. Both metadata forms together, false/nonboolean `unexecuted`, reused check identities, changed shared inputs and active execution are refused.
+
+The original remains in the plan with no invented run. Once its correction is admitted, attempts to execute the known-invalid original are refused, including a background worker that reaches admission later. Only the fresh corrected process's actual exit zero on unchanged fingerprints can satisfy the obligation. Progress then reports `corrected_unexecuted` with the original ID and actual passing check/run; `passed` still contains only executed checks. Admission alone, an independent historical pass, a running correction, a failed correction or changed inputs provides no credit. The existing audit event records the original and corrected input/driver hashes, diagnosis and evidence hash. A genuinely failed corrected successor retains that failure and may use the failed-check correction route.
+
+Each correction names exactly one original check. Distinct required IDs keep distinct obligations and fresh execution requirements; the tool does not infer equivalence or assign one receipt to several checks. This path does not change Python command-wrapper support, product-source requirements, review gates, closed-PR retirement or task-acceptance rules.
+
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
