@@ -380,6 +380,39 @@ def test_transaction_refuses_real_head_move_between_head_and_cleanliness_reads(l
         assert db.execute("SELECT COUNT(*) FROM audit WHERE event='review_disposition'").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize('path', ['src.txt', 'new-untracked.txt'])
+def test_transaction_refuses_real_write_after_initial_cleanliness_read(local, monkeypatch, capsys, path):
+    store, root, snap, _ = local
+    review = review_snapshot(local)
+    original_disposition, real_run = store.disposition, publication.subprocess.run
+    mutation = {'armed': False, 'executed': False}
+
+    def race(argv, *args, **kwargs):
+        result = real_run(argv, *args, **kwargs)
+        if (mutation['armed'] and argv[:3] == ['git', '-C', str(root)]
+                and argv[3] == 'status' and '--porcelain=v1' in argv):
+            assert not result.stdout.strip()
+            mutation['armed'] = False
+            (root / path).write_text('Changed after the first clean observation')
+            mutation['executed'] = True
+        return result
+
+    def write(*args, **kwargs):
+        mutation['armed'] = True
+        return original_disposition(*args, **kwargs)
+
+    monkeypatch.setattr(publication.subprocess, 'run', race)
+    monkeypatch.setattr(store, 'disposition', write)
+    with pytest.raises(SystemExit):
+        address(local, monkeypatch, capsys, review)
+    assert 'source changed before recording' in capsys.readouterr().err
+    assert mutation['executed'] and git(root, 'rev-parse', 'HEAD') == snap['head_sha']
+    assert git(root, 'status', '--porcelain=v1')
+    assert store.dispositions('Owner/Repo', 1) == []
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='review_disposition'").fetchone()[0] == 0
+
+
 def test_open_address_behavior_and_default_receipt_shape_remain(local, monkeypatch, capsys):
     store, _, _, _ = local
     review = review_snapshot(local, retired=False)

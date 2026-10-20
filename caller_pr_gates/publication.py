@@ -16,8 +16,12 @@ def source(cwd, *, stable=False):
         common=Path(git('rev-parse','--path-format=absolute','--git-common-dir')).resolve()
         result = dict(root=str(root),common=str(common),head=git('rev-parse','HEAD'),branch=git('branch','--show-current'),
                       clean=not git('status','--porcelain=v1','--untracked-files=all'),origin=git('remote','get-url','origin'))
-        if stable and git('rev-parse', 'HEAD') != result['head']:
-            return None
+        if stable:
+            after = git('status', '--porcelain=v2', '--branch', '--untracked-files=all').splitlines()
+            heads = [line.removeprefix('# branch.oid ') for line in after if line.startswith('# branch.oid ')]
+            clean = not any(line for line in after if not line.startswith('#'))
+            if heads != [result['head']] or clean != result['clean']:
+                return None
         return result
     except (OSError,ValueError,subprocess.SubprocessError):return None
 
