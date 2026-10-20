@@ -21,6 +21,7 @@ def test_documented_registration_and_delete_freeze_only_the_retired_name(case, m
     request(DOCS_CONTEXTS)
     before = deepcopy(remote.values[DOCS_PROTECTION])
     rules = deepcopy(remote.values[RULES])
+    assert rules['name'] == 'Protect-Main'
     # The supported setup refreshes the same owner context; no guard relaxation or adoption.
     store.record_session('s', 'codex', str(tmp_path / 'primary'))
     monkeypatch.setattr('sys.argv', ['caller-pr-gates', 'register', value.target,
@@ -55,6 +56,19 @@ def test_documented_registration_and_delete_freeze_only_the_retired_name(case, m
     assert store.validation_plans('s') == [] and len(store.prs('s')) == 1
     with store._connect() as db:
         assert not db.execute("SELECT 1 FROM audit WHERE event='ownership_evidence'").fetchone()
+
+
+@pytest.mark.parametrize('name', ['Protect Main', 'unrelated', ''])
+def test_noncanonical_ruleset_names_refuse_before_any_delete(case, name):
+    store, value, _, remote, request = case
+    request(DOCS_CONTEXTS)
+    remote.values[RULES]['name'] = name
+    before = deepcopy(remote.values)
+    with patch('caller_pr_gates.cli.github_run', remote), pytest.raises(ValueError, match='Protect-Main'):
+        gateway(value, store)
+    assert remote.values == before and remote.writes == []
+    assert audits(store, 'verified') == []
+    assert audits(store, 'incomplete')[-1]['stage'] == 'preflight'
 
 
 @pytest.mark.parametrize('duplicate_contexts', [False, True])

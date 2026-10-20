@@ -123,7 +123,7 @@ caller-pr-gates github --session "$OWNER_SESSION" --client codex \
   --method DELETE --input "$RETIRED_CONTEXT_JSON"
 ```
 
-Admission requires fresh protected-branches-only environment policy, secret **metadata** existence, full classic protection containing the retired name, and independent Protect Main ruleset 5406995. The gateway never reads a plaintext secret. The only write body contains the retired name; it never submits, unsets or replaces the unrelated check list and never writes the ruleset. The full-list `PATCH .../required_status_checks`, other context methods/names and generic protection/ruleset writes remain denied.
+Admission requires fresh protected-branches-only environment policy, secret **metadata** existence, full classic protection containing the retired name, and independent `Protect-Main` ruleset 5406995. The gateway never reads a plaintext secret. The only write body contains the retired name; it never submits, unsets or replaces the unrelated check list and never writes the ruleset. The full-list `PATCH .../required_status_checks`, other context methods/names and generic protection/ruleset writes remain denied.
 
 The receipt retains full actual classic/ruleset snapshots before and after the bounded DELETE, including readbacks after a nonzero or unknown write outcome. A verified receipt requires exit 0, exactly the name removal in both classic check representations, unchanged order/app bindings for every other name, unchanged strict/admin/review/thread controls and unchanged independent ruleset. It also rechecks provisioning metadata, live PR identity and recorded ownership. Multiple bindings at the retired name are intentionally removed. Already-absent names refuse admission instead of creating a new mutation receipt.
 
