@@ -110,7 +110,7 @@ def private_checker_correction(cwd, plan, check, original):
     correction = correction_metadata(check.get("correction"))
     old, new = original["argv"], check["argv"]
     if (len(old) < 2 or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(old[0]).name)
-            or old[1].startswith("-") or len(new) != len(old)
+            or old[1].startswith("-") or len(new) != len(old) or new[1].startswith("-")
             or new[:1] != old[:1] or new[2:] != old[2:]
             or check.get("cwd", ".") != original.get("cwd", ".")
             or check["reason"] != original["reason"]):

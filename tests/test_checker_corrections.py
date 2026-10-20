@@ -31,7 +31,7 @@ def driver(*, corrected=False, suffix=""):
             "    Path('.results').write_text(str(index + 1))\n" + suffix)
 
 
-def prepare(local, *, outcome='fail', private=True, closed=True):
+def prepare(local, *, outcome='fail', private=True, closed=True, arguments=None):
     store, root, snap, plan = local
     with (root / '.git/info/exclude').open('a') as target:
         target.write('.frozen/\n.corrections/\n.results\n.started\n.release\n')
@@ -43,7 +43,7 @@ def prepare(local, *, outcome='fail', private=True, closed=True):
         body = 'import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n'
     (root / name).write_text(body)
     (root / 'src.txt').write_text('fixed')
-    plan.update(checks=[dict(id='native-matched', argv=[sys.executable, name, '--mode', 'compare'],
+    plan.update(checks=[dict(id='native-matched', argv=[sys.executable, name, *(arguments or ['--mode', 'compare'])],
                             reason='Execute both isolated trials with all pinned producer assertions'),
                         dict(id='remaining', argv=[sys.executable, 'check.py'],
                              reason='Retain the other already-declared required check')],
@@ -194,6 +194,22 @@ def test_tracked_checker_still_requires_a_real_product_repair(local):
     _, failed, _ = prepare(local, private=False)
     payload, _ = correction(local, failed)
     with pytest.raises(ValueError, match='tracked changes need a scoped product PR'):
+        save(local, payload)
+
+
+@pytest.mark.parametrize('option', ['-m', '-'])
+def test_private_filename_cannot_substitute_a_python_option_for_the_driver(local, option):
+    _, root, _, _ = local
+    _, failed, _ = prepare(local, arguments=['pytest'])
+    payload, check = correction(local, failed)
+    # The generic runner recognizes "python -m pytest". A private file named
+    # "-m" must not make that different executable program a checker repair.
+    with (root / '.git/info/exclude').open('a') as target:
+        target.write(option + '\n')
+    (root / option).write_text(driver(corrected=True))
+    check['argv'][1] = option
+    check['input_paths'].append(option)
+    with pytest.raises(ValueError, match='preserve its Python interpreter'):
         save(local, payload)
 
 
