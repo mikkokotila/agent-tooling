@@ -541,6 +541,25 @@ def test_unchanged_published_symlink_retains_its_actual_target_pin(local):
     assert store.validation_runs(old['plan_id']) == []
 
 
+def test_changed_symlink_referent_refuses_without_repinning(local):
+    store, root, snap, _ = local
+    (root / 'source-link').symlink_to('src.txt')
+    old = prepare(local, inputs=True)
+    before = snap['head_sha']
+    actual = workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'native-live-crash')['run']
+    assert actual['status'] == 'pass' and actual['exit_code'] == 0
+    (root / 'src.txt').write_text('Published changed referent')
+    final_source(local)
+    assert git(root, 'status', '--porcelain') == ''
+    assert git(root, 'diff', '--name-only', before, snap['head_sha'], '--', 'source-link') == ''
+    with pytest.raises(ValueError, match='do not reproduce the retained fingerprint'):
+        epoch(local, before)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == old
+    assert store.validation_runs(old['plan_id']) == [actual]
+    assert (root / 'source-link').readlink() == Path('src.txt')
+    assert (root / 'src.txt').read_text() == 'Published changed referent'
+
+
 def test_removed_published_file_cannot_remain_as_hidden_source(local):
     store, root, snap, _ = local
     target = root / 'removed-source.py'
