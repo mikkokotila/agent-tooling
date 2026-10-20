@@ -17,6 +17,7 @@ import time
 _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 REMOTE_EVIDENCE_TTL = 120
+_SOURCE_BLOB_BATCH_BYTES = 8 * 1024 * 1024
 _FORBIDDEN_RUNNERS = {"sh", "bash", "zsh", "fish", "csh", "tcsh", "dash", "cmd", "cmd.exe",
                       "powershell", "powershell.exe", "pwsh", "true", "false", "echo", "printf"}
 _VALIDATION_COMMAND = re.compile(
@@ -193,7 +194,8 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     pipeline or background shell operator. Optional input_paths add ignored
     files/directories that the declared check depends on.
     """
-    if not isinstance(payload, dict) or set(payload) - {"checks", "input_paths", "env_names"}:
+    allowed = {"checks", "input_paths", "env_names"} | ({"source_epoch"} if stored else set())
+    if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("validation plan must contain checks and optional input_paths")
     root = Path(cwd).expanduser().resolve()
     if not root.is_dir():
@@ -257,7 +259,17 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
             if not isinstance(check["input_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", check["input_digest"]):
                 raise ValueError("stored qualification input pin is malformed")
             normalized[-1]["input_digest"] = check["input_digest"]
-    return {"checks": normalized, **shared}
+    result = {"checks": normalized, **shared}
+    if stored and "source_epoch" in payload:
+        result["source_epoch"] = payload["source_epoch"]
+    return result
+
+
+def plan_declaration(plan):
+    """Compare caller declarations without runner-owned pins or source provenance."""
+    return {**{key: value for key, value in plan.items() if key not in {"checks", "source_epoch"}},
+            "checks": [{key: value for key, value in check.items() if key != "input_digest"}
+                       for check in plan["checks"]]}
 
 
 def plan_digest(plan: dict) -> str:
@@ -265,8 +277,8 @@ def plan_digest(plan: dict) -> str:
                                     ensure_ascii=False).encode()).hexdigest()
 
 
-def _git(root: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=10)
+def _git(root: Path, *args: str, data=None) -> bytes:
+    result = subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True, timeout=10)
     if result.returncode:
         raise ValueError("validation fingerprint requires a readable Git working tree")
     return result.stdout
@@ -444,7 +456,78 @@ def validation_command(command: str) -> bool:
     return False
 
 
-def fingerprint(cwd: str | Path, plan: dict) -> str:
+def source_snapshots(cwd, previous_head, final_head):
+    """Read both published trees without trusting index hints or running filters."""
+    if (any(not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
+            for head in (previous_head, final_head)) or previous_head == final_head):
+        raise ValueError("--from-head requires a distinct full previous source SHA")
+    root = Path(cwd)
+    _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", previous_head, final_head)
+    trees = []
+    for head in (previous_head, final_head):
+        files, directories = {}, set()
+        for entry in _git(root, "--no-replace-objects", "ls-tree", "-r", "-t", "-l", "-z", "--full-tree", head).split(b"\x00"):
+            if not entry:
+                continue
+            header, path = entry.split(b"\t", 1)
+            mode, kind, blob, size = header.split()
+            path = os.fsdecode(path)
+            if mode == b"040000" and kind == b"tree":
+                directories.add(path)
+            elif mode in {b"100644", b"100755", b"120000"} and kind == b"blob":
+                files[path] = (int(mode, 8), blob, int(size))
+            else:
+                raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
+        trees.append((files, directories))
+    old, final = trees[0][0], trees[1][0]
+    for path in old.keys() | final.keys():
+        if (any(entry and stat.S_ISLNK(entry[0]) for entry in (old.get(path), final.get(path)))
+                and old.get(path) != final.get(path)):
+            raise ValueError("A final-head epoch requires reconstructable ordinary Git source files")
+        if (path not in final and path not in trees[1][1]
+                and ((root / path).exists() or (root / path).is_symlink())):
+            raise ValueError("Removed published source is still present in the checkout")
+    for path in trees[0][1] | trees[1][1]:
+        if (root / path).is_symlink():
+            raise ValueError("Published source directories cannot be symlinked")
+    paths = old.keys() | final.keys() | trees[0][1] | trees[1][1]
+    # Only historical directory types replace current traversal. In the final
+    # checkout a directory may remain solely for unchanged private inputs.
+    return tuple(({path: files.get(path) for path in paths}, directories if index == 0 else None)
+                 for index, (files, directories) in enumerate(trees))
+
+
+def _source_blobs(root, files):
+    """Fetch bounded blob groups instead of retaining both complete source trees."""
+    def read(batch):
+        stream = _git(root, "--no-replace-objects", "cat-file", "--batch",
+                      data=b"\n".join(entry[2] for entry in batch) + b"\n")
+        position = 0
+        for path, mode, expected, expected_size in batch:
+            end = stream.index(b"\n", position)
+            actual, kind, size = stream[position:end].split()
+            size = int(size)
+            position = end + 1
+            if (actual != expected or kind != b"blob" or size != expected_size
+                    or stream[position + size:position + size + 1] != b"\n"):
+                raise ValueError("Historical Git source could not be reconstructed")
+            yield path, mode, memoryview(stream)[position:position + size]
+            position += size + 1
+    batch, total = [], 0
+    for path in sorted(files):
+        if files[path] is None:
+            continue
+        mode, blob, size = files[path]
+        if batch and (len(batch) == 128 or total + size > _SOURCE_BLOB_BATCH_BYTES):
+            yield from read(batch)
+            batch, total = [], 0
+        batch.append((path, mode, blob, size))
+        total += size
+    if batch:
+        yield from read(batch)
+
+
+def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
     Every tracked and untracked nonignored repository file is included. Commit
@@ -456,22 +539,33 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     normalized = normalize_plan(plan, working, stored=True)
     repository = Path(repo_root(working))
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
+    source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, None)
+    source_contents = iter(_source_blobs(repository, source_files))
+    paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
         candidate = working / value
-        if candidate.is_dir() and not candidate.is_symlink():
-            for directory, folders, files in os.walk(candidate, followlinks=False):
+        relative = candidate.relative_to(repository).as_posix()
+        directory = candidate.is_dir() and not candidate.is_symlink()
+        input_files = set()
+        if directory:
+            for current, folders, files in os.walk(candidate, followlinks=False):
                 folders[:] = [folder for folder in folders if folder != ".git"]
-                for name in files + [folder for folder in folders if (Path(directory) / folder).is_symlink()]:
-                    relative = (Path(directory) / name).relative_to(repository)
+                for name in files + [folder for folder in folders if (Path(current) / folder).is_symlink()]:
+                    child = (Path(current) / name).relative_to(repository)
                     # Vitest regenerates execution timings inside its dependency tree.
                     # Tracked files and individually declared inputs still take precedence.
-                    if (len(relative.parts) >= 5 and relative.parts[-5:-2] == ("node_modules", ".vite", "vitest")
-                            and re.fullmatch(r"[0-9a-f]{40}", relative.parts[-2]) and name == "results.json"):
+                    if (len(child.parts) >= 5 and child.parts[-5:-2] == ("node_modules", ".vite", "vitest")
+                            and re.fullmatch(r"[0-9a-f]{40}", child.parts[-2]) and name == "results.json"):
                         continue
-                    paths.add(relative.as_posix())
-        else:
-            relative = candidate.relative_to(repository).as_posix()
+                    input_files.add(child.as_posix())
+        # Never omit current private contents while reconstructing a historical
+        # file/missing path. The old pin must prove those contents unchanged.
+        paths.update(input_files)
+        if source_directories is not None and relative in source_files:
+            directory = (relative in source_directories or source_files[relative] is None
+                         and bool(input_files - source_files.keys()))
+        if not directory:
             paths.add(relative)
             explicit.add(relative)
     digest = hashlib.sha256()
@@ -487,6 +581,32 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
         append(b"unset" if name not in os.environ else b"set" + os.environ[name].encode())
     for value in sorted(paths):
         path = repository / value
+        if value in source_files:
+            historical = source_files[value]
+            if historical is None:
+                if value in explicit:
+                    append(os.fsencode(value))
+                    append(b"missing")
+                continue
+            source_path, mode, body = next(source_contents)
+            if source_path != value:
+                raise ValueError("Published source paths changed during reconstruction")
+            append(os.fsencode(value))
+            if stat.S_ISLNK(mode):
+                # Unchanged links retain the existing target-content pin. The
+                # published link text is independent of the current index.
+                append(str(stat.S_IMODE(path.lstat().st_mode)).encode())
+                append(b"symlink")
+                append(body)
+                if path.is_file():
+                    append(path.read_bytes())
+                elif path.exists():
+                    raise ValueError("directory symlink inputs require explicit file inputs")
+            else:
+                append(str(stat.S_IMODE(mode)).encode())
+                append(b"file")
+                append(body)
+            continue
         try:
             metadata = path.lstat()
         except FileNotFoundError:
@@ -519,12 +639,12 @@ def fingerprint(cwd: str | Path, plan: dict) -> str:
     return digest.hexdigest()
 
 
-def check_fingerprint(cwd, plan, check):
+def check_fingerprint(cwd, plan, check, *, source_snapshot=None):
     """Bind a control's added inputs without changing retained check identities."""
     scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
     for name in ("input_paths", "env_names"):
         scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
-    return fingerprint(cwd, scoped)
+    return fingerprint(cwd, scoped, source_snapshot=source_snapshot)
 
 
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:
@@ -725,3 +845,4 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
     if not required.issubset(gates) or any(gates[name].get("status") != "PASS" for name in required):
         return result("WAIT_REMOTE", "Current review/CI gates still require evidence or action; successful local checks must not be repeated")
     return result("COMPLETE", "Current published head, every necessary local check and every separate PR gate are verified")
+

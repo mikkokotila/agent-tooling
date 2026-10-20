@@ -863,6 +863,7 @@ def main():
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())
     p.add_argument('--merged-head', help='Continue the retained plan on this exact original merged PR head')
+    p.add_argument('--from-head', help='Append a final merged-head epoch from this proven earlier source, preserving the necessary plan')
     p = owned('validate'); p.add_argument('--pr', required=True); p.add_argument('--check', required=True); p.add_argument('--cwd', default=os.getcwd())
     p.add_argument('--merged-head', help='Continue the retained plan on this exact original merged PR head')
     p.add_argument('--background', action='store_true')
@@ -1000,6 +1001,8 @@ def main():
             repo, num, issue = reference(args.pr)
             if issue: raise ValueError('Local validation plans apply to PRs, not review documents')
             sid = session_id(args)
+            if args.command == 'validation-plan' and args.from_head is not None and args.merged_head is None:
+                raise ValueError('--from-head requires --merged-head and the retained necessary plan')
             validation_owner(store,sid,repo,num,args.cwd,args.merged_head)
             os.environ['CALLER_GATE_SESSION']=sid
             if args.command=='validation-plan':
@@ -1042,6 +1045,8 @@ def main():
                 store.set_preflight(repo,num,{'profile':'validation','collected_at':None})
                 raise
             continuation={'merged_head':args.merged_head} if args.merged_head is not None else {}
+            if args.command == 'validation-plan' and args.from_head is not None:
+                continuation['from_head'] = args.from_head
             if args.command=='validation-plan':output=save_plan(store,sid,repo,num,args.cwd,payload,**continuation)
             elif not args.worker and (args.background or len(store.prs(sid))>1):
                 output=launch_check(store,sid,repo,num,args.cwd,args.check,**continuation)
@@ -1088,3 +1093,4 @@ def main():
         raise SystemExit(1)
 
 if __name__ == '__main__': main()
+

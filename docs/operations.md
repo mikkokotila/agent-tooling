@@ -148,6 +148,35 @@ caller-pr-gates validate --session OWNER_SESSION \
 
 The retained plan stays necessary and frozen. `validation-plan` accepts the same `--merged-head` option to retain it or, after an actual failure, add a distinct diagnostic check under the existing rules. It cannot remove required checks, rewrite completed evidence or authorize replay of an unchanged failure. Inspect the actual failed result and diagnose it. A source change beyond the pinned merged product requires its own genuine scoped PR.
 
+### Final published head after an external merge
+
+If the recorded checkout was synchronized to the final published PR head before external merge but its necessary plan still binds an earlier source, explicitly name that earlier commit when binding the **same original plan**:
+
+Pass the original necessary-plan JSON containing `checks` and its input/environment declarations. A CLI result envelope containing `plan` and `progress`, or an empty output left by a failed attempt, is not a plan input. Do not copy runner-owned digests or epoch provenance from a receipt into that original file.
+
+```sh
+caller-pr-gates validation-plan --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --file /absolute/private/original-plan.json \
+  --merged-head FULL_FINAL_PUBLISHED_PR_HEAD_SHA \
+  --from-head FULL_PREVIOUS_PLAN_SOURCE_SHA
+
+caller-pr-gates validate --session OWNER_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --check ORIGINAL_NECESSARY_CHECK_ID \
+  --merged-head FULL_FINAL_PUBLISHED_PR_HEAD_SHA --background
+```
+
+The existing bounded preflight must prove the stable merged PR head, repositories and merge time. The plan must predate that merge, and the exact recorded owner/checkout must be clean at the final head with its matching origin. The earlier full SHA must be an ancestor of the final head. Git objects reconstruct the old tracked-source fingerprint while current private files and declared environment values must reproduce the retained pins; no checkout is rewound and no old code is run. A separate fingerprint reconstructed from the published final tree must match the actual checkout, independently of index hints such as `assume-unchanged` or `skip-worktree`. Historical directory/file/missing types preserve the original declared input meaning across source renames and deletions; current declared directories still include unchanged private inputs after their last tracked child is removed. Source blobs are processed in bounded batches, retaining the existing Git-command timeout. Unavailable history, unreconstructable source (including changed symlinks/submodules), changed private inputs or any altered check/argument/cwd/reason/dependency declaration refuse admission. Source-bound checker-correction receipts cannot transfer through this operation.
+
+Reconstruction is deliberately limited to ordinary Git bytes that reproduce the existing fingerprint. If files were checked out through CRLF/smudge/encoding transformations or had noncanonical historical permissions, raw blobs may not reproduce those recorded working-tree bytes; admission then remains incomplete. The command does not execute historical checkout filters or replace the old pin with a new canonicalization. Likewise, it does not invent the former membership of undeclared untracked files hidden by later ignore rules. An already explicitly pinned private file remains included despite an ignore-rule change, but an unprovable implicit input set is refused with all history retained. These limits require real evidence for any later extension; they are not permission to edit the plan, recreate old source or bypass the fingerprint comparison.
+
+Unchanged symlinks retain their actual target-content pins. This bounded reconstruction does not resolve a historical symlink target graph: if a link is unchanged but its tracked referent changed, the old target-content pin is not reconstructed and admission refuses. It does not substitute the final target's content for a verified historical result or change that old pin. A producer needing that additional reconstruction remains incomplete under this path.
+
+Git-tree absence is not evidence that a declared private directory was absent. Current declared-directory private files always participate in the retained-pin proof, including when the path gains its first tracked child. Unchanged private contents can reproduce the old pin; added or changed private contents cannot be admitted as part of the published source transition.
+
+Admission appends a new plan generation and records its old/new source and input relationship. Previous plans, failures, passes and pending declarations remain in history. The new generation imports **no old execution credit**, including an older pass with matching final-source bytes; every necessary check needs a fresh actual execution. Its before/after pins and actual process exit remain mandatory. A failure in the new generation stays a failure and cannot be reset by repeating the binding command. Repeating the identical command after successful binding is idempotent. Active runs block a transition; let them finish naturally. A commit with unchanged source content cannot create a new epoch. This option does not authorize post-merge tracked edits, a different head, another owner/checkout or new controls in the transition. Subsequent independently pinned controls retain their existing separate admission rules. Retired reminders stay retired, and passing local checks still do not establish task completion.
+
 ### Additional private qualification controls
 
 If remaining acceptance needs a new local driver for the unchanged merged producer, append a new check to the existing plan file with its own `input_paths` (and, when needed, `env_names`). Keep every existing check and the top-level input/environment declarations unchanged. For example, append this check to the existing `checks` list:
@@ -243,3 +272,4 @@ The original remains in the plan with no invented run. Once its correction is ad
 Each correction names exactly one original check. Distinct required IDs keep distinct obligations and fresh execution requirements; the tool does not infer equivalence or assign one receipt to several checks. This path does not change Python command-wrapper support, product-source requirements, review gates, closed-PR retirement or task-acceptance rules.
 
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
+
