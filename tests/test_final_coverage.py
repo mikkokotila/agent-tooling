@@ -181,6 +181,7 @@ def qualify(data):
 def test_absent_original_checkout_unknown_private_bytes_and_divergent_heads_allow_current_full_coverage(delivered):
     data = delivered
     before = history(data['store'])
+    final_phase = workflow.current_phase(data['store'], data['context']['final']['row'])
     shutil.rmtree(data['original'])
     result = qualify(data)
     assert result['qualification_verified'] and result['completion_verified'] is False
@@ -192,7 +193,11 @@ def test_absent_original_checkout_unknown_private_bytes_and_divergent_heads_allo
     assert data['context']['original']['scope'] != data['context']['final']['scope']
     assert history(data['store']) == before and not data['store'].prs('s')
     assert not data['store'].validation_evidence(data['context']['original']['row']['plan_id'])[-1]['status'] == 'pass'
-    assert {g['status'] for g in workflow.task_progress(data['store'], 's')} == {'PASS'}
+    gates = {g['number']: g for g in workflow.task_progress(data['store'], 's')}
+    assert gates[1]['status'] == 'PASS'
+    assert gates[2]['evidence']['phase'] == final_phase['phase']
+    assert 'qualification_verified' not in gates[2]['evidence']
+    assert data['store'].final_coverage_receipt('s', data['context']['final']['row']['plan_id']) is None
     assert len(data['calls']) == 5
     assert next(g for g in evaluate_pr(data['proof']['final'], []) if g['gate'] == 'MERGE_READY')['status'] == 'WAIT'
 
@@ -316,8 +321,10 @@ def test_current_final_input_and_review_drift_invalidate_only_the_coverage_recei
     qualify(data)
     before = history(store)
     (data['final'] / 'src.txt').write_text('changed')
-    result = workflow.task_progress(store, 's')
-    assert all(g['status'] == 'WAIT' and g['evidence']['phase'] == 'SUCCESSOR_INCOMPLETE' for g in result)
+    result = {g['number']: g for g in workflow.task_progress(store, 's')}
+    assert result[1]['status'] == 'WAIT' and result[1]['evidence']['phase'] == 'SUCCESSOR_INCOMPLETE'
+    assert result[2]['evidence']['phase'] == workflow.current_phase(store, data['context']['final']['row'])['phase']
+    assert 'qualification_verified' not in result[2]['evidence']
     assert history(store) == before
 
 

@@ -607,9 +607,8 @@ class Store:
         with self._connect() as db:
             row = db.execute('''SELECT id,fields FROM audit WHERE event='validation_final_coverage'
                 AND json_extract(fields,'$.context.session_id')=?
-                AND (json_extract(fields,'$.context.original.row.plan_id')=?
-                     OR json_extract(fields,'$.context.final.row.plan_id')=?) ORDER BY id DESC LIMIT 1''',
-                (sid, plan_id, plan_id)).fetchone()
+                AND json_extract(fields,'$.context.original.row.plan_id')=? ORDER BY id DESC LIMIT 1''',
+                (sid, plan_id)).fetchone()
             return {'id': row['id'], **json.loads(row['fields'])} if row else None
 
     def _checker_corrections(self, db, existing, plan, checks, old_checks):
