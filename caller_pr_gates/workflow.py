@@ -14,6 +14,7 @@ import uuid
 
 from . import progress
 from .policy import evaluate_pr, evaluate_review
+from .copilot import is_service_review
 
 
 def _run_process(argv, cwd):
@@ -76,7 +77,8 @@ def evidence_digest(snapshot, dispositions, previous=None):
     exempt = set(reviews[0].get('evidence', {}).get('verified_conclusion_replies', []))
     comments = sorted((str(c.get('id')), str(c.get('updated_at')),
                        hashlib.sha256(str(c.get('body', '')).encode()).hexdigest())
-                      for c in snapshot.get('comments', []) if c.get('url') not in exempt and c.get('body'))
+                      for c in snapshot.get('comments', []) if c.get('url') not in exempt
+                      and c.get('body') and not is_service_review(c))
     failures = []
     from .copilot import is_service_check
     for check in snapshot.get('checks', []):
