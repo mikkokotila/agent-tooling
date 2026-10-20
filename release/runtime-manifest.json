@@ -28,6 +28,6 @@
     "caller_pr_gates/workflow.py": "417f2e1693e7493f81d3940262b1ca62e885eae4ccdd0e933fd368ceff5e7050"
   },
   "known_defects": [],
-  "runtime_version": "1.7.43",
-  "version": "0.1.43"
+  "runtime_version": "1.7.44",
+  "version": "0.1.44"
 }

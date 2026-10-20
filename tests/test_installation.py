@@ -1,6 +1,6 @@
 """Deployment, crash/error rollback, real native callbacks and evidence retention."""
 from pathlib import Path
-import copy, json, os, shutil, sqlite3, sys, time, zipfile
+import copy, json, os, shutil, sqlite3, subprocess, sys, time, zipfile
 import pytest
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -409,3 +409,83 @@ def test_coordination_receipts_survive_upgrade_and_rollback(installed):
     with co.db() as db:before=[dict(r) for r in db.execute('SELECT * FROM cooldowns')]
     manage.deploy(home,service);manage.rollback(home,service)
     with co.db() as db:assert [dict(r) for r in db.execute('SELECT * FROM cooldowns')]==before
+
+
+def launcher_child(tmp_path, program, inherited_path):
+    """Exercise the generated shell launcher with an isolated CLI probe."""
+    home=tmp_path/'launcher-home'
+    package=home/'.local/share/caller-pr-gates/caller_pr_gates'
+    package.mkdir(parents=True)
+    (package/'__init__.py').write_text('')
+    (package/'cli.py').write_text(program)
+    python=home/'.local/share/caller-pr-stop-gate/bin/python'
+    python.parent.mkdir(parents=True);python.symlink_to(sys.executable)
+    launcher=home/'.local/bin/caller-pr-gates'
+    launcher.parent.mkdir(parents=True);launcher.write_bytes(manage.render('launcher.sh',home))
+    result=subprocess.run(['/bin/sh',str(launcher)],cwd=tmp_path,
+        env=dict(os.environ,HOME=str(home),PATH=inherited_path),
+        capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stderr
+    assert result.stderr==''
+    return home,json.loads(result.stdout)
+
+
+def test_generated_launcher_keeps_path_controlled(tmp_path):
+    foreign=tmp_path/'inherited-bin';foreign.mkdir()
+    probe=foreign/'ambient-only-path-probe'
+    probe.write_text('#!/bin/sh\nexit 0\n');probe.chmod(0o755)
+    home,result=launcher_child(tmp_path,
+        'import json,os,shutil\n'
+        'print(json.dumps({"path":os.environ["PATH"].split(os.pathsep),'
+        '"foreign":shutil.which("ambient-only-path-probe")}))\n',
+        str(foreign)+':/sbin')
+    assert result['path']==['/opt/homebrew/bin','/usr/local/bin','/usr/bin','/bin',
+                            '/usr/sbin',str(home/'.local/bin')]
+    assert result['foreign'] is None
+
+
+@pytest.mark.skipif(sys.platform!='darwin',reason='Requires the actual macOS system sysctl')
+def test_generated_launcher_child_discovers_actual_physical_cores(tmp_path):
+    _,result=launcher_child(tmp_path,
+        'import json,shutil,subprocess,warnings\n'
+        'warnings.simplefilter("error")\n'
+        'resolved=shutil.which("sysctl")\n'
+        'child=subprocess.run(["sysctl","-n","hw.physicalcpu"],'
+        'check=True,capture_output=True,text=True,timeout=10)\n'
+        'print(json.dumps({"resolved":resolved,"cores":int(child.stdout),'
+        '"stderr":child.stderr}))\n',
+        '')
+    assert result['resolved']=='/usr/sbin/sysctl'
+    assert result['cores']>0
+    assert result['stderr']==''
+
+
+@pytest.mark.parametrize('active_worker',[False,True])
+def test_launcher_only_upgrade_preserves_worker_admission_and_rollback(installed,active_worker):
+    home,service=installed;launcher=home/'.local/bin/caller-pr-gates'
+    # Normalize the fixture's legacy instructions before isolating this asset.
+    manage.deploy(home,service)
+    desired=manage.render('launcher.sh',home)
+    previous=desired.replace(b':/usr/sbin:',b':')
+    assert previous!=desired
+    launcher.write_bytes(previous)
+    current=json.loads((home/'.local/share/agent-tooling/current.json').read_text())
+    pending=manage.desired_assets(home,current)
+    assert {name for name,data in pending.items() if Path(name).read_bytes()!=data}=={str(launcher)}
+    state=home/'.local/state/caller-pr-gates/registry.sqlite3'
+    if active_worker:
+        with sqlite3.connect(state) as db:
+            db.execute('CREATE TABLE pr_watch(lease_until REAL)')
+            db.execute('INSERT INTO pr_watch VALUES(?)',(time.time()+300,))
+        before=original_bytes(home)
+        with pytest.raises(RuntimeError,match='lease'):manage.deploy(home,service)
+        assert original_bytes(home)==before and service.stops==service.starts==0
+        return
+    result=manage.deploy(home,service)
+    assert result['code_unchanged'] and result['runtime_unchanged']
+    assert not result['service_restarted'] and launcher.read_bytes()==desired
+    with sqlite3.connect(state) as db:db.execute('UPDATE evidence SET value="post-upgrade work"')
+    assert not manage.rollback(home,service)['state_restored']
+    assert launcher.read_bytes()==previous and service.stops==service.starts==0
+    with sqlite3.connect(state) as db:
+        assert db.execute('SELECT value FROM evidence').fetchone()[0]=='post-upgrade work'
