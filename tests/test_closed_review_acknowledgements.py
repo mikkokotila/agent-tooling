@@ -7,12 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from caller_pr_gates import cli, monitor, workflow
+from caller_pr_gates.policy import evaluate_pr
 from caller_pr_gates.store import Store
 import test_closed_review_receipts as closed
 from test_workflow import local, git
 
 
-def gateway_comment(local, monkeypatch, *, sid='s', cwd=None, client='codex', operation='comment'):
+def gateway_comment(local, monkeypatch, *, sid='s', cwd=None, client='codex', operation='comment', body_file=None):
     store, root, _, _ = local
     calls = []
 
@@ -21,9 +22,13 @@ def gateway_comment(local, monkeypatch, *, sid='s', cwd=None, client='codex', op
         return subprocess.CompletedProcess(argv, 0, stdout=closed.URL + '#issuecomment-12\n', stderr='')
 
     monkeypatch.setattr(cli, 'github_run', upstream)
+    body = ['--body', closed.REASON]
+    if body_file is not None:
+        body_file.write_text(closed.REASON)
+        body = ['--body-file', str(body_file)]
     args = SimpleNamespace(session=sid, client=client, cwd=str(cwd or root), kind=None,
                            slice_id=None, target=None,
-                           arguments=['pr', operation, closed.URL, '--body', closed.REASON])
+                           arguments=['pr', operation, closed.URL, *body])
     cli.gateway(args, store)
     assert calls == [['gh', *args.arguments]]
 
@@ -80,16 +85,61 @@ def test_completed_gateway_acknowledgements_allow_both_parent_receipts_without_r
     assert workflow.task_progress(store, 's')[0]['status'] != 'PASS'
 
 
+def test_legacy_comment_then_body_edits_keep_both_receipts_on_the_retained_checkout(
+        local, tmp_path, monkeypatch, capsys):
+    store, root, _, plan = local
+    row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    review = closed.review_snapshot(local)
+    gateway_comment(local, monkeypatch)
+    gateway_comment(local, monkeypatch, operation='edit', body_file=tmp_path / 'first-body.md')
+    retire(local)
+    gateway_comment(local, monkeypatch, operation='edit', body_file=tmp_path / 'second-body.md')
+    retire(local)
+    legacy_registration_audits(store)
+    before = retained_state(store)
+    first, _ = closed.address(local, monkeypatch, capsys, review)
+    final, _ = closed.address(local, monkeypatch, capsys, review, comment='review:11')
+    assert first['receipt']['checkout_anchor'] == {'kind': 'validation_plan', 'id': row['plan_id'], 'cwd': str(root)}
+    assert {gate['status'] for gate in final['review_gates']} == {'PASS'}
+    assert final['completion_verified'] is False and retained_state(store) == before
+    assert not store.prs('s') and not store.validation_runs(row['plan_id'])
+    assert workflow.task_progress(store, 's')[0]['status'] != 'PASS'
+
+
 def test_new_registration_audit_anchors_receipts_without_a_validation_plan(local, monkeypatch, capsys):
     store, root, _, _ = local
     review = closed.review_snapshot(local)
     gateway_comment(local, monkeypatch)
     retire(local)
     owner = store.closed_review_owner('s', 'Owner/Repo', 1, root)
-    assert owner['identity']['original_cwd'] == str(root)
+    assert owner['identity']['checkout_anchor']['cwd'] == str(root)
+    assert owner['identity']['checkout_anchor']['kind'] == 'registration'
     assert owner['identity']['registration_history'][0]['client'] == 'codex'
     assert not store.validation_plans('s')
     assert closed.address(local, monkeypatch, capsys, review)[0]['receipt']['closed_head'] == review['head_sha']
+
+
+def test_legacy_original_alias_and_current_canonical_path_use_the_same_checkout(
+        local, tmp_path, monkeypatch, capsys):
+    _, root, snap, plan = local
+    alias = tmp_path / 'alias'
+    alias.symlink_to(root, target_is_directory=True)
+    store = Store(tmp_path / 'alias-state')
+    store.register('s', 'codex', 'Owner/Repo', 1, alias)
+    store.set_snapshot('Owner/Repo', 1, snap, evaluate_pr(snap, []))
+    context = (store, root, snap, plan)
+    row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    review = closed.review_snapshot(context)
+    gateway_comment(context, monkeypatch)
+    retire(context)
+    legacy_registration_audits(store)
+    before = retained_state(store)
+    first, _ = closed.address(context, monkeypatch, capsys, review, cwd=alias)
+    final, _ = closed.address(context, monkeypatch, capsys, review, comment='review:11')
+    assert first['receipt']['checkout_anchor'] == {'kind': 'validation_plan', 'id': row['plan_id'], 'cwd': str(root)}
+    assert final['receipt']['cwd'] == str(root)
+    assert {gate['status'] for gate in final['review_gates']} == {'PASS'}
+    assert retained_state(store) == before
 
 
 @pytest.mark.parametrize('change', ['missing', 'late'])
@@ -108,13 +158,13 @@ def test_legacy_repeated_registration_needs_a_pre_retirement_checkout_anchor(
             db.execute('UPDATE validation_plans SET created_at=? WHERE plan_id=?', (stamp + 1, row['plan_id']))
     with pytest.raises(SystemExit):
         closed.address(local, monkeypatch, capsys, review)
-    assert 'immutable original checkout' in capsys.readouterr().err
+    assert 'pre-retirement checkout anchor' in capsys.readouterr().err
     assert store.dispositions('Owner/Repo', 1) == []
 
 
 @pytest.mark.parametrize('change', ['plain_register', 'wrong_origin', 'wrong_operation', 'wrong_target',
                                    'wrong_actor', 'duplicate_proof', 'unretired'])
-def test_only_completed_original_owner_gateway_comment_cycles_are_admitted(
+def test_only_completed_original_owner_gateway_acknowledgement_cycles_are_admitted(
         local, monkeypatch, capsys, change):
     store, root, _, _ = local
     review = closed.review_snapshot(local)
@@ -182,8 +232,9 @@ def test_original_root_receipt_survives_registration_by_a_different_client_child
     assert {receipt['comment_id'] for receipt in store.dispositions('Owner/Repo', 1)} == {'review:10'}
 
 
-def test_legacy_plan_created_in_another_checkout_cannot_establish_original_registration(
-        local, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('legacy', [True, False])
+def test_plan_checkout_is_an_explicit_legacy_anchor_not_registration_history_proof(
+        local, tmp_path, monkeypatch, capsys, legacy):
     store, root, _, plan = local
     other = tmp_path / 'other'
     git(root, 'clone', '-q', str(root), str(other))
@@ -193,13 +244,22 @@ def test_legacy_plan_created_in_another_checkout_cannot_establish_original_regis
     review = closed.review_snapshot(local)
     gateway_comment(local, monkeypatch, cwd=other)
     retire(local)
-    legacy_registration_audits(store)
-    with pytest.raises(SystemExit):
-        closed.address(local, monkeypatch, capsys, review, cwd=other)
-    assert store.dispositions('Owner/Repo', 1) == []
+    if legacy:
+        legacy_registration_audits(store)
+        before = retained_state(store)
+        result, _ = closed.address(local, monkeypatch, capsys, review, cwd=other)
+        assert result['receipt']['checkout_anchor'] == {'kind': 'validation_plan', 'id': row['plan_id'], 'cwd': str(other)}
+        assert result['completion_verified'] is False and retained_state(store) == before
+        assert not store.validation_runs(row['plan_id'])
+        assert workflow.task_progress(store, 's')[0]['status'] != 'PASS'
+    else:
+        # A recorded original checkout cannot be replaced by a plan elsewhere.
+        with pytest.raises(SystemExit):
+            closed.address(local, monkeypatch, capsys, review, cwd=other)
+        assert store.dispositions('Owner/Repo', 1) == []
 
 
-@pytest.mark.parametrize('change', ['owner', 'child', 'client', 'checkout', 'head', 'lifecycle'])
+@pytest.mark.parametrize('change', ['owner', 'child', 'client', 'head', 'lifecycle'])
 def test_restoring_current_identity_cannot_hide_a_changed_registration_or_retirement(
         local, tmp_path, monkeypatch, capsys, change):
     store, root, snap, _ = local
@@ -210,11 +270,6 @@ def test_restoring_current_identity_cannot_hide_a_changed_registration_or_retire
         gateway_comment(local, monkeypatch, sid=sid)
     elif change == 'client':
         gateway_comment(local, monkeypatch, client='claude')
-    elif change == 'checkout':
-        other = tmp_path / 'other'
-        git(root, 'clone', '-q', str(root), str(other))
-        git(other, 'remote', 'set-url', 'origin', 'https://github.com/Owner/Repo.git')
-        gateway_comment(local, monkeypatch, cwd=other)
     else:
         gateway_comment(local, monkeypatch)
     retire(local, head='b' * 40 if change == 'head' else None, merged=change != 'lifecycle')
@@ -241,10 +296,12 @@ def test_legacy_plan_anchor_rejects_a_new_checkout_with_the_same_head(local, tmp
     assert store.dispositions('Owner/Repo', 1) == []
 
 
-def test_legacy_checkout_roundtrip_cannot_hide_an_intervening_checkout_change(
-        local, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('legacy', [True, False])
+def test_checkout_roundtrip_preserves_history_but_requires_the_current_retained_root(
+        local, tmp_path, monkeypatch, capsys, legacy):
     store, root, _, plan = local
-    workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)
+    row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    assert workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'regression')['run']['exit_code'] == 1
     review = closed.review_snapshot(local)
     other = tmp_path / 'other'
     git(root, 'clone', '-q', str(root), str(other))
@@ -253,12 +310,46 @@ def test_legacy_checkout_roundtrip_cannot_hide_an_intervening_checkout_change(
     retire(local)
     gateway_comment(local, monkeypatch)
     retire(local)
+    if legacy:
+        legacy_registration_audits(store)
+    before = retained_state(store)
+    # The receipt proves current source/review identity, not that earlier
+    # comments were executed in this checkout. The other root is still refused.
+    with pytest.raises(SystemExit):
+        closed.address(local, monkeypatch, capsys, review, cwd=other)
+    assert store.dispositions('Owner/Repo', 1) == []
+    result, _ = closed.address(local, monkeypatch, capsys, review)
+    assert result['receipt']['cwd'] == str(root)
+    assert result['receipt']['checkout_anchor']['cwd'] == str(root)
+    assert result['completion_verified'] is False and retained_state(store) == before
+    assert [run['status'] for run in store.validation_runs(row['plan_id'])] == ['fail']
+    assert workflow.task_progress(store, 's')[0]['status'] != 'PASS'
+
+
+@pytest.mark.parametrize('change', ['dirty', 'head', 'origin', 'reply', 'lifecycle'])
+def test_legacy_body_edit_history_cannot_bypass_current_source_or_review_proof(
+        local, tmp_path, monkeypatch, capsys, change):
+    store, root, _, plan = local
+    workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)
+    review = closed.review_snapshot(local)
+    gateway_comment(local, monkeypatch, operation='edit', body_file=tmp_path / 'body.md')
+    retire(local)
     legacy_registration_audits(store)
-    # The current mutable rows have returned to the original root, but the
-    # first plan alone cannot establish each later legacy registration's cwd.
+    if change == 'dirty':
+        (root / 'src.txt').write_text('unpublished')
+    elif change == 'head':
+        git(root, 'commit', '--allow-empty', '-qm', 'Different source identity')
+    elif change == 'origin':
+        git(root, 'remote', 'set-url', 'origin', 'https://github.com/Other/Repo.git')
+    elif change == 'reply':
+        review['comments'][-1]['body'] = 'An unrelated acknowledgement.'
+    else:
+        review.update(state='open', merged=False)
+    before = retained_state(store)
     with pytest.raises(SystemExit):
         closed.address(local, monkeypatch, capsys, review)
     assert store.dispositions('Owner/Repo', 1) == []
+    assert retained_state(store) == before and not store.prs('s')
 
 
 @pytest.mark.parametrize('phase', ['collection', 'transaction'])

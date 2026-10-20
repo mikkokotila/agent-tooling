@@ -305,11 +305,12 @@ class Store:
             raise ValueError('Closed review receipts require the exact retained owner and retired PR')
         repeated = [r for r in registrations if r['id'] > retirements[0]['id']]
         acknowledgements = []
-        original_cwd = registrations[0].get('cwd')
+        anchor = ({'kind': 'registration', 'id': registrations[0]['id'], 'cwd': registrations[0]['cwd']}
+                  if registrations[0].get('cwd') else None)
         if repeated:
-            # Successful gateway comments register their existing owner before
-            # the next ordinary lifecycle read retires the same PR again. Only
-            # that evidenced cycle can continue; an arbitrary register cannot.
+            # Successful gateway comments/edits register their existing owner.
+            # The legacy audit records the verb, not the edit's fields or cwd.
+            # This admits a current review receipt, not historical source work.
             for registered in repeated:
                 # Registration and its evidence are separate committed writes.
                 # A normal retirement may interleave; another registration may
@@ -321,23 +322,25 @@ class Store:
                     (registered['id'], boundary, f'https://github.com/{repo}/pull/{num}'))]
                 proof = json.loads(proofs[0]['fields']) if len(proofs) == 1 else {}
                 if (registered['session_id'] != sid or proof.get('session_id') != sid
-                        or proof.get('origin') != 'gateway_write' or proof.get('operation') != ['pr', 'comment']):
+                        or proof.get('origin') != 'gateway_write'
+                        or proof.get('operation') not in (['pr', 'comment'], ['pr', 'edit'])):
                     raise ValueError('Closed review receipts require proven same-owner gateway acknowledgements')
                 acknowledgements.append(proofs[0]['id'])
-            if not original_cwd:
-                # Legacy registration audits lack cwd. A plan predating the
-                # first retirement supplies an immutable original checkout.
-                plan = db.execute('''SELECT cwd FROM validation_plans WHERE session_id=? AND repository=?
+            if not anchor:
+                # A legacy plan anchors this owner's declared checkout before
+                # closure; it does not reconstruct any registration's cwd.
+                plan = db.execute('''SELECT plan_id,cwd FROM validation_plans WHERE session_id=? AND repository=?
                     AND number=? AND created_at<=? ORDER BY created_at, plan_id LIMIT 1''',
                     (sid, repo, num, retirements[0]['recorded_at'])).fetchone()
-                original_cwd = plan['cwd'] if plan else None
-            if not original_cwd:
-                raise ValueError('Repeated closed registration lacks an immutable original checkout')
+                anchor = {'kind': 'validation_plan', 'id': plan['plan_id'], 'cwd': plan['cwd']} if plan else None
+            if not anchor:
+                raise ValueError('Repeated closed registration lacks a pre-retirement checkout anchor')
         if any(r.get('client', clients.get(r['session_id'])) != clients.get(r['session_id']) for r in registrations):
             raise ValueError('Closed review receipts require the original recorded client')
         return {'registration': dict(first), 'retirement': retirements[-1],
                 'registration_history': registrations, 'retirement_history': retirements,
-                'acknowledgements': acknowledgements, 'original_cwd': original_cwd or first['cwd'],
+                'acknowledgements': acknowledgements,
+                'checkout_anchor': anchor or {'kind': 'retained_registration', 'id': registrations[0]['id'], 'cwd': first['cwd']},
                 'watch': {key: watch[key] for key in
                 ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')}}
 
@@ -349,8 +352,7 @@ class Store:
             identity = self._closed_review_owner(db, sid, repo, num)
         # Resolve the recorded checkout before the write transaction; the final
         # source check is repeated there immediately before the receipt insert.
-        recorded = [identity['watch']['cwd'], identity['registration']['cwd'], identity['original_cwd'],
-                    *[r['cwd'] for r in identity['registration_history'] if 'cwd' in r]]
+        recorded = {identity['watch']['cwd'], identity['registration']['cwd'], identity['checkout_anchor']['cwd']}
         if any(checkout(cwd) != directory for cwd in recorded):
             raise ValueError('Closed review receipts require the original recorded checkout')
         return {'repository': repo, 'number': num, 'cwd': directory, 'identity': identity}
