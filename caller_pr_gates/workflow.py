@@ -73,7 +73,7 @@ def review_owner(store, sid, repository, number, cwd, closed_head=None, *, snaps
                 or not isinstance(snapshot.get('head_ref'), str) or not snapshot['head_ref']
                 or closed_head not in snapshot.get('commit_shas', [])):
             raise ValueError('Closed review receipts require fresh coherent proof of the exact closed PR source')
-    return row
+    return dict(row, source=local)
 
 
 def validation_owner(store, sid, repository, number, cwd, merged_head=None, *, preflight=False):

@@ -320,6 +320,28 @@ def test_receipt_transaction_rechecks_owner_after_preflight(local, monkeypatch, 
     assert store.dispositions('Owner/Repo', 1) == []
 
 
+@pytest.mark.parametrize('change', ['dirty', 'head'])
+def test_receipt_transaction_rechecks_real_source_after_preflight(local, monkeypatch, capsys, change):
+    store, root, _, _ = local
+    review = review_snapshot(local)
+    original = store.disposition
+
+    def race(*args, **kwargs):
+        if change == 'dirty':
+            (root / 'src.txt').write_text('changed after the final preflight')
+        else:
+            git(root, 'commit', '--allow-empty', '-qm', 'Head moved after final preflight')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, 'disposition', race)
+    with pytest.raises(SystemExit):
+        address(local, monkeypatch, capsys, review)
+    assert 'source changed before recording' in capsys.readouterr().err
+    assert store.dispositions('Owner/Repo', 1) == []
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='review_disposition'").fetchone()[0] == 0
+
+
 def test_open_address_behavior_and_default_receipt_shape_remain(local, monkeypatch, capsys):
     store, _, _, _ = local
     review = review_snapshot(local, retired=False)

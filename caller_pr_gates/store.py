@@ -307,7 +307,8 @@ class Store:
         with self._connect() as db:
             db.execute('BEGIN')
             identity = self._closed_review_owner(db, sid, repo, num)
-        # Git reads stay outside the receipt write transaction.
+        # Resolve the recorded checkout before the write transaction; the final
+        # source check is repeated there immediately before the receipt insert.
         if (checkout(identity['watch']['cwd']) != directory
                 or checkout(identity['registration']['cwd']) != directory):
             raise ValueError('Closed review receipts require the original recorded checkout')
@@ -327,6 +328,12 @@ class Store:
             if closed_owner is not None:
                 if self._closed_review_owner(db, session_id, repository, number) != closed_owner['identity']:
                     raise ValueError('Retained review ownership changed before recording the receipt')
+                from .publication import source, exact_source
+                current = source(closed_owner['cwd'])
+                if (not exact_source(closed_owner, current) or current != closed_owner['source']
+                        or current['head'] != receipt.get('closed_head')
+                        or current['head'] != closed_owner['identity']['retirement'].get('head_sha')):
+                    raise ValueError('Retained review source changed before recording the receipt')
             else:
                 owned = self._task_sessions(db, session_id)
                 pr_owned = any(row[0] in owned for row in db.execute("SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repository, number)))
