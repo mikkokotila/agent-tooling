@@ -186,6 +186,26 @@ def test_legacy_plan_anchor_rejects_a_new_checkout_with_the_same_head(local, tmp
     assert store.dispositions('Owner/Repo', 1) == []
 
 
+def test_legacy_checkout_roundtrip_cannot_hide_an_intervening_checkout_change(
+        local, tmp_path, monkeypatch, capsys):
+    store, root, _, plan = local
+    workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)
+    review = closed.review_snapshot(local)
+    other = tmp_path / 'other'
+    git(root, 'clone', '-q', str(root), str(other))
+    git(other, 'remote', 'set-url', 'origin', 'https://github.com/Owner/Repo.git')
+    gateway_comment(local, monkeypatch, cwd=other)
+    retire(local)
+    gateway_comment(local, monkeypatch)
+    retire(local)
+    legacy_registration_audits(store)
+    # The current mutable rows have returned to the original root, but the
+    # first plan alone cannot establish each later legacy registration's cwd.
+    with pytest.raises(SystemExit):
+        closed.address(local, monkeypatch, capsys, review)
+    assert store.dispositions('Owner/Repo', 1) == []
+
+
 @pytest.mark.parametrize('phase', ['collection', 'transaction'])
 def test_another_valid_cycle_during_admission_still_requires_fresh_receipt_collection(
         local, monkeypatch, capsys, phase):
