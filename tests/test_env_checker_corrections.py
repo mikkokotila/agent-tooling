@@ -9,8 +9,8 @@ import pytest
 
 from caller_pr_gates import cli, github, progress, workflow
 from test_checker_corrections import correction, driver, prepare, save
-from test_post_merge_qualification import run
-from test_workflow import local
+from test_post_merge_qualification import merge, run
+from test_workflow import local, publish
 
 
 PREFIX = ['env', 'PYTHONPATH=.frozen', 'POLARS_MAX_THREADS=2']
@@ -149,6 +149,85 @@ def test_existing_direct_python_option_guard_is_unchanged(tmp_path):
         progress.normalize_plan({'checks': [dict(id='direct',
             argv=[sys.executable, 'check.py', '-c', 'config.json'],
             reason='Preserve the existing direct-runner guard')]}, tmp_path)
+
+
+@pytest.mark.parametrize('shared_kind', ['file', 'directory'])
+def test_frozen_env_driver_shared_pin_needs_no_declaration_rewrite(local, monkeypatch, subtests, shared_kind):
+    store, root, _, plan = local
+    monkeypatch.setenv('CHECKER_DEPENDENCY', 'original')
+    with (root / '.git/info/exclude').open('a') as target:
+        target.write('.frozen/\n.corrections/\n.results\n')
+    (root / '.frozen').mkdir()
+    (root / '.frozen/dependency.txt').write_text('pinned')
+    (root / '.frozen/extra.txt').write_text('extra dependency')
+    extra_assertion = "from pathlib import Path\nassert Path('.frozen/extra.txt').read_text() == 'extra dependency'\n"
+    (root / '.frozen/check.py').write_text(extra_assertion + driver())
+    (root / 'src.txt').write_text('fixed')
+    plan['input_paths'] = (['.frozen/check.py', '.frozen/dependency.txt'] if shared_kind == 'file' else ['.frozen'])
+    publish(local)
+    baseline = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    merge(local)
+    payload = deepcopy(plan)
+    original_check = dict(id='env-original', argv=[*PREFIX, sys.executable, '.frozen/check.py', '--mode', 'compare'],
+        reason='Execute both isolated trials with all pinned producer assertions',
+        input_paths=['.frozen/extra.txt'], env_names=['CHECKER_DEPENDENCY'])
+    payload['checks'].append(original_check)
+    retained = save(local, payload)['plan']
+    assert retained['plan_id'] == baseline['plan_id'] and retained['input_digest'] == baseline['input_digest']
+    normalized = progress.normalize_plan(retained['plan'], root, stored=True)
+    assert normalized == retained['plan']
+    assert normalized['checks'][-1]['input_paths'] == ['.frozen/extra.txt']
+    assert normalized['input_paths'] == baseline['plan']['input_paths']
+    assert progress.fingerprint(root, retained['plan']) == baseline['input_digest']
+    assert progress.check_fingerprint(root, retained['plan'], original_check) == retained['plan']['checks'][-1]['input_digest']
+    failed = run(local, original_check['id'])['run']
+    assert failed['status'] == 'fail' and failed['exit_code'] == 125
+    revised, check = correction(local, failed, payload=payload, identifier='env-corrected',
+        script_index=SCRIPT_INDEX, body=extra_assertion + corrected_body())
+    for change in ['missing new driver pin', 'new driver moved to shared pins']:
+        with subtests.test(change=change):
+            invalid = deepcopy(revised)
+            invalid['checks'][-1]['input_paths'].remove(check['argv'][SCRIPT_INDEX])
+            if change == 'new driver moved to shared pins':
+                invalid['input_paths'].append(check['argv'][SCRIPT_INDEX])
+            with pytest.raises(ValueError):
+                save(local, invalid)
+            assert store.validation_plan('s', 'Owner/Repo', 1, root) == retained
+            assert store.validation_runs(retained['plan_id']) == [failed]
+    row = save(local, revised)['plan']
+    assert row['input_digest'] == baseline['input_digest']
+    assert row['plan']['checks'][:2] == retained['plan']['checks']
+    assert row['plan']['input_paths'] == retained['plan']['input_paths']
+    dependency = root / '.frozen/extra.txt'
+    dependency.write_text('changed dependency')
+    try:
+        with pytest.raises(ValueError):
+            run(local, check['id'])
+    finally:
+        dependency.write_text('extra dependency')
+    with monkeypatch.context() as context:
+        context.setenv('CHECKER_DEPENDENCY', 'changed')
+        with pytest.raises(ValueError):
+            run(local, check['id'])
+    assert store.validation_runs(row['plan_id']) == [failed]
+    actual = run(local, check['id'])
+    assert actual['run']['status'] == 'pass' and actual['run']['exit_code'] == 0
+    assert actual['run']['before_digest'] == actual['run']['after_digest']
+    assert actual['progress']['corrected_failures'][0]['failed_run_id'] == failed['run_id']
+    assert actual['progress']['pending'] == ['regression']
+    assert store.validation_runs(row['plan_id']) == [failed, actual['run']]
+    assert row['plan']['checks'][1] == retained['plan']['checks'][1]
+
+
+@pytest.mark.parametrize('shared', [[], ['other.txt'], ['.'], ['../outside.txt']])
+def test_env_driver_still_needs_a_valid_shared_or_per_check_pin(tmp_path, shared):
+    (tmp_path / 'check.py').write_text('assert True\n')
+    (tmp_path / 'dependency.txt').write_text('pinned')
+    (tmp_path / 'other.txt').write_text('unrelated')
+    with pytest.raises(ValueError):
+        progress.normalize_plan({'checks': [dict(id='control',
+            argv=[*PREFIX, sys.executable, 'check.py'], reason='Run all assertions',
+            input_paths=['dependency.txt'])], 'input_paths': shared}, tmp_path)
 
 
 @pytest.mark.parametrize('prefix', [

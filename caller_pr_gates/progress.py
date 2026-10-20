@@ -201,6 +201,7 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     checks = payload.get("checks")
     if not isinstance(checks, list) or not checks:
         raise ValueError("validation plan requires at least one necessary check")
+    shared = _input_settings(payload, root)
     normalized, identifiers = [], set()
     for check in checks:
         allowed = {"id", "argv", "reason", "cwd", "input_paths", "env_names", "correction"}
@@ -243,15 +244,20 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
             if script_index is not None or candidate.is_relative_to(root):
                 _ordinary_control_path(candidate, root)
             candidate = _inside(candidate, root) if script_index is not None else candidate.resolve()
+            driver_inputs = normalized[-1]["input_paths"]
+            if argv[0] == "env" and script_index is not None:
+                # Retain an already shared env-driver pin without rewriting
+                # a frozen check's separate dependency declaration.
+                driver_inputs = driver_inputs + shared["input_paths"]
             if (candidate.is_file() and candidate.is_relative_to(root)
                     and not any(candidate == root / path or (root / path).is_dir() and candidate.is_relative_to(root / path)
-                                for path in normalized[-1]["input_paths"])):
+                                for path in driver_inputs)):
                 raise ValueError("Include the local qualification driver in its check input_paths")
         if "input_digest" in check:
             if not isinstance(check["input_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", check["input_digest"]):
                 raise ValueError("stored qualification input pin is malformed")
             normalized[-1]["input_digest"] = check["input_digest"]
-    return {"checks": normalized, **_input_settings(payload, root)}
+    return {"checks": normalized, **shared}
 
 
 def plan_digest(plan: dict) -> str:
