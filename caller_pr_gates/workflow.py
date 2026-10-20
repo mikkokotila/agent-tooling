@@ -235,6 +235,9 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
         raise ValueError(f"PR_PROGRESS {phase['phase']}: {phase.get('next_action')}")
     if check_id not in {c['id'] for c in row['plan']['checks']}:
         raise ValueError('Check is absent from the declared plan')
+    if any(c.get('correction', {}).get('unexecuted') is True
+           and c['correction']['check_id'] == check_id for c in row['plan']['checks']):
+        raise ValueError('This unexecuted checker has an admitted correction; execute its fresh corrected check')
     check = next(c for c in row['plan']['checks'] if c['id'] == check_id)
     check_digest = check.get('input_digest', digest)
     if any(r['check_id'] == check_id and r['input_digest'] == check_digest and r['status'] in {'running','pass','fail'} for r in store.validation_evidence(row['plan_id'])):

@@ -477,27 +477,35 @@ class Store:
         if not added:
             return []
         evidence = self._validation_evidence(db, existing)
+        def has_run(identifier):
+            return db.execute("""SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
+                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?""",
+                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], identifier)).fetchone() is not None
         receipts = []
         for check in added:
             correction = check["correction"]
             target = correction["check_id"]
             runs = [run for run in evidence if run["check_id"] == target]
             failed = runs[-1] if runs else None
-            if (target not in old_checks or not failed or failed["run_id"] != correction["run_id"]
+            if correction.get("unexecuted") is True:
+                if target not in old_checks or has_run(target):
+                    raise ValueError("An unexecuted checker correction requires an existing required check without any run history")
+                previous = {"original_input_digest": old_checks[target].get("input_digest", existing["input_digest"])}
+            elif (target not in old_checks or not failed or failed["run_id"] != correction["run_id"]
                     or failed["status"] != "fail" or type(failed["exit_code"]) is not int or failed["exit_code"] <= 0
                     or failed["finished_at"] is None
                     or failed["before_digest"] != failed["input_digest"] or failed["after_digest"] != failed["input_digest"]):
                 raise ValueError("A checker correction must cite the current actual failed run of an existing required check")
+            else:
+                previous = {"failed_run_id": failed["run_id"], "failed_exit_code": failed["exit_code"],
+                            "original_input_digest": failed["input_digest"]}
             if sum(c.get("correction", {}).get("check_id") == target for c in checks.values()) != 1:
-                raise ValueError("A failed checker already has a correction; correct its failed successor instead of branching")
-            if db.execute("""SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
-                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?""",
-                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], check["id"])).fetchone():
+                raise ValueError("This checker already has a correction; correct its defective successor instead of branching")
+            if has_run(check["id"]):
                 raise ValueError("A checker correction requires a fresh check identity without prior results")
             pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target])
             receipts.append({"source_plan_id": existing["plan_id"], "check_id": target,
-                "failed_run_id": failed["run_id"], "failed_exit_code": failed["exit_code"],
-                "original_input_digest": failed["input_digest"], "corrected_check_id": check["id"],
+                **previous, "corrected_check_id": check["id"],
                 "corrected_input_digest": check["input_digest"], **correction, **pins})
         return receipts
 
@@ -601,6 +609,9 @@ class Store:
             _, checks = self._validation_checks(plan["plan"])
             if check_id not in checks:
                 raise ValueError("check is absent from the active required validation plan")
+            if any(c.get("correction", {}).get("unexecuted") is True
+                   and c["correction"]["check_id"] == check_id for c in checks.values()):
+                raise ValueError("This unexecuted checker has an admitted correction; execute its fresh corrected check")
             if "input_digest" in checks[check_id] and not retained:
                 raise ValueError("Pinned qualification controls require explicit merged-source validation")
             if input_digest != checks[check_id].get("input_digest", plan["input_digest"]):
