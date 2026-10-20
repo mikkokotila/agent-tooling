@@ -152,6 +152,8 @@ The retained plan stays necessary and frozen. `validation-plan` accepts the same
 
 If the recorded checkout was synchronized to the final published PR head before external merge but its necessary plan still binds an earlier source, explicitly name that earlier commit when binding the **same original plan**:
 
+Pass the original necessary-plan JSON containing `checks` and its input/environment declarations. A CLI result envelope containing `plan` and `progress`, or an empty output left by a failed attempt, is not a plan input. Do not copy runner-owned digests or epoch provenance from a receipt into that original file.
+
 ```sh
 caller-pr-gates validation-plan --session OWNER_SESSION \
   --pr https://github.com/OWNER/REPO/pull/NUMBER \
