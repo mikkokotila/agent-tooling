@@ -1,8 +1,10 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.42 installs runtime 1.7.42.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.43 installs runtime 1.7.43.
 
 After an external merge, the recorded owner can finish its retained qualification with `validation-plan` / `validate --merged-head ORIGINAL_PR_HEAD`. A new private control can declare per-check `input_paths` and receive its own frozen input pin without resetting retained results. The exact checkout, unchanged producer and retained inputs, and stable live merged-source proof remain required. Retired reminders stay retired; closed PRs do not establish task acceptance or merge readiness. See [operations](docs/operations.md#retained-post-merge-qualification).
+
+A failed private Python checker can be corrected through an explicit `correction` link on a fresh pinned check. Its diagnosis, evidence, original obligation and failed run remain recorded. Only a real passing corrected execution can satisfy that obligation; historical failures are never relabeled as passes. See [checker corrections](docs/operations.md#correcting-a-failed-private-checker).
 
 Narrow validation preflights pin actual lifecycle, head and target ancestry while allowing unrelated comment timestamps to change. Full review and completion freshness remain unchanged.
 
