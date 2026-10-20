@@ -48,7 +48,7 @@ THREAD_COMMENTS_QUERY = """query($id:ID!, $cursor:String) {
 REVIEWS_QUERY = """query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
   repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
     reviews(first:100, after:$cursor) { nodes {
-      id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login }
+      id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login __typename ... on Bot { id } }
     } pageInfo { hasNextPage endCursor } }
   } }
 }"""
@@ -233,6 +233,9 @@ def _comment(raw: dict, kind: str, thread: dict | None = None) -> dict:
     return {"id": f"{kind}:{identity}", "database_id": str(identity), "node_id": raw.get("id") if graphql else raw.get("node_id"),
             "thread_id": thread["id"] if thread else None,
             "author_login": str(author.get("login") or "[deleted]"), "body": body,
+            "author_type": author.get("__typename") if graphql else author.get("type"),
+            "author_node_id": author.get("id") if graphql else author.get("node_id"),
+            "review_state": raw.get("state") if kind == "review" else None,
             "created_at": created, "updated_at": updated, "url": url,
             "is_resolved": bool(thread and thread["isResolved"]),
             "is_outdated": bool(thread and thread["isOutdated"]), "kind": kind, "replies": []}
@@ -505,7 +508,7 @@ BATCH_QUERY = '''query($owner:String!, $repo:String!, $number:Int!) {
    reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) { nodes {
     id databaseId fullDatabaseId body url createdAt updatedAt author { login }
    } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } }
-   reviews(first:100) { nodes { id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login } } pageInfo { hasNextPage endCursor } }
+   reviews(first:100) { nodes { id databaseId fullDatabaseId body state url submittedAt createdAt updatedAt author { login __typename ... on Bot { id } } } pageInfo { hasNextPage endCursor } }
    commits(first:100) { nodes { commit { oid committedDate } } pageInfo { hasNextPage endCursor } }
   }
  }

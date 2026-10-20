@@ -98,6 +98,34 @@ def test_fresh_timestamps_do_not_retry_new_reviews_and_checks_do(state):
     assert store.external_blocker(SID, 'o/r', 508) is None
 
 
+@pytest.mark.parametrize('change', ['notice', 'mixed', 'wrong_actor', 'request_changes'])
+def test_service_notice_keeps_verified_hold_but_actual_review_changes_release_it(state, change):
+    from test_copilot_service_notices import notice, QUOTA, BILLING
+    from test_policy import fresh_branch
+    store, snap, _ = state
+    snap.update(state='open', merged=False, mergeable=True, merge_state_status='BLOCKED',
+                review_decision=None, merge_readiness_head_sha=HEAD, **fresh_branch(HEAD))
+    held = hold((store, snap, evaluate_pr(snap, [])))
+    assert held['status'] == 'held'
+    entry = notice(body=QUOTA + BILLING, url='https://github.com/o/r/pull/508#pullrequestreview-20')
+    if change == 'mixed': entry['body'] += '\n\nFix the missing boundary guard.'
+    elif change == 'wrong_actor': entry['author_node_id'] = 'BOT_another'
+    elif change == 'request_changes': entry['review_state'] = 'CHANGES_REQUESTED'
+    snap['comments'] = [entry]
+    gates = evaluate_pr(snap, [])
+    assert next(g for g in gates if g['gate'] == 'CI_FAILED')['status'] == 'FAIL'
+    if change == 'notice':
+        assert external.gate_fingerprint(snap, gates) == held['fingerprint']
+        assert external.current_hold(store, SID, snap, gates) == held
+        assert asyncio.run(external.hold_verified_failure(store, SID, snap, gates,
+            proof_reader=lambda *args: pytest.fail('unchanged hold must not fetch quota proof again'))) == held
+        assert store.external_blocker(SID, 'o/r', 508) == held
+    else:
+        assert external.gate_fingerprint(snap, gates) != held['fingerprint']
+        assert external.current_hold(store, SID, snap, gates) is None
+        assert store.external_blocker(SID, 'o/r', 508) is None
+
+
 def test_unknown_evidence_neither_releases_hold_nor_passes(state):
     store, snap, gates = state
     hold(state)

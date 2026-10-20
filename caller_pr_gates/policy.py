@@ -5,7 +5,7 @@ import re
 import hashlib
 from datetime import datetime
 from typing import Any
-from .copilot import SERVICE_CONTEXTS, is_service_check
+from .copilot import SERVICE_CONTEXTS, is_service_check, is_service_review
 
 GATES = ("PR_NOT_DRAFT", "CI_FAILED", "CI_PENDING", "REVIEW_HANDLED", "REVIEW_CONCLUDED", "MERGE_CONFLICT", "BRANCH_UP_TO_DATE", "ISSUE_CLOSURE", "MERGE_READY")
 FAILURES = {"failure", "failed", "error", "cancelled", "canceled", "timed_out", "action_required", "stale", "startup_failure"}
@@ -237,9 +237,12 @@ def evaluate_review(snapshot: dict, dispositions: list[dict]) -> list[dict]:
     if not isinstance(actor, str) or not actor or not isinstance(author, str) or not author:
         return [_gate(name, "UNKNOWN", ["Review author/authenticated actor identity is missing"])
                 for name in ("REVIEW_HANDLED", "REVIEW_CONCLUDED")]
+    # Retain notice parents while verifying already recorded acknowledgement
+    # replies; filtering first would turn those replies into orphan findings.
     verified_replies = _verified_conclusion_replies(snapshot, comments, dispositions)
     failed_handled, failed_concluded, unknown = [], [], []
     obligations = []
+    service_reviews = []
     for comment in comments:
         if comment.get("url") in verified_replies:
             continue
@@ -250,6 +253,9 @@ def evaluate_review(snapshot: dict, dispositions: list[dict]) -> list[dict]:
             continue
         if not comment.get("id") or not comment.get("updated_at") or not comment.get("url") or not comment.get("author_login"):
             unknown.append("Comment identity/author/revision is incomplete")
+            continue
+        if is_service_review(comment):
+            service_reviews.append(comment)
             continue
         if comment.get("kind") == "inline" and (not isinstance(comment.get("is_resolved"), bool) or not isinstance(comment.get("is_outdated"), bool)):
             unknown.append(f"Comment {comment['id']}: resolution/outdated state is unavailable")
@@ -267,7 +273,8 @@ def evaluate_review(snapshot: dict, dispositions: list[dict]) -> list[dict]:
         if not concluded:
             failed_concluded.append(f"{label}: {conclusion_reason}")
     evidence = {"obligations": obligations, "comment_count": len(comments),
-                "verified_conclusion_replies": sorted(verified_replies)}
+                "verified_conclusion_replies": sorted(verified_replies),
+                "nonblocking_service_reviews": service_reviews}
     return [_gate("REVIEW_HANDLED", "FAIL" if failed_handled else ("UNKNOWN" if unknown else "PASS"), failed_handled + unknown, evidence),
             _gate("REVIEW_CONCLUDED", "FAIL" if failed_concluded else ("UNKNOWN" if unknown else "PASS"), failed_concluded + unknown, evidence)]
 
