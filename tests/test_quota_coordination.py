@@ -188,7 +188,8 @@ def test_gh_mutation_accounting_failure_preserves_response_and_quota(clocked, mo
         assert audit[-1]['outcome'] == 'cooldown' and audit[-1]['requests'] == 0
 
 
-def test_real_sqlite_lock_does_not_repeat_completion_wait(clocked, monkeypatch):
+@pytest.mark.parametrize('status', [201, 403])
+def test_real_sqlite_lock_does_not_repeat_settlement_wait(clocked, monkeypatch, status):
     now, make = clocked
     coordinator = make()
     account = account_key('https://api.github.com', 'isolated-test-credential')
@@ -196,23 +197,28 @@ def test_real_sqlite_lock_does_not_repeat_completion_wait(clocked, monkeypatch):
     now[:] = [1102, 202]
     locker = sqlite3.connect(coordinator.path, check_same_thread=False)
     attempts, errors, calls, admitted = [], [], [], []
-    original_finish = coordinator.finish
 
-    def finish(permit, *, success):
-        attempts.append(success)
-        try:
-            return original_finish(permit, success=success)
-        except sqlite3.OperationalError as error:
-            errors.append((error.sqlite_errorcode, error.sqlite_errorname))
-            raise
+    def observed(name, operation):
+        def settle(*args, **kwargs):
+            attempts.append(name)
+            try:
+                return operation(*args, **kwargs)
+            except sqlite3.OperationalError as error:
+                errors.append((error.sqlite_errorcode, error.sqlite_errorname))
+                raise
+        return settle
 
-    monkeypatch.setattr(coordinator, 'finish', finish)
+    monkeypatch.setattr(coordinator, 'finish', observed('finish', coordinator.finish))
+    monkeypatch.setattr(coordinator, 'throttle', observed('throttle', coordinator.throttle))
 
     def upstream(method, url, **kwargs):
         calls.append((method, url))
         locker.execute('BEGIN IMMEDIATE')
         with coordinator.db() as db:
             admitted.extend(dict(row) for row in db.execute('SELECT * FROM cooldowns'))
+        if status == 403:
+            return httpx.Response(403, json={'message': 'API rate limit exceeded'},
+                                  headers={'x-ratelimit-remaining': '0', 'x-ratelimit-resource': 'core', 'retry-after': '60'})
         return httpx.Response(201, json={'id': 1, 'body': 'updated'})
 
     try:
@@ -223,7 +229,7 @@ def test_real_sqlite_lock_does_not_repeat_completion_wait(clocked, monkeypatch):
         locker.close()
     assert result.returncode != 0 and 'HTTP 502' in result.stderr
     assert 'reconcile before retry' in json.loads(result.stdout)['message']
-    assert attempts == [True]  # The real 10-second busy wait must not be attempted twice.
+    assert attempts == ['finish' if status == 201 else 'throttle']  # One real busy wait, never cleanup's second wait.
     assert errors == [(sqlite3.SQLITE_BUSY, 'SQLITE_BUSY')]
     assert calls == [('POST', 'https://api.github.com/repos/o/r/issues/1/comments')]
     with coordinator.db() as db:
