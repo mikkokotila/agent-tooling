@@ -53,7 +53,7 @@ def review_owner(store, sid, repository, number, cwd, closed_head=None, *, snaps
         raise ValueError('--closed-head requires the full closed PR head SHA')
     row = store.closed_review_owner(sid, repository, number, cwd)
     from .publication import source, exact_source
-    local = source(cwd)
+    local = source(cwd, stable=True)
     if (not exact_source(row, local) or local['head'] != closed_head
             or row['identity']['retirement'].get('head_sha') != closed_head
             or row['identity']['retirement'].get('state') != row['identity']['watch']['state']):

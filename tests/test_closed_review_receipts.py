@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from caller_pr_gates import cli, github, monitor, progress, workflow
+from caller_pr_gates import cli, github, monitor, progress, publication, workflow
 from caller_pr_gates.policy import evaluate_pr, evaluate_review
 from test_github import Client
 from test_workflow import local, git, publish
@@ -339,6 +339,42 @@ def test_receipt_transaction_rechecks_real_source_after_preflight(local, monkeyp
     with pytest.raises(SystemExit):
         address(local, monkeypatch, capsys, review)
     assert 'source changed before recording' in capsys.readouterr().err
+    assert store.dispositions('Owner/Repo', 1) == []
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit WHERE event='review_disposition'").fetchone()[0] == 0
+
+
+def test_transaction_refuses_real_head_move_between_head_and_cleanliness_reads(local, monkeypatch, capsys):
+    store, root, snap, _ = local
+    original_head = snap['head_sha']
+    (root / 'src.txt').write_text('another committed source')
+    git(root, 'add', 'src.txt')
+    git(root, 'commit', '-qm', 'Another source for the race')
+    moved_head = git(root, 'rev-parse', 'HEAD')
+    git(root, 'reset', '--hard', original_head)
+    review = review_snapshot(local)
+    original_disposition, real_run = store.disposition, publication.subprocess.run
+    mutation = {'armed': False, 'executed': False}
+
+    def race(argv, *args, **kwargs):
+        if mutation['armed'] and argv[:3] == ['git', '-C', str(root)] and argv[3] == 'status':
+            mutation['armed'] = False
+            real_run(['git', '-C', str(root), 'reset', '--hard', moved_head],
+                     check=True, capture_output=True, text=True, timeout=5)
+            mutation['executed'] = True
+        return real_run(argv, *args, **kwargs)
+
+    def write(*args, **kwargs):
+        mutation['armed'] = True
+        return original_disposition(*args, **kwargs)
+
+    monkeypatch.setattr(publication.subprocess, 'run', race)
+    monkeypatch.setattr(store, 'disposition', write)
+    with pytest.raises(SystemExit):
+        address(local, monkeypatch, capsys, review)
+    assert 'source changed before recording' in capsys.readouterr().err
+    assert mutation['executed'] and git(root, 'rev-parse', 'HEAD') == moved_head
+    assert git(root, 'status', '--porcelain=v1') == ''
     assert store.dispositions('Owner/Repo', 1) == []
     with store._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM audit WHERE event='review_disposition'").fetchone()[0] == 0

@@ -329,7 +329,7 @@ class Store:
                 if self._closed_review_owner(db, session_id, repository, number) != closed_owner['identity']:
                     raise ValueError('Retained review ownership changed before recording the receipt')
                 from .publication import source, exact_source
-                current = source(closed_owner['cwd'])
+                current = source(closed_owner['cwd'], stable=True)
                 if (not exact_source(closed_owner, current) or current != closed_owner['source']
                         or current['head'] != receipt.get('closed_head')
                         or current['head'] != closed_owner['identity']['retirement'].get('head_sha')):
