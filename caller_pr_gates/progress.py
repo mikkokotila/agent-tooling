@@ -2,6 +2,7 @@
 from __future__ import annotations
 from .prompts import render_prompt
 
+import ast
 import hashlib
 import json
 import os
@@ -92,6 +93,74 @@ def _input_settings(payload, root, *, control=False):
     return {"input_paths": sorted(set(paths)), "env_names": sorted(set(environment))}
 
 
+def correction_metadata(value):
+    """An explicit diagnosis of one actual failed required check, never a waiver."""
+    keys = {"check_id", "run_id", "diagnosis", "evidence_path"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or any(not isinstance(value[key], str) or not value[key].strip() for key in keys)
+            or not _CHECK_ID.fullmatch(value["check_id"])
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["run_id"])):
+        raise ValueError("correction requires check_id, actual failed run_id, diagnosis and evidence_path")
+    return {key: value[key].strip() for key in sorted(keys)}
+
+
+def private_checker_correction(cwd, plan, check, original):
+    """Admit a separately pinned Python entrypoint; retain its entire obligation."""
+    root = Path(cwd).resolve()
+    correction = correction_metadata(check.get("correction"))
+    old, new = original["argv"], check["argv"]
+    if (len(old) < 2 or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(old[0]).name)
+            or old[1].startswith("-") or len(new) != len(old)
+            or new[:1] != old[:1] or new[2:] != old[2:]
+            or check.get("cwd", ".") != original.get("cwd", ".")
+            or check["reason"] != original["reason"]):
+        raise ValueError("A checker correction must preserve its Python interpreter, arguments, cwd and acceptance reason")
+    for name in ("input_paths", "env_names"):
+        if not set(original.get(name, [])).issubset(check.get(name, [])):
+            raise ValueError("A checker correction must retain every original check dependency and environment name")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(check.get("input_digest"))):
+        raise ValueError("A checker correction requires a newly pinned qualification control")
+
+    def private_file(value):
+        path = root / value
+        _ordinary_control_path(path, root)
+        path = _inside(path, root)
+        relative = path.relative_to(root).as_posix()
+        if not path.is_file() or ".git" in path.relative_to(root).parts:
+            raise ValueError("Checker correction files must be ordinary private files inside the recorded checkout")
+        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "--quiet", "--", relative],
+                                 capture_output=True, timeout=10)
+        if ignored.returncode != 0:
+            raise ValueError("Checker correction files must be ignored private inputs; tracked changes need a scoped product PR")
+        return path
+
+    def included(path, paths):
+        return any(path == root / value or (root / value).is_dir() and path.is_relative_to(root / value)
+                   for value in paths)
+
+    directory = Path(original.get("cwd", "."))
+    before, after = private_file(directory / old[1]), private_file(directory / new[1])
+    evidence = private_file(correction["evidence_path"])
+    if (before == after or not included(before, plan.get("input_paths", []) + original.get("input_paths", []))
+            or not included(after, check.get("input_paths", []))
+            or not included(evidence, check.get("input_paths", [])) or evidence in {before, after}):
+        raise ValueError("Retain the pinned original driver and separately pin a new driver and diagnosis evidence file")
+    old_body, new_body, evidence_body = before.read_bytes(), after.read_bytes(), evidence.read_bytes()
+    if not evidence_body.strip():
+        raise ValueError("Checker correction diagnosis evidence must be nonempty")
+    try:
+        unchanged = ast.dump(ast.parse(old_body)) == ast.dump(ast.parse(new_body))
+    except (SyntaxError, ValueError) as exc:
+        raise ValueError("Checker correction requires readable Python drivers") from exc
+    if unchanged:
+        raise ValueError("An unchanged, copied or comment-only checker is not a meaningful correction")
+    return {"original_driver": before.relative_to(root).as_posix(),
+            "corrected_driver": after.relative_to(root).as_posix(),
+            "original_driver_sha256": hashlib.sha256(old_body).hexdigest(),
+            "corrected_driver_sha256": hashlib.sha256(new_body).hexdigest(),
+            "evidence_sha256": hashlib.sha256(evidence_body).hexdigest()}
+
+
 def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     """Freeze necessary commands and their reasons before any validation runs.
 
@@ -109,7 +178,7 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         raise ValueError("validation plan requires at least one necessary check")
     normalized, identifiers = [], set()
     for check in checks:
-        allowed = {"id", "argv", "reason", "cwd", "input_paths", "env_names"}
+        allowed = {"id", "argv", "reason", "cwd", "input_paths", "env_names", "correction"}
         if stored:
             allowed.add("input_digest")
         if not isinstance(check, dict) or set(check) - allowed:
@@ -125,6 +194,8 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         relative = check.get("cwd", ".")
         if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
             raise ValueError("check cwd must be a relative directory")
+        if "correction" in check:
+            _ordinary_control_path(root / relative, root)
         directory = _inside(root / relative, root)
         if not directory.is_dir():
             raise ValueError("check working directory does not exist")
@@ -132,6 +203,10 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
         identifiers.add(identifier)
         normalized.append({"id": identifier, "argv": list(argv), "reason": reason.strip(),
                            "cwd": directory.relative_to(root).as_posix() or "."})
+        if "correction" in check:
+            normalized[-1]["correction"] = correction_metadata(check["correction"])
+            if not check.get("input_paths"):
+                raise ValueError("A checker correction requires explicit private input_paths")
         if "input_paths" in check or "env_names" in check:
             normalized[-1].update(_input_settings(check, root, control=True))
             first = Path(argv[0]).name.lower()
@@ -458,6 +533,7 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
     on unchanged before/after inputs. Remote merge state is never completion
     proof. Missing or stale remote evidence stays WAIT_REMOTE.
     """
+    corrected_failures = []
     def result(phase, reason, **fields):
         actions = {"INPUTS_CHANGED": render_prompt('validation_inputs_changed'),
                    "VALIDATE_REQUIRED": render_prompt('validation_required'),
@@ -471,7 +547,7 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                    "WAIT_REMOTE": render_prompt('validation_wait_remote'),
                    "COMPLETE": render_prompt('validation_complete')}
         return {"phase": phase, "blocked": phase != "COMPLETE", "next_action": actions[phase],
-                "reason": reason, **fields}
+                "reason": reason, **({"corrected_failures": corrected_failures} if corrected_failures else {}), **fields}
     def fresh_remote():
         if not isinstance(snapshot, dict):
             return False
@@ -530,6 +606,9 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
                and (check_digests or {}).get(check["id"]) != check["input_digest"]]
     if changed:
         return result("INPUTS_CHANGED", "Frozen qualification control inputs changed; retain their original pins and results", changed_checks=changed)
+    if (any("correction" in check for check in plan["checks"])
+            and (validation_evidence.get("state") != "closed" or validation_evidence.get("merged") is not True)):
+        return result("REMOTE_READ_REQUIRED", "Checker corrections require current proof of the retained merged source")
     latest = {}
     active = set()
     for run in runs:
@@ -553,6 +632,32 @@ def evaluate_progress(row: dict, runs: list[dict], current_digest: str,
             failed.append(identifier)
         else:
             missing.append(identifier)
+    # A correction never rewrites a run or labels its failed predecessor PASS.
+    # Follow only admitted, nonbranching links to an actual passing successor;
+    # every unexecuted, failed or unverifiable end of the chain stays required.
+    coverage = {identifier: latest[identifier] for identifier in passed}
+    for _ in checks:
+        extended = False
+        for check in plan["checks"]:
+            correction = check.get("correction")
+            if not correction or check["id"] not in coverage:
+                continue
+            target = correction.get("check_id")
+            previous = latest.get(target)
+            if (target in coverage or not previous or previous.get("run_id") != correction.get("run_id")
+                    or previous.get("status") != "fail" or type(previous.get("exit_code")) is not int
+                    or previous["exit_code"] <= 0 or previous.get("before_digest") != expected[target]
+                    or previous.get("after_digest") != expected[target]):
+                continue
+            proof = coverage[check["id"]]
+            coverage[target] = proof
+            corrected_failures.append({"check_id": target, "failed_run_id": previous["run_id"],
+                "exit_code": previous["exit_code"], "corrected_by": check["id"],
+                "passed_check_id": proof["check_id"], "passed_run_id": proof["run_id"]})
+            extended = True
+        if not extended:
+            break
+    failed = [identifier for identifier in failed if identifier not in coverage]
     if failed:
         return result("VALIDATE_FAILED", "Fix the actual failed check, push the fix promptly, then rerun its required validation", failed=failed, pending=sorted(failed + missing), passed=passed, running=sorted(active))
     if missing:

@@ -385,6 +385,9 @@ class Store:
             for name in ("env_names", "input_paths"):
                 if name in check and (not isinstance(check[name], list) or any(not isinstance(v, str) or not v for v in check[name])):
                     raise ValueError(f"{name} must be a list of nonempty strings")
+            if "correction" in check:
+                from .progress import correction_metadata
+                check["correction"] = correction_metadata(check["correction"])
             checks[check["id"]] = check
             commands.add(identity)
         for name in ("env_names", "input_paths"):
@@ -467,13 +470,44 @@ class Store:
             db.execute('BEGIN')
             return self._retained_validation_plan(db, sid, repo, num, directory)
 
+    def _checker_corrections(self, db, existing, plan, checks, old_checks):
+        """Validate fresh correction links inside the same plan-write transaction."""
+        from .progress import private_checker_correction
+        added = [check for key, check in checks.items() if key not in old_checks and "correction" in check]
+        if not added:
+            return []
+        evidence = self._validation_evidence(db, existing)
+        receipts = []
+        for check in added:
+            correction = check["correction"]
+            target = correction["check_id"]
+            runs = [run for run in evidence if run["check_id"] == target]
+            failed = runs[-1] if runs else None
+            if (target not in old_checks or not failed or failed["run_id"] != correction["run_id"]
+                    or failed["status"] != "fail" or type(failed["exit_code"]) is not int or failed["exit_code"] <= 0
+                    or failed["finished_at"] is None
+                    or failed["before_digest"] != failed["input_digest"] or failed["after_digest"] != failed["input_digest"]):
+                raise ValueError("A checker correction must cite the current actual failed run of an existing required check")
+            if sum(c.get("correction", {}).get("check_id") == target for c in checks.values()) != 1:
+                raise ValueError("A failed checker already has a correction; correct its failed successor instead of branching")
+            if db.execute("""SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
+                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?""",
+                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], check["id"])).fetchone():
+                raise ValueError("A checker correction requires a fresh check identity without prior results")
+            pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target])
+            receipts.append({"source_plan_id": existing["plan_id"], "check_id": target,
+                "failed_run_id": failed["run_id"], "failed_exit_code": failed["exit_code"],
+                "original_input_digest": failed["input_digest"], "corrected_check_id": check["id"],
+                "corrected_input_digest": check["input_digest"], **correction, **pins})
+        return receipts
+
     def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest, *, retained=False):
         if not isinstance(input_digest, str) or not input_digest.strip():
             raise ValueError("validation input_digest is required")
         if not isinstance(evidence_digest, str):
             raise ValueError("validation evidence_digest must be a string")
         normalized, checks = self._validation_checks(plan)
-        if not retained and any("input_digest" in check for check in checks.values()):
+        if not retained and any("input_digest" in check or "correction" in check for check in checks.values()):
             raise ValueError("Pinned qualification controls require explicit merged-source validation")
         directory = str(Path(cwd).expanduser().resolve())
         with self._connect() as db:
@@ -517,6 +551,8 @@ class Store:
                     new_settings = {key: value for key, value in normalized.items() if key != "checks"}
                     if old_settings != new_settings:
                         raise ValueError("validation input/environment settings are immutable for unchanged inputs")
+                for correction in self._checker_corrections(db, existing, normalized, checks, old_checks):
+                    self._audit(db, "validation_checker_correction", correction)
                 if same_input and same_evidence:
                     failed = db.execute("SELECT 1 FROM validation_runs WHERE plan_id=? AND status='fail'",
                                         (existing["plan_id"],)).fetchone()

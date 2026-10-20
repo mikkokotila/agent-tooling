@@ -85,6 +85,41 @@ caller-pr-gates validate --session OWNER_SESSION \
   --merged-head FULL_ORIGINAL_PR_HEAD_SHA --background
 ```
 
-The appended control gets no historical pass. Its actual exit and before/after digests are recorded separately in the existing run history. Original checks retain their actual results and unchanged-failure retry prohibition; adding a passing control cannot waive a failure. All pins and existing check declarations remain immutable. A revised control needs a distinct frozen file/check identity and cannot replace an existing obligation. Let an active managed process finish naturally before extending its plan. This addition uses the existing preflight and background worker, with no extra GitHub reads.
+The appended control gets no historical pass. Its actual exit and before/after digests are recorded separately in the existing run history. Original checks retain their actual results and unchanged-failure retry prohibition; adding a passing control cannot waive a failure. All pins and existing check declarations remain immutable. A revised control needs a distinct frozen file/check identity. An evidenced private checker correction must use the explicit relation below to satisfy the original obligation. Let an active managed process finish naturally before extending its plan. This addition uses the existing preflight and background worker, with no extra GitHub reads.
+
+### Correcting a failed private checker
+
+Release 0.1.43 adds an audited correction for an actual failed private Python checker on the same retained merged producer. Keep the entire existing plan, original input files and all previous check declarations unchanged. Create a corrected private driver and a private evidence file outside the frozen input directories. The evidence file must document the actual failure, why it is a checker defect, the correction and how the original acceptance remains required. Keep private values and logs local.
+
+Append a fresh check copied from the failed check. Keep its `reason`, Python interpreter, trailing arguments and `cwd` identical; change only the script argument to the corrected driver. Retain every per-check input and environment name from the failed check, add the new driver and evidence file to its `input_paths`, and attach:
+
+```json
+"correction": {
+  "check_id": "original-required-check",
+  "run_id": "ACTUAL_FAILED_RUN_UUID",
+  "diagnosis": "Explain the evidenced private checker defect and its concrete correction",
+  "evidence_path": "storage/qualification-corrections/checker-evidence.txt"
+}
+```
+
+The example path is illustrative: use ordinary ignored files inside the recorded checkout, outside all previously frozen input directories. The new plan file must also remain outside those pins. Do not supply an `input_digest`. Admission verifies the current actual finished failed run, the original private driver and a different Python program; copied, renamed, whitespace-only or comment-only programs cannot authorize a retry. The old driver, new driver and evidence file must be private ordinary files without symlink traversal. A tracked checker or producer correction still needs a genuine product repair PR. Python programs must use a literal script argument immediately after the unchanged interpreter; this does not admit arbitrary command replacement.
+
+Bind and execute through the existing commands:
+
+```sh
+caller-pr-gates validation-plan --session ORIGINAL_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --file "$CORRECTION_PLAN" \
+  --merged-head FULL_ORIGINAL_PR_HEAD_SHA
+
+caller-pr-gates validate --session ORIGINAL_SESSION \
+  --pr https://github.com/OWNER/REPO/pull/NUMBER \
+  --cwd /absolute/recorded/checkout --check FRESH_CORRECTED_CHECK_ID \
+  --merged-head FULL_ORIGINAL_PR_HEAD_SHA --background
+```
+
+An appended, running, failed or unverifiable correction does not discharge the original failure. Once the corrected process really exits zero with unchanged fingerprints, progress reports `corrected_failures` with the historical failed run and the actual passing check/run that satisfies its obligation. `passed` contains only checks that actually passed. The original run, exit, input records and declaration remain unchanged. The correction relation and driver/evidence hashes are recorded in the existing audit log, with no database migration or additional GitHub reads.
+
+A passing control cannot acquire this relation retroactively. Each failed check has at most one correction; if that successor genuinely fails because of another evidenced checker defect, correct that failed successor with another fresh pinned identity. An unrelated passing control, a changed diagnosis alone or an unchanged failed retry cannot satisfy the original work. Let all active managed execution finish before changing the plan. Real checker quality and unchanged acceptance still require diagnosis and review; a changed Python syntax tree alone does not prove a valid fix. Closed-PR local success remains incomplete task acceptance and does not create `MERGE_READY`.
 
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
