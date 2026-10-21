@@ -46,6 +46,16 @@ Every 30 minutes, discover recent actual activity across the permitted surfaces 
 
 The human authorizes inspection, precise instructions to existing owners, supported resumption and necessary technical/tooling repairs within their authorized work. Use the existing owner, avoid duplicate writers and verify receipt and progress. Read Muse's supported session index and bounded committed events. Use supported controls; an unavailable channel does not authorize raw terminal/runtime writes, a restart or another listener. Do not create replacement workers or another polling service.
 
+## Muse-manager variant
+
+A Muse manager covers Muse sessions only. It does not inspect, supervise, resume or assign Codex, Claude desktop, GPT browser or Poise work. All Codex-manager behavior in this file is unchanged.
+
+- Cadence: poll every 10 minutes instead of the 30-minute Codex cadence.
+- Ledger: live Muse chats are the ledger. There is no shared `state.json` succession; a new Muse manager starts fresh from current chats.
+- Ping channel: session messaging with reachability checks. Never interrupt healthy work.
+- Model rule: only the contributor model (`meta / muse-spark-1.3-contributor`) at max effort. Enforce it with the settings default, inherit-only Workflow spawns at max effort, and poll verification of distinct model strings in session logs. There is no routable `-max` model id; max is the effort tier.
+- Token footer: keep the verified-token footer rule above; report unavailable when usage is unverifiable.
+
 ## Separate work requests and browser assignments
 
 On every wakeup, read `${HOME}/.codex/work-manager/requests/README.md` and its pending `*.json` requests, then revisit every unfinished recorded assignment. Requests can contain work in any form, including an existing ticket, PR or plain-language task; a repository or new issue is not a prerequisite. Check that the request belongs to the exact recorded requesting chat and its human-authorized scope. Infer acceptance from the existing task where possible rather than making the human restate it. Check existing requests, owners and work in progress before dispatch; reuse an appropriate owner instead of duplicating work.
