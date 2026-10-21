@@ -642,7 +642,10 @@ def gateway(args, store):
         endpoint, method, field_values, input_file = _api_request(argv)
         fields = bool(field_values) or input_file is not None
         api_write = method.upper() not in {'GET', 'HEAD'} if method else fields
-        if endpoint == DOCS_CONTEXTS and fields:
+        google_secret = endpoint == 'repos/Vaquum/poise/actions/secrets/POISE_GOOGLE_CLIENT_SECRET'
+        google_variable = endpoint in ('repos/Vaquum/poise/actions/variables',
+                                      'repos/Vaquum/poise/actions/variables/POISE_GOOGLE_CLIENT_ID')
+        if fields and (endpoint == DOCS_CONTEXTS or google_secret or google_variable):
             # A read-method spelling cannot bypass this operation's frozen-body admission.
             api_write = True
         if api_write:
@@ -693,6 +696,33 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
+            # Existing authorized Google deployment: the upstream PR owner may persist
+            # only these two keys in the operator's fork. No other cross-repo writes.
+            allowed_google_config = False
+            if (repo == 'autonomio/poise' and not issue and (google_secret or google_variable)
+                    and any(p['repository'] == repo and p['number'] == num for p in store.prs(sid))):
+                verb = (method or '').upper()
+                input_path = options.get('--input')
+                exact_args = (input_path and input_path != '-'
+                              and argv == ['api', endpoint, '--method', verb, '--input', input_path])
+                if exact_args and ((google_secret and verb == 'PUT') or
+                                   (google_variable and verb == ('POST' if endpoint.endswith('/variables') else 'PATCH'))):
+                    source = Path(input_path)
+                    if not source.is_absolute(): source = Path(args.cwd) / source
+                    payload = json.loads(source.read_text())
+                    if google_secret and isinstance(payload, dict) and set(payload) == {'key_id', 'encrypted_value'}:
+                        try:
+                            ciphertext = base64.b64decode(payload['encrypted_value'], validate=True)
+                            allowed_google_config = (len(ciphertext) > 48 and isinstance(payload['key_id'], str) and bool(payload['key_id']))
+                        except (ValueError, TypeError):
+                            pass
+                    elif google_variable and isinstance(payload, dict) and set(payload) == {'name', 'value'}:
+                        allowed_google_config = (payload['name'] == 'POISE_GOOGLE_CLIENT_ID'
+                            and isinstance(payload['value'], str)
+                            and re.fullmatch(r'[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com', payload['value']) is not None)
+                    if allowed_google_config:
+                        admitted_api_body = json.dumps(payload)
+                        argv = ['api', endpoint, '--method', verb, '--input', '-']
             # Restore the existing LinkedIn integration for the authorized site-stream repair.
             # The exact repository, owned PR, endpoints, verbs and payloads are bounded here;
             # branch protection, workflow approval requirements and arbitrary secrets stay denied.
@@ -724,7 +754,7 @@ def gateway(args, store):
                         # gh must receive these admitted bytes, never reopen a mutable caller file.
                         admitted_api_body = json.dumps(payload)
                         argv = ['api', endpoint, '--method', verb, '--input', '-']
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun or allowed_slice_sweep):
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_google_config or allowed_stream_config or allowed_ci_rerun or allowed_slice_sweep):
                 raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')
