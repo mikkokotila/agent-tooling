@@ -631,15 +631,18 @@ class Store:
 
     def _checker_corrections(self, db, existing, plan, checks, old_checks):
         """Validate fresh correction links inside the same plan-write transaction."""
-        from .progress import private_checker_correction
+        from .progress import REMOTE_EVIDENCE_TTL, private_checker_correction
         added = [check for key, check in checks.items() if key not in old_checks and "correction" in check]
         if not added:
             return []
         evidence = self._validation_evidence(db, existing)
-        def has_run(identifier):
+        def has_run(identifier, *, current_inputs=False):
+            target_digest = old_checks[identifier].get("input_digest", existing["input_digest"]) if current_inputs else None
             return db.execute("""SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
-                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?""",
-                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], identifier)).fetchone() is not None
+                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?
+                AND (? IS NULL OR p.input_digest=? OR r.input_digest=?)""",
+                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], identifier,
+                 target_digest, existing["input_digest"], target_digest)).fetchone() is not None
         receipts = []
         for check in added:
             correction = check["correction"]
@@ -647,7 +650,7 @@ class Store:
             runs = [run for run in evidence if run["check_id"] == target]
             failed = runs[-1] if runs else None
             if correction.get("unexecuted") is True:
-                if target not in old_checks or has_run(target):
+                if target not in old_checks or has_run(target, current_inputs="retained_docs" in correction):
                     raise ValueError("An unexecuted checker correction requires an existing required check without any run history")
                 previous = {"original_input_digest": old_checks[target].get("input_digest", existing["input_digest"])}
             elif (target not in old_checks or not failed or failed["run_id"] != correction["run_id"]
@@ -662,7 +665,20 @@ class Store:
                 raise ValueError("This checker already has a correction; correct its defective successor instead of branching")
             if has_run(check["id"]):
                 raise ValueError("A checker correction requires a fresh check identity without prior results")
-            pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target])
+            source = {}
+            if "retained_docs" in correction:
+                proof = db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',
+                                   (existing["repository"], existing["number"])).fetchone()
+                preflight = json.loads(proof["payload"]) if proof else {}
+                stamp = preflight.get("collected_at")
+                if (preflight.get("profile") != "validation" or not isinstance(stamp, (int, float))
+                        or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= REMOTE_EVIDENCE_TTL
+                        or not preflight.get("base_sha") or preflight.get("base_sha") != preflight.get("base_sha_after")
+                        or preflight.get("branch_error")
+                        or preflight.get("component_errors", {}).get("branch_freshness")):
+                    raise ValueError("Reviewed documentation correction requires fresh stable live-target evidence")
+                source["source_tip"] = preflight["base_sha"]
+            pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target], **source)
             receipts.append({"source_plan_id": existing["plan_id"], "check_id": target,
                 **previous, "corrected_check_id": check["id"],
                 "corrected_input_digest": check["input_digest"], **correction, **pins})

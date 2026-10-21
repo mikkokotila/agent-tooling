@@ -129,20 +129,101 @@ def _input_settings(payload, root, *, control=False):
 def correction_metadata(value):
     """Diagnose an actual failed or explicitly unexecuted checker, never waive it."""
     keys = {"check_id", "diagnosis", "evidence_path"}
-    if (not isinstance(value, dict) or set(value) not in (keys | {"run_id"}, keys | {"unexecuted"})
+    if (not isinstance(value, dict) or set(value) - {"retained_docs"} not in (keys | {"run_id"}, keys | {"unexecuted"})
             or any(not isinstance(value[key], str) or not value[key].strip() for key in keys)
             or not _CHECK_ID.fullmatch(value["check_id"])
             or ("unexecuted" in value and value["unexecuted"] is not True)
             or ("run_id" in value and (not isinstance(value["run_id"], str)
                 or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["run_id"])))):
         raise ValueError("correction requires check_id, diagnosis, evidence_path and either actual failed run_id or unexecuted: true")
+    if "retained_docs" in value:
+        pair = value["retained_docs"]
+        fields = {"source_commit", "checker", "provenance"}
+        if (not isinstance(pair, dict) or set(pair) not in (fields, fields | {"launcher"})
+                or any(not isinstance(item, str) or not item.strip() for item in pair.values())
+                or not re.fullmatch(r"[0-9a-f]{40}", pair["source_commit"])):
+            raise ValueError("retained_docs requires a source commit and pinned checker/provenance paths, with an optional reader launcher")
     return {key: item.strip() if isinstance(item, str) else item for key, item in sorted(value.items())}
 
 
-def private_checker_correction(cwd, plan, check, original):
+def _private_checker_file(root, value):
+    path = root / value
+    _ordinary_control_path(path, root)
+    path = _inside(path, root)
+    relative = path.relative_to(root).as_posix()
+    if not path.is_file() or ".git" in path.relative_to(root).parts:
+        raise ValueError("Checker correction files must be ordinary private files inside the recorded checkout")
+    ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "--quiet", "--", relative],
+                             capture_output=True, timeout=10)
+    if ignored.returncode != 0:
+        raise ValueError("Checker correction files must be ignored private inputs; tracked changes need a scoped product PR")
+    return path
+
+
+def _includes_control(root, path, paths):
+    return any(path == root / value or (root / value).is_dir() and path.is_relative_to(root / value)
+               for value in paths)
+
+
+def _retained_docs_correction(root, plan, check, original, correction, source_tip):
+    pair = correction["retained_docs"]
+    if not isinstance(source_tip, str) or not re.fullmatch(r"[0-9a-f]{40}", source_tip):
+        raise ValueError("Retained documentation correction requires a fresh immutable target commit")
+    _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", pair["source_commit"], source_tip)
+    paths = {name: _private_checker_file(root, pair[name]) for name in ("checker", "provenance")}
+    checker, provenance = paths["checker"], paths["provenance"]
+    if checker.name != "retained_checker.py" or provenance != checker.with_name("provenance.py"):
+        raise ValueError("Retain the reviewed checker and provenance as ordinary sibling files")
+    for name, path in paths.items():
+        source_name = "retained_checker.py" if name == "checker" else "provenance.py"
+        expected = _git(root, "--no-replace-objects", "show", f"{pair['source_commit']}:docs/examples/{source_name}")
+        if path.read_bytes() != expected:
+            raise ValueError("Retained documentation controls must equal their committed source bytes")
+    evidence = _private_checker_file(root, correction["evidence_path"])
+    if not evidence.read_bytes().strip():
+        raise ValueError("Retain a separate nonempty diagnosis for the reviewed documentation correction")
+    old, new = original["argv"], check["argv"]
+    python = os.environ.get("LIMEN_PYTHON", "")
+    if ("LIMEN_PYTHON" not in plan.get("env_names", []) or not Path(python).is_absolute()
+            or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(python).name)
+            or not Path(python).is_file() or not os.access(python, os.X_OK)):
+        raise ValueError("Retain the original globally pinned LIMEN_PYTHON executable")
+    script = old[1:2] == ["docs/examples/provenance.py"]
+    module = old[1:3] == ["-m", "pytest"] and "docs/examples/tests" in old[3:]
+    if script or module:
+        if (old[0] != python or original.get("cwd", ".") != "." or "launcher" in pair
+                or new != [python, str(checker), *old[1:]]):
+            raise ValueError("Preserve the original Python and every documentation script/module argument")
+    elif old == ["npm", "run", "check"] and original.get("cwd", ".") == "docs-site":
+        if "launcher" not in pair:
+            raise ValueError("The existing composite reader requires its pinned reviewed launcher")
+        launcher = _private_checker_file(root, pair["launcher"])
+        expected = '#!/bin/sh\nexec ' + shlex.quote(python) + ' ' + shlex.quote(str(checker)) + ' "$@"\n'
+        if (launcher.read_bytes() != expected.encode() or stat.S_IMODE(launcher.stat().st_mode) != 0o700
+                or new != ["env", "LIMEN_PYTHON=" + str(launcher), *old]):
+            raise ValueError("Preserve the composite reader and the exact reviewed launcher/interpreter lineage")
+        paths["launcher"] = launcher
+    else:
+        raise ValueError("Retained documentation correction supports only the original provenance, pytest and composite reader checks")
+    if (check.get("cwd", ".") != original.get("cwd", ".") or check["reason"] != original["reason"]
+            or any(not set(original.get(name, [])).issubset(check.get(name, [])) for name in ("input_paths", "env_names"))):
+        raise ValueError("Retain every original documentation dependency, cwd and acceptance reason")
+    if (evidence in paths.values() or not re.fullmatch(r"[0-9a-f]{64}", str(check.get("input_digest")))
+            or any(not _includes_control(root, path, check.get("input_paths", [])) for path in [*paths.values(), evidence])):
+        raise ValueError("Separately pin every reviewed checker, launcher and diagnosis control")
+    return {"checker_source_commit": pair["source_commit"], "checker_source_tip": source_tip,
+            **{name + "_sha256": hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()},
+            "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(), "original_interpreter": python}
+
+
+def private_checker_correction(cwd, plan, check, original, *, source_tip=None):
     """Admit a separately pinned Python entrypoint; retain its entire obligation."""
     root = Path(cwd).resolve()
     correction = correction_metadata(check.get("correction"))
+    if "retained_docs" in original.get("correction", {}):
+        raise ValueError("Retained documentation corrections cannot be replaced by another private checker")
+    if "retained_docs" in correction:
+        return _retained_docs_correction(root, plan, check, original, correction, source_tip)
     old, new = original["argv"], check["argv"]
     script_index = _python_script_index(old)
     if (script_index is None or len(new) != len(old) or new[script_index].startswith("-")
@@ -156,29 +237,12 @@ def private_checker_correction(cwd, plan, check, original):
     if not re.fullmatch(r"[0-9a-f]{64}", str(check.get("input_digest"))):
         raise ValueError("A checker correction requires a newly pinned qualification control")
 
-    def private_file(value):
-        path = root / value
-        _ordinary_control_path(path, root)
-        path = _inside(path, root)
-        relative = path.relative_to(root).as_posix()
-        if not path.is_file() or ".git" in path.relative_to(root).parts:
-            raise ValueError("Checker correction files must be ordinary private files inside the recorded checkout")
-        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "--quiet", "--", relative],
-                                 capture_output=True, timeout=10)
-        if ignored.returncode != 0:
-            raise ValueError("Checker correction files must be ignored private inputs; tracked changes need a scoped product PR")
-        return path
-
-    def included(path, paths):
-        return any(path == root / value or (root / value).is_dir() and path.is_relative_to(root / value)
-                   for value in paths)
-
     directory = Path(original.get("cwd", "."))
-    before, after = private_file(directory / old[script_index]), private_file(directory / new[script_index])
-    evidence = private_file(correction["evidence_path"])
-    if (before == after or not included(before, plan.get("input_paths", []) + original.get("input_paths", []))
-            or not included(after, check.get("input_paths", []))
-            or not included(evidence, check.get("input_paths", [])) or evidence in {before, after}):
+    before, after = (_private_checker_file(root, directory / argv[script_index]) for argv in (old, new))
+    evidence = _private_checker_file(root, correction["evidence_path"])
+    if (before == after or not _includes_control(root, before, plan.get("input_paths", []) + original.get("input_paths", []))
+            or not _includes_control(root, after, check.get("input_paths", []))
+            or not _includes_control(root, evidence, check.get("input_paths", [])) or evidence in {before, after}):
         raise ValueError("Retain the pinned original driver and separately pin a new driver and diagnosis evidence file")
     old_body, new_body, evidence_body = before.read_bytes(), after.read_bytes(), evidence.read_bytes()
     if not evidence_body.strip():
