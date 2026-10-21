@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Register this checkout's controller in local Codex and install its CLI."""
 import os
+import argparse
 from pathlib import Path
 import shlex
 import shutil
@@ -9,7 +10,20 @@ import sys
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--provider', action='store_true', help='Select the contributor/max custom provider in Codex')
+    options = parser.parse_args()
+    source = Path(__file__).resolve().parent
+    root = Path.home() / '.local/share/muse-bridge-for-codex/runtime'
+    if source != root:
+        stage = root.with_name('.runtime.' + str(os.getpid()))
+        shutil.copytree(source, stage, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'verification.json'))
+        previous = root.with_name('.previous')
+        if previous.exists():
+            shutil.rmtree(previous)
+        if root.exists():
+            root.rename(previous)
+        stage.rename(root)
     codex = shutil.which('codex')
     if not codex:
         raise SystemExit('Codex CLI is required.')
@@ -28,6 +42,10 @@ def main():
     temp.chmod(0o755)
     temp.replace(destination)
     print('Installed Muse controller. Verify with: muse-control call muse_status')
+    if options.provider:
+        sys.path.insert(0, str(root))
+        import provider
+        provider.install(root)
 
 
 if __name__ == '__main__':

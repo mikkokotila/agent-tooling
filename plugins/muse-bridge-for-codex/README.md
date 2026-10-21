@@ -6,8 +6,8 @@ Local plugin and MCP server for launching, reading, messaging, steering, interru
 Every provider request passes an HTTP guard before reaching Meta. Other models, missing/lower efforts, route overrides, and redirects are refused. There is no fallback.
 The guard also blocks Muse's built-in helpers when they request a lower effort; those helper features then fail instead of using another tier.
 
-Requires Python 3.10+, Codex CLI, and authenticated Muse 1.4.11 with the verified MSP schema. A changed Muse protocol stops startup until reverified.
-Install from the canonical plugin checkout: `python3 install.py`.
+Requires Python 3.11+, Codex CLI, and authenticated Muse 1.4.11 with the verified MSP schema. A changed Muse protocol stops startup until reverified.
+Install tools: `python3 install.py`. Add the selector provider: `python3 install.py --provider`, then restart Codex.
 Check health: `muse-control call muse_status`.
 Run offline checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`.
 
@@ -17,4 +17,6 @@ State and the private Unix control socket live under `~/.local/state/muse-contro
 Use `muse_resume` after a controller restart. An existing CLI must release its session lease before this host can resume it.
 
 The policy covers bridge-managed provider requests. Separately launched processes and the provider's internal implementation are outside that guarantee.
+The provider installer selects the Muse catalog globally and backs up the prior configuration privately. The current Codex picker uses one provider catalog at a time.
+A private loopback gateway retains native Muse authentication in RAM; a pinned max-effort READY turn refreshes it. No Meta token is exported to files or Codex.
 Canonical source: `mikkokotila/agent-tooling/plugins/muse-bridge-for-codex`.

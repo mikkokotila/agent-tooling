@@ -103,6 +103,46 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(("api.meta.ai", 443), self.factory.origins[0][0])
         self.assertEqual(1, self.proxy.snapshot()["forwarded"])
 
+    def test_codex_gateway_uses_native_auth_and_never_caller_auth(self):
+        self.proxy._gateway = {'key': 'private-codex-key', 'port': self.base.port}
+        self.request()
+        native_base = self.base
+        self.base = urlsplit(self.proxy.gateway_url())
+        self.assertEqual(200, self.request(headers={'Authorization': 'Bearer UNTRUSTED'})[0])
+        self.assertEqual('Bearer SECRET TOKEN', self.factory.requests[-1][3]['authorization'])
+        self.assertNotIn('SECRET TOKEN', json.dumps(self.proxy.snapshot()))
+        self.assertNotIn('private-codex-key', json.dumps(self.proxy.snapshot()))
+        self.base = native_base
+
+    def test_codex_gateway_cold_auth_fails_closed(self):
+        self.proxy._gateway = {'key': 'private-codex-key', 'port': self.base.port}
+        self.base = urlsplit(self.proxy.gateway_url())
+        self.assertEqual(503, self.request()[0])
+        self.assertEqual([], self.factory.requests)
+
+    def test_codex_gateway_blocks_low_effort_before_authentication(self):
+        self.proxy._gateway = {'key': 'private-codex-key', 'port': self.base.port}
+        self.base = urlsplit(self.proxy.gateway_url())
+        calls = []
+        self.proxy.refresh_credentials = lambda: calls.append(True)
+        self.assertEqual(422, self.request({'model': policy.MODEL, 'reasoning': {'effort': 'low'}})[0])
+        self.assertEqual([], calls)
+        self.assertEqual([], self.factory.requests)
+
+    def test_codex_gateway_native_refresh_and_expiry(self):
+        self.proxy._gateway = {'key': 'private-codex-key', 'port': self.base.port}
+        self.base = urlsplit(self.proxy.gateway_url())
+        def refresh():
+            self.proxy._native_headers = {'authorization': 'Bearer NATIVE'}
+            self.proxy._auth_ready.set()
+        self.proxy.refresh_credentials = refresh
+        self.assertEqual(200, self.request()[0])
+        self.assertEqual('Bearer NATIVE', self.factory.requests[-1][3]['authorization'])
+        self.factory.response = Response(status=401)
+        self.assertEqual(401, self.request()[0])
+        self.assertFalse(self.proxy.credentials_ready())
+        self.assertIsNone(self.proxy._native_headers)
+
     def test_model_missing_normalized_or_alternate_never_reaches_upstream(self):
         for model in (None, "muse-spark-1.3", "muse-spark-1.2-contributor", "other"):
             document = {"reasoning": {"effort": "max"}}

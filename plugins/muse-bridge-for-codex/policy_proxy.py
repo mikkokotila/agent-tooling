@@ -160,7 +160,7 @@ class PolicyProxy:
     Tests can replace the private ``_connection_factory`` before starting.
     """
 
-    def __init__(self, upstream=UPSTREAM):
+    def __init__(self, upstream=UPSTREAM, gateway=None):
         parsed = urlsplit(upstream)
         if (parsed.scheme != "https" or parsed.hostname != "api.meta.ai"
                 or parsed.port not in (None, 443) or parsed.username is not None
@@ -177,6 +177,10 @@ class PolicyProxy:
         self._base_url = None
         self._prefix = "/" + secrets.token_urlsafe(32)
         self._stopping = threading.Event()
+        self._gateway = gateway
+        self._native_headers = None
+        self._auth_ready = threading.Event()
+        self.refresh_credentials = None
 
     def start(self):
         with self._lock:
@@ -210,7 +214,7 @@ class PolicyProxy:
                 do_CONNECT = do_GET
                 do_TRACE = do_GET
 
-            self._server = _LocalServer(("127.0.0.1", 0), Handler)
+            self._server = _LocalServer(("127.0.0.1", self._gateway['port'] if self._gateway else 0), Handler)
             port = self._server.server_address[1]
             self._base_url = f"http://127.0.0.1:{port}{self._prefix}"
             self._thread = threading.Thread(
@@ -219,6 +223,14 @@ class PolicyProxy:
             )
             self._thread.start()
             return self._base_url
+
+    def gateway_url(self):
+        if not self._gateway or not self._server:
+            raise RuntimeError('Codex provider gateway is not configured')
+        return f"http://127.0.0.1:{self._server.server_address[1]}/{self._gateway['key']}"
+
+    def credentials_ready(self):
+        return self._auth_ready.is_set()
 
     def close(self):
         self._stopping.set()
@@ -318,11 +330,13 @@ class PolicyProxy:
 
     def _handle(self, handler):
         self._record("requests", "received")
-        expected_prefix = self._prefix + "/"
+        client = bool(self._gateway and handler.path.startswith('/' + self._gateway['key'] + '/'))
+        prefix = '/' + self._gateway['key'] if client else self._prefix
+        expected_prefix = prefix + "/"
         if not handler.path.startswith(expected_prefix):
             self._reject(handler, "unknown_endpoint", 404)
             return
-        route = handler.path[len(self._prefix):]
+        route = handler.path[len(prefix):]
         if route not in _INFERENCE_PATHS:
             self._reject(handler, "endpoint_not_allowed", 404)
             return
@@ -343,6 +357,31 @@ class PolicyProxy:
             name: value for name, value in handler.headers.items()
             if name.lower() in _FORWARD_HEADERS
         }
+        if client:
+            if not self._auth_ready.is_set():
+                try:
+                    if self.refresh_credentials is None:
+                        raise RuntimeError('Native credential refresher is unavailable')
+                    self.refresh_credentials()
+                except Exception:
+                    self._reject(handler, 'native_authentication_unavailable', 503)
+                    return
+            with self._lock:
+                native = dict(self._native_headers or {})
+            if not native.get('authorization'):
+                self._reject(handler, 'native_authentication_unavailable', 503)
+                return
+            # The private Codex endpoint cannot supply or replace Meta credentials.
+            headers = {k: v for k, v in headers.items() if k.lower() != 'authorization'}
+            headers.update(native)
+        else:
+            native = {k.lower(): v for k, v in headers.items()
+                      if k.lower() in ('authorization', 'x-client-id', 'x-meta-ai-gateway-session-id',
+                                       'x-api-version', 'user-agent', 'x-fb-routing-control')}
+            if native.get('authorization', '').startswith('Bearer '):
+                with self._lock:
+                    self._native_headers = native
+                self._auth_ready.set()
         headers.update({"Content-Type": "application/json", "Content-Length": str(len(body)),
                         "Accept-Encoding": "identity", "Connection": "close"})
         connection = None
@@ -356,6 +395,10 @@ class PolicyProxy:
             self._record("forwarded", "policy_passed")
             connection.request("POST", "/v1" + route, body=body, headers=headers)
             response = connection.getresponse()
+            if client and response.status == 401:
+                with self._lock:
+                    self._native_headers = None
+                self._auth_ready.clear()
             if 300 <= response.status < 400:
                 raise _PolicyError("upstream_redirect_not_allowed")
             encoding = response.getheader("Content-Encoding", "identity").lower().strip()

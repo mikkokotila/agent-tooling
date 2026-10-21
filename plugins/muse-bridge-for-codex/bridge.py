@@ -24,7 +24,7 @@ from policy_proxy import PolicyProxy
 MODEL = 'muse-spark-1.3-contributor'
 EFFORT = 'max'
 PROVIDER = 'meta'
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 SCHEMA = 'sha256:f282ad16e21520d0cda68cb190149b86e2b062eef1dd282749360c05aa3d1082'
 MUSE = Path.home() / '.local/bin/muse'
 STATE = Path.home() / '.local/state/muse-control'
@@ -114,8 +114,18 @@ def validate(name, args):
 
 class Host:
     def __init__(self):
-        self.proxy = PolicyProxy()
+        gateway_file = STATE / 'gateway.json'
+        gateway = json.loads(gateway_file.read_text()) if gateway_file.exists() else None
+        self.proxy = PolicyProxy(gateway=gateway)
         base = self.proxy.start()
+        if gateway and not gateway['port']:
+            gateway['port'] = self.proxy._server.server_address[1]
+            temporary = gateway_file.with_suffix('.tmp')
+            temporary.write_text(json.dumps(gateway))
+            temporary.chmod(0o600)
+            temporary.replace(gateway_file)
+        self.auth_lock = threading.Lock()
+        self.auth_session = None
         self.events = deque(maxlen=20000)
         self.event_seq = 0
         self.event_condition = threading.Condition()
@@ -158,9 +168,31 @@ class Host:
                 raise BridgeError('Pinned contributor model with max is unavailable; no fallback is allowed.')
             self.catalog_source = catalog.get('source')
             self.model_entry = {k: matches[0].get(k) for k in ['modelId', 'providerId', 'variants', 'displayLabel']}
+            self.proxy.refresh_credentials = self._refresh_credentials
         except BaseException:
             self.close()
             raise
+
+    def _refresh_credentials(self):
+        """Let native Muse obtain/refresh its own Keychain credential.
+
+        Only the existing private provider transport sees the bearer, in RAM.
+        No Keychain export, credential file, or credential-returning RPC exists.
+        """
+        with self.auth_lock:
+            if self.proxy.credentials_ready():
+                return
+            with self.operation_lock:
+                if self.auth_session is None:
+                    workspace = STATE / 'provider-auth'
+                    workspace.mkdir(exist_ok=True, mode=0o700)
+                    result = self._dispatch('muse_launch', {'workspace': str(workspace),
+                                                         'name': 'Codex Muse provider authentication'})
+                    self.auth_session = result['session']['sessionId']
+                self._dispatch('muse_send', {'session_id': self.auth_session,
+                                            'message': 'Reply READY. Do not use tools.'})
+            if not self.proxy._auth_ready.wait(45):
+                raise BridgeError('Native Muse authentication did not become available.')
 
     def _write(self, msg):
         with self.write_lock:
@@ -405,7 +437,10 @@ class LocalHandler(socketserver.StreamRequestHandler):
             if len(line) > MAX_FRAME:
                 raise BridgeError('Request is too large.')
             message = load_json(line)
-            result = self.server.host.dispatch(message['tool'], message.get('arguments', {}))
+            if message.get('action') == 'provider_info':
+                result = {'base_url': self.server.host.proxy.gateway_url()}
+            else:
+                result = self.server.host.dispatch(message['tool'], message.get('arguments', {}))
             response = {'result': result}
         except Exception as exc:
             response = {'error': str(exc)}
