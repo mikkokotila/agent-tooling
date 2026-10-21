@@ -80,6 +80,17 @@ def build():
     run([python, '-c', "import sys; sys.path.insert(0,'tools'); import backend; print(backend.build_wheel('.build/dist'))"], cwd=ROOT)
     return python
 
+def verification_git(env, state):
+    """Resolve Apple's developer-tool shim once, only inside this verification."""
+    if shutil.which('git', path=env.get('PATH')) != '/usr/bin/git': return
+    target = Path(run(['/usr/bin/xcrun', '--find', 'git'], capture_output=True, text=True).stdout.strip())
+    if not target.is_absolute() or not target.is_file() or not os.access(target, os.X_OK) or target == Path('/usr/bin/git'):
+        raise RuntimeError('Developer Git resolution did not identify an executable binary')
+    launcher = Path(state) / 'git-bin/git'
+    # A symlink changes Git's prefix/template lookup. exec preserves argv[0].
+    atomic(launcher, ('#!/bin/sh\nexec ' + shlex.quote(str(target)) + ' "$@"\n').encode(), 0o700)
+    env['PATH'] = str(launcher.parent) + os.pathsep + env.get('PATH', '')
+
 def verify():
     revision = fingerprint()
     report = BUILD / 'verified.json'
@@ -90,6 +101,7 @@ def verify():
         env = dict(os.environ, PYTHONPATH=str(ROOT), CALLER_PR_GATES_STATE_DIR=state,
                    CALLER_PR_GATES_PROMPTS_STATE_DIR=state, CALLER_PR_GATES_PROMPTS_FILE=str(ROOT / 'prompts.toml'),
                    CODEX_CLI='codex',CLAUDE_CLI='claude')
+        verification_git(env, state)
         # Bound the cumulative suite wait; individual test/native deadlines
         # remain independent of this finite fifteen-minute parent budget.
         run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=900)
