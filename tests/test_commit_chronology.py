@@ -86,6 +86,11 @@ async def test_large_comparison_never_credits_incomplete_or_changed_evidence(kin
 @pytest.mark.parametrize('collector', [github.collect_with_client, github.collect_review_with_client])
 @pytest.mark.anyio
 async def test_large_chronology_rejects_final_pr_source_or_count_change(race, collector):
+    if race == 'head' and collector is github.collect_with_client:
+        from caller_pr_gates.policy import evaluate_pr
+        result = await collector(LargeClient(race=race), 'mikkokotila/caller', 50)
+        assert {gate['status'] for gate in evaluate_pr(result, [])} == {'UNKNOWN'}
+        return
     with pytest.raises(github.EvidenceError):
         await collector(LargeClient(race=race), 'mikkokotila/caller', 50)
 

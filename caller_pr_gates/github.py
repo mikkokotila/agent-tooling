@@ -686,7 +686,7 @@ async def collect_review_with_client(client,repository,number):
                     head_repository_id=source_repo.get('id'), base_repository=target_repo.get('full_name'),
                     base_repository_id=target_repo.get('id'))
     identity = source_identity(raw)
-    if (any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base'))
+    if (any(raw.get(k)!=after.get(k) for k in ('state','merged','updated_at','base','commits'))
             or (after.get('head') or {}).get('sha')!=head or identity != source_identity(after)
             or raw.get('merged') and _merged_source(raw) != _merged_source(after)):
         raise EvidenceError('PR changed during review collection')
