@@ -636,10 +636,13 @@ class Store:
         if not added:
             return []
         evidence = self._validation_evidence(db, existing)
-        def has_run(identifier):
+        def has_run(identifier, *, current_inputs=False):
+            target_digest = old_checks[identifier].get("input_digest", existing["input_digest"]) if current_inputs else None
             return db.execute("""SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
-                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?""",
-                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], identifier)).fetchone() is not None
+                WHERE p.session_id=? AND p.repository=? AND p.number=? AND p.cwd=? AND r.check_id=?
+                AND (? IS NULL OR p.input_digest=? OR r.input_digest=?)""",
+                (existing["session_id"], existing["repository"], existing["number"], existing["cwd"], identifier,
+                 target_digest, existing["input_digest"], target_digest)).fetchone() is not None
         receipts = []
         for check in added:
             correction = check["correction"]
@@ -647,7 +650,7 @@ class Store:
             runs = [run for run in evidence if run["check_id"] == target]
             failed = runs[-1] if runs else None
             if correction.get("unexecuted") is True:
-                if target not in old_checks or has_run(target):
+                if target not in old_checks or has_run(target, current_inputs="retained_docs" in correction):
                     raise ValueError("An unexecuted checker correction requires an existing required check without any run history")
                 previous = {"original_input_digest": old_checks[target].get("input_digest", existing["input_digest"])}
             elif (target not in old_checks or not failed or failed["run_id"] != correction["run_id"]

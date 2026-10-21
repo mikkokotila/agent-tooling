@@ -14,7 +14,7 @@ from test_workflow import git, local, publish
 
 
 @pytest.fixture
-def paired(local, monkeypatch):
+def paired(local, monkeypatch, request):
     store, root, snap, plan = local
     monkeypatch.setenv('LIMEN_PYTHON', sys.executable)
     monkeypatch.setenv('POLARS_MAX_THREADS', '1')
@@ -31,7 +31,16 @@ def paired(local, monkeypatch):
         dict(id='reader', argv=['npm', 'run', 'check'], cwd='docs-site', reason='Qualify the existing complete reader')],
         env_names=['LIMEN_PYTHON', 'POLARS_MAX_THREADS'])
     publish(local)
+    historical = None
+    if getattr(request, 'param', None) == 'historical-book':
+        monkeypatch.setenv('POLARS_MAX_THREADS', '2')
+        prior = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+        historical = workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'book')['run']
+        assert historical['status'] == 'fail' and historical['exit_code'] > 0
+        monkeypatch.setenv('POLARS_MAX_THREADS', '1')
     row = workflow.save_plan(store, 's', 'Owner/Repo', 1, root, plan)['plan']
+    if historical is not None:
+        assert prior['input_digest'] != row['input_digest']
     failed = workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'provenance')['run']
     assert failed['status'] == 'fail' and failed['exit_code'] == 125
     original_head = git(root, 'rev-parse', 'HEAD')
@@ -55,7 +64,7 @@ def paired(local, monkeypatch):
     evidence = controls / 'diagnosis.txt'
     evidence.write_text(f"Original run {failed['run_id']} failed with125. Use the committed target checker pair; retain every original scenario and argument.\n")
     return dict(local=local, store=store, root=root, row=row, failed=failed, source=source,
-                bodies=bodies, controls=controls, evidence=evidence, proof=proof)
+                bodies=bodies, controls=controls, evidence=evidence, proof=proof, historical=historical)
 
 
 def candidate(data, identifier):
@@ -201,3 +210,26 @@ def test_pair_cannot_be_downgraded_through_a_correction_successor(paired, identi
     assert store.validation_runs(admitted['plan_id']) == before
     phase = workflow.current_phase(store, admitted)
     assert not phase.get('local_checks_passed') and not phase.get('corrected_failures')
+
+
+@pytest.mark.parametrize('paired', ['historical-book'], indirect=True)
+def test_prior_input_execution_cannot_supply_or_block_unexecuted_current_pair(paired):
+    data = paired; store = data['store']; payload, check = candidate(data, 'book')
+    historical = data['historical']
+    admitted = save(data, payload)['plan']
+    assert admitted['input_digest'] == data['row']['input_digest'] != historical['input_digest']
+    assert store.validation_runs(historical['plan_id']) == [historical]
+    assert store.validation_runs(admitted['plan_id']) == [data['failed']]
+    phase = workflow.current_phase(store, admitted)
+    assert check['id'] in phase['pending'] and not phase.get('local_checks_passed')
+
+
+def test_current_input_execution_still_refuses_unexecuted_pair(paired):
+    data = paired; store = data['store']; root = data['root']
+    actual = workflow.run_check(store, 's', 'Owner/Repo', 1, root, 'book',
+                                merged_head=data['local'][2]['head_sha'])['run']
+    assert actual['status'] == 'fail' and actual['exit_code'] > 0
+    payload, _ = candidate(data, 'book')
+    with pytest.raises(ValueError, match='without any run history'):
+        save(data, payload)
+    assert store.validation_runs(data['row']['plan_id']) == [data['failed'], actual]
