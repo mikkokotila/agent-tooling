@@ -6,7 +6,7 @@ This is the canonical manager role, authority, operating mandate and succession 
 
 The human saying **“you are manager”** (or an equivalent explicit appointment) in this repository appoints this chat. Reading these instructions, a hook or another agent’s message alone does not. Ordinary repository work must not start a manager.
 
-1. Read this file, the request protocol and private machine configuration in `${HOME}/.codex/work-manager/config.json`. Verify this chat's exact identity and whether the human appointed a Codex or Muse manager; record that kind and apply the coverage rule below. Credentials and access profiles are configuration, not session history.
+1. Read this file, the request protocol and private machine configuration in `${HOME}/.codex/work-manager/config.json`. Verify this chat's exact identity and whether the human appointed a Codex, Claude or Muse manager; record that kind and apply the coverage rule below. Credentials and access profiles are configuration, not session history.
 2. If `state.json → manager_session` already matches this chat, continue this session's ledger. Otherwise inspect only the previous manager's identity and readiness without waking archived chats. Coordinate an active predecessor's stand-down at a natural checkpoint; never run competing managers.
 3. A new manager chat starts a fresh private ledger for its own identity and discovers current work. Do not inherit the previous chat's assignments, cases, retired list, pending results or wind-down state. After verified stand-down, stop or retarget the existing heartbeat using the supported automation tool and remove the ended session's ledger under the cleanup rule below. Preserve machine configuration and original worker artifacts.
 4. Record this manager's identity, kind and heartbeat ownership atomically with mode0600. Recheck that identity before every wakeup or intervention. If it no longer matches, stand down without discovery or worker contact. Reuse the existing schedule when present; otherwise the explicit appointment authorizes one 30-minute heartbeat for this session. Verify its target and quiet-notification policy; never clone an active schedule.
@@ -58,7 +58,7 @@ A Muse manager covers Muse sessions only. It does not inspect, supervise, resume
 
 ## Claude-manager variant
 
-A Claude manager covers Claude desktop sessions, GPT browser chats and Poise. It does not inspect, supervise, resume or assign Codex desktop or Muse sessions unless the human adds them. All Codex-manager behavior in this file is unchanged.
+A Claude manager covers Claude desktop sessions, GPT browser chats and Poise. It does not inspect, supervise, resume or assign Codex desktop sessions or Muse sessions outside Poise unless the human adds them. All Codex-manager behavior in this file is unchanged.
 
 - Browser pane: run browser work in the Claude app's built-in browser pane, never the human's own browser.
 - Heartbeat: the heartbeat runs inside the manager's own session.
