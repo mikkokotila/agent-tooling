@@ -631,7 +631,7 @@ class Store:
 
     def _checker_corrections(self, db, existing, plan, checks, old_checks):
         """Validate fresh correction links inside the same plan-write transaction."""
-        from .progress import private_checker_correction
+        from .progress import REMOTE_EVIDENCE_TTL, private_checker_correction
         added = [check for key, check in checks.items() if key not in old_checks and "correction" in check]
         if not added:
             return []
@@ -664,10 +664,12 @@ class Store:
                 raise ValueError("A checker correction requires a fresh check identity without prior results")
             source = {}
             if "retained_docs" in correction:
-                preflight = self.preflight(existing["repository"], existing["number"]) or {}
+                proof = db.execute('SELECT payload FROM validation_preflights WHERE repository=? AND number=?',
+                                   (existing["repository"], existing["number"])).fetchone()
+                preflight = json.loads(proof["payload"]) if proof else {}
                 stamp = preflight.get("collected_at")
                 if (preflight.get("profile") != "validation" or not isinstance(stamp, (int, float))
-                        or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= 120
+                        or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= REMOTE_EVIDENCE_TTL
                         or not preflight.get("base_sha") or preflight.get("base_sha") != preflight.get("base_sha_after")
                         or preflight.get("branch_error")):
                     raise ValueError("Reviewed documentation correction requires fresh stable live-target evidence")
