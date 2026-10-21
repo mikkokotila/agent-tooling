@@ -269,7 +269,7 @@ async def qualify_successor(store, sid, repository, original, final, cwd, payloa
     from .github import collect_pr, collect_review
     from .closure import read_live
     from .transport import GitHubClient
-    context = store.final_coverage_context(sid, repository, original, final)
+    context = store.final_coverage_context(sid, repository, original, final, recover_exited=True)
     progress.final_coverage(context['original']['row'], context['final']['row'], context['original']['scope'], payload)
     _final_coverage_local(context, cwd)
     # Supersede any earlier success before remote reads, including failed or
