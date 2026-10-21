@@ -14,10 +14,10 @@ def guidance(original, root, home):
         raise RuntimeError('Malformed Switchboard guidance markers')
     if BEGIN in text:
         start = text.index(BEGIN)
-        end = text.index(END) + len(END)
-        if end < start:
+        end_start = text.index(END)
+        if end_start < start:
             raise RuntimeError('Reversed Switchboard guidance markers')
-        return (text[:start] + incoming + text[end:]).encode()
+        return (text[:start] + incoming + text[end_start + len(END):]).encode()
     anchor = '<!-- agent-tooling:manager:end -->'
     if anchor in text:
         position = text.index(anchor) + len(anchor)
