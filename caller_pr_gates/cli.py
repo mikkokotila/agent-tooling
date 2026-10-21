@@ -642,9 +642,21 @@ def gateway(args, store):
         endpoint, method, field_values, input_file = _api_request(argv)
         fields = bool(field_values) or input_file is not None
         api_write = method.upper() not in {'GET', 'HEAD'} if method else fields
-        google_secret = endpoint == 'repos/Vaquum/poise/actions/secrets/POISE_GOOGLE_CLIENT_SECRET'
-        google_variable = endpoint in ('repos/Vaquum/poise/actions/variables',
-                                      'repos/Vaquum/poise/actions/variables/POISE_GOOGLE_CLIENT_ID')
+        google_grant = (store.get_scope(sid) or {}).get('google_actions_configuration')
+        valid_google_grant = (isinstance(google_grant, dict)
+            and set(google_grant) == {'repository', 'authorizing_pr', 'approval_evidence'}
+            and isinstance(google_grant['repository'], str)
+            and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', google_grant['repository']) is not None
+            and all(part not in {'.', '..'} for part in google_grant['repository'].split('/'))
+            and isinstance(google_grant['authorizing_pr'], str)
+            and REF.fullmatch(google_grant['authorizing_pr']) is not None
+            and '/pull/' in google_grant['authorizing_pr']
+            and isinstance(google_grant['approval_evidence'], str)
+            and bool(google_grant['approval_evidence'].strip()))
+        google_prefix = f"repos/{google_grant['repository']}/actions/" if valid_google_grant else ''
+        google_secret = bool(google_prefix) and endpoint == google_prefix + 'secrets/POISE_GOOGLE_CLIENT_SECRET'
+        google_variable = bool(google_prefix) and endpoint in (google_prefix + 'variables',
+                                      google_prefix + 'variables/POISE_GOOGLE_CLIENT_ID')
         if fields and (endpoint == DOCS_CONTEXTS or google_secret or google_variable):
             # A read-method spelling cannot bypass this operation's frozen-body admission.
             api_write = True
@@ -696,11 +708,12 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
-            # Existing authorized Google deployment: the upstream PR owner may persist
-            # only these two keys in the operator's fork. No other cross-repo writes.
+            # The immutable approved work-item names both repositories and the exact
+            # authorizing PR. Only the two integration keys are admitted by this grant.
             allowed_google_config = False
             google_owner = None
-            if repo == 'autonomio/poise' and not issue and (google_secret or google_variable):
+            if (not issue and (google_secret or google_variable)
+                    and reference(google_grant['authorizing_pr']) == (repo, num, False)):
                 google_owner = next((p for p in store.prs(sid)
                     if p['repository'] == repo and p['number'] == num), None)
                 if google_owner is None:
@@ -734,7 +747,7 @@ def gateway(args, store):
                     if allowed_google_config:
                         admitted_api_body = json.dumps(payload)
                         argv = ['api', endpoint, '--method', verb, '--input', '-']
-                        receipt = {'session_id': sid, 'repository': 'Vaquum/poise',
+                        receipt = {'session_id': sid, 'repository': google_grant['repository'],
                             'upstream_pr': args.target, 'endpoint': endpoint, 'method': verb,
                             'payload_sha256': hashlib.sha256(admitted_api_body.encode()).hexdigest()}
                         store.audit('github_google_configuration_attempt', receipt)

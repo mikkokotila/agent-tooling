@@ -11,8 +11,9 @@ from caller_pr_gates.monitor import retire
 from caller_pr_gates.store import Store
 
 
-UPSTREAM = 'autonomio/poise'
-PREFIX = 'repos/Vaquum/poise/actions/'
+UPSTREAM = 'maintainer/source'
+FORK = 'operator/deployment'
+PREFIX = f'repos/{FORK}/actions/'
 SECRET = PREFIX + 'secrets/POISE_GOOGLE_CLIENT_SECRET'
 VARIABLE = PREFIX + 'variables'
 CLIENT = '123456-example.apps.googleusercontent.com'
@@ -23,6 +24,15 @@ def config(tmp_path):
     store = Store(tmp_path / 'state')
     store.record_session('s', 'codex', str(tmp_path))
     store.register('s', 'codex', UPSTREAM, 11, str(tmp_path))
+    store.record_scope('s', {
+        'agreed_scope': 'Persist the approved existing Google integration keys.',
+        'approval_evidence': 'Human approved this exact bounded configuration.',
+        'acceptance_criteria': ['Only the two approved keys are persisted.'],
+        'slice_count': 0, 'slice_ids': [], 'approved_at': 1,
+        'google_actions_configuration': {'repository': FORK,
+            'authorizing_pr': f'https://github.com/{UPSTREAM}/pull/11',
+            'approval_evidence': 'Human approved the existing pair in this operator fork.'},
+    }, work_item='google-configuration')
     path = tmp_path / 'request.json'
     path.write_text(json.dumps({'key_id': 'github-public-key-id',
         'encrypted_value': base64.b64encode(b'opaque-ciphertext' * 8).decode()}))
@@ -62,6 +72,30 @@ def test_closed_unmerged_work_cannot_authorize_configuration(config):
     with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
+
+
+@pytest.mark.parametrize('change', ['missing', 'empty-approval', 'other-pr', 'path-escape', 'extra-key'])
+def test_only_an_explicit_exact_immutable_configuration_grant_authorizes_the_write(config, change):
+    store, args, _ = config
+    scope = store.get_scope('s')
+    grant = scope['google_actions_configuration']
+    if change == 'missing': del scope['google_actions_configuration']
+    elif change == 'empty-approval': grant['approval_evidence'] = ''
+    elif change == 'other-pr': grant['authorizing_pr'] = f'https://github.com/{UPSTREAM}/pull/12'
+    elif change == 'path-escape': grant['repository'] = '../deployment'
+    else: grant['extra-key'] = 'OTHER_SECRET'
+    store.record_scope('s', scope, work_item='negative-case')
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='API gateway permits'):
+            gateway(args, store)
+
+
+def test_an_approved_configuration_receipt_cannot_be_retargeted(config):
+    store, _, _ = config
+    scope = store.get_scope('s')
+    scope['google_actions_configuration']['repository'] = 'other/deployment'
+    with pytest.raises(ValueError, match='immutable'):
+        store.record_scope('s', scope, work_item='google-configuration')
 
 
 @pytest.mark.parametrize('outcome', ['timeout', 'failed'])
@@ -105,7 +139,7 @@ def test_variable_payload_cannot_change_other_keys_or_store_a_secret(config, pay
 
 
 @pytest.mark.parametrize('endpoint,method', [
-    (SECRET.replace('Vaquum/poise', 'other/poise'), 'PUT'),
+    (SECRET.replace(FORK, 'other/deployment'), 'PUT'),
     (SECRET.replace('POISE_GOOGLE_CLIENT_SECRET', 'OTHER_SECRET'), 'PUT'),
     (PREFIX + 'permissions/workflow', 'PUT'),
     (SECRET, 'POST'), (SECRET, 'GET'), (SECRET, 'HEAD'), (SECRET, 'DELETE'),
@@ -136,8 +170,8 @@ def test_plaintext_malformed_and_extra_secret_fields_are_denied(config, payload)
             gateway(args, store)
 
 
-@pytest.mark.parametrize('target', [None, 'https://github.com/autonomio/poise/pull/12',
-    'https://github.com/Vaquum/poise/pull/11', 'https://github.com/autonomio/poise/issues/11'])
+@pytest.mark.parametrize('target', [None, 'https://github.com/maintainer/source/pull/12',
+    'https://github.com/operator/deployment/pull/11', 'https://github.com/maintainer/source/issues/11'])
 def test_another_target_or_unowned_pr_cannot_authorize_configuration(config, target):
     store, args, _ = config
     args.target = target
