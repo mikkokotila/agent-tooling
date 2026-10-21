@@ -14,12 +14,19 @@ import bridge
 class BridgePolicyTests(unittest.TestCase):
     def test_no_tool_accepts_model_or_effort(self):
         for name, _, spec in bridge.TOOLS:
+            valid = {}
+            for key in spec['required']:
+                field = spec['properties'][key]
+                valid[key] = ('00000000-0000-4000-8000-000000000001'
+                              if field.get('format') == 'uuid' else 'valid')
+            bridge.validate(name, valid)
             for key in ('model', 'model_id', 'modelId', 'provider', 'providerId',
                         'reasoning_effort', 'reasoningEffort', 'contributor_mode',
                         'base_url', 'config', 'rpc'):
                 with self.subTest(tool=name, key=key):
-                    with self.assertRaises(bridge.BridgeError):
-                        bridge.validate(name, {key: 'other'})
+                    self.assertNotIn(key, spec['properties'])
+                    with self.assertRaisesRegex(bridge.BridgeError, 'Unsupported arguments'):
+                        bridge.validate(name, {**valid, key: 'other'})
 
     def test_actual_runtime_validation_rejects_bad_types(self):
         for args in ({'wait_seconds': True}, {'wait_seconds': 51}, {'session_id': 'not-a-uuid'},

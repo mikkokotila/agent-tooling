@@ -279,6 +279,16 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(event + b"data: [DONE]\n\n", body)
 
+    def test_sse_unicode_line_separators_inside_json_are_preserved(self):
+        event = ('data: ' + json.dumps({'type': 'response.output_text.delta',
+                                      'delta': 'before\u2028middle\u2029after'}, ensure_ascii=False)
+                 + '\n\n').encode()
+        self.factory.response = Response(content_type='text/event-stream', chunks=[event[:25], event[25:]])
+        status, body = self.request()
+        self.assertEqual(200, status)
+        self.assertEqual(event, body)
+        self.assertEqual(0, self.proxy.snapshot()['response_blocked'])
+
     def test_sse_model_mismatch_stops_before_that_event(self):
         good = b'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
         bad = b'data: {"response":{"model":"other","output":"PRIVATE OUTPUT"}}\n\n'

@@ -132,7 +132,9 @@ def _validate_response(document):
 
 def _validate_sse_event(event):
     try:
-        lines = event.decode("utf-8").splitlines()
+        # SSE has ASCII line endings. str.splitlines also splits legal JSON
+        # characters such as U+2028/U+2029 inside generated text.
+        lines = re.split(r"\r\n|\r|\n", event.decode("utf-8"))
     except UnicodeError:
         raise _PolicyError("invalid_response_encoding") from None
     data = []
