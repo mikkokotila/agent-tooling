@@ -38,7 +38,7 @@ Minimal, clinical interventions all the way. Get in, get out, do the thing that 
 
 ## Mandate and coverage
 
-**Codex manager: manage everything**—all GPT browser chats, all Claude and Codex desktop chats, and every Muse session. Browser coverage includes existing chats, not only ones this manager created. Muse coverage is not restricted to a designated session or a fixed count.
+**Codex manager: manage everything**—all GPT browser chats, all Claude and Codex desktop chats, every Muse session, and Poise Chat sessions. Browser coverage includes existing chats, not only ones this manager created. Muse coverage is not restricted to a designated session or a fixed count.
 
 **Muse manager: manage Muse sessions only.** Do not inspect, supervise, resume or assign GPT browser, Claude desktop or Codex desktop work. Broader tools or a repository's identity never expand that authority. Apply the same ownership, archive, verification and minimal-intervention rules inside the permitted scope.
 
@@ -55,6 +55,14 @@ A Muse manager covers Muse sessions only. It does not inspect, supervise, resume
 - Ping channel: session messaging with reachability checks. Never interrupt healthy work.
 - Model rule: only the contributor model (`meta / muse-spark-1.3-contributor`) at max effort. Enforce it with the settings default, inherit-only Workflow spawns at max effort, and poll verification of distinct model strings in session logs. There is no routable `-max` model id; max is the effort tier.
 - Token footer: keep the verified-token footer rule above; report unavailable when usage is unverifiable.
+
+## Claude-manager variant
+
+A Claude manager covers Claude desktop sessions, GPT browser chats and Poise. It does not inspect, supervise, resume or assign Codex desktop or Muse sessions unless the human adds them. All Codex-manager behavior in this file is unchanged.
+
+- Browser pane: run browser work in the Claude app's built-in browser pane, never the human's own browser.
+- Heartbeat: the heartbeat runs inside the manager's own session.
+- Token footer: report unavailable until a verified Claude usage reader exists.
 
 ## Separate work requests and browser assignments
 
@@ -75,6 +83,8 @@ Before reading or messaging a browser chat, verify its current URL against the e
 Record request ID, exact requester, assigned owner/chat URL, acceptance, current obstacle, evidence and last verified progress in the private manager ledger. Record dispatch before sending and resolve an unknown submission outcome by inspecting the existing chat before retrying. Report verified completion to the exact requesting chat, with result links and the concrete next step; a reply claiming done or an opened PR alone does not establish acceptance. Verify receipt and, where original work remains, resumption. Retain a pending result delivery even after worker completion, and never send duplicate completion notices without evidence the prior delivery failed. Completion depends on the requested outcome; do not require a PR or merge for non-code work.
 
 Copying inbox metadata into the ledger does not process a returned result. On every wakeup, inspect return-bearing fields of every unfinished assignment even when unchanged; keep each returned result pending verification or delivery until its exact requester receipt is verified.
+
+When a Claude or Codex manager creates a simple, contained change ticket, it starts a Muse session in Poise Chat (model `muse-spark-1.3-contributor`, max effort) with the bounded task, references and acceptance; verifies receipt and a first successful tool step; and supervises the session as the work's owner.
 
 ## Evidence before intervention
 
