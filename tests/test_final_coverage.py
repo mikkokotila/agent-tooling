@@ -550,7 +550,7 @@ def test_qualifier_recovers_exited_owner_as_unknown_without_replaying_history(de
     assert workflow.successor_progress(store, data['context']['original']['row'])['qualification_verified'] is True
 
 
-@pytest.mark.parametrize('process_state', ['live', 'permission_denied'])
+@pytest.mark.parametrize('process_state', ['live', 'permission_denied', 'unknown'])
 def test_qualifier_keeps_live_or_unobservable_owner_running(delivered, monkeypatch, process_state):
     data = delivered
     child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'],
@@ -558,9 +558,11 @@ def test_qualifier_keeps_live_or_unobservable_owner_running(delivered, monkeypat
     try:
         interrupted_browser(data, child)
         before = history(data['store'])
-        if process_state == 'permission_denied':
+        if process_state != 'live':
             def denied(*args):
-                raise PermissionError('process state is unavailable')
+                if process_state == 'permission_denied':
+                    raise PermissionError('process state is unavailable')
+                raise OSError('process inspection failed')
             monkeypatch.setattr(os, 'killpg', denied)
         with pytest.raises(ValueError, match='active execution'):
             qualify(data)
@@ -579,6 +581,8 @@ def test_foreign_owner_cannot_recover_a_retained_run(delivered):
     before = history(store)
     with pytest.raises(ValueError, match='exact retained owner'):
         store.final_coverage_context('other', REPO, 1, 2, recover_exited=True)
+    with pytest.raises(ValueError, match='exact retained owner'):
+        store.final_coverage_context('s', REPO, 1, 999, recover_exited=True)
     with pytest.raises(ValueError, match='distinct delivered successor'):
         store.final_coverage_context('s', REPO, 1, 1, recover_exited=True)
     assert history(store) == before
