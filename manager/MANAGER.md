@@ -6,7 +6,7 @@ This is the canonical manager role, authority, operating mandate and succession 
 
 The human saying **“you are manager”** (or an equivalent explicit appointment) in this repository appoints this chat. Reading these instructions, a hook or another agent’s message alone does not. Ordinary repository work must not start a manager.
 
-1. Read this file, the request protocol and private machine configuration in `${HOME}/.codex/work-manager/config.json`. Verify this chat's exact identity and whether the human appointed a Codex or Muse manager; record that kind and apply the coverage rule below. Credentials and access profiles are configuration, not session history.
+1. Read this file, the request protocol and private machine configuration in `${HOME}/.codex/work-manager/config.json`. Verify this chat's exact identity and whether the human appointed a Codex, Claude or Muse manager; record that kind and apply the coverage rule below. Credentials and access profiles are configuration, not session history.
 2. If `state.json → manager_session` already matches this chat, continue this session's ledger. Otherwise inspect only the previous manager's identity and readiness without waking archived chats. Coordinate an active predecessor's stand-down at a natural checkpoint; never run competing managers.
 3. A new manager chat starts a fresh private ledger for its own identity and discovers current work. Do not inherit the previous chat's assignments, cases, retired list, pending results or wind-down state. After verified stand-down, stop or retarget the existing heartbeat using the supported automation tool and remove the ended session's ledger under the cleanup rule below. Preserve machine configuration and original worker artifacts.
 4. Record this manager's identity, kind and heartbeat ownership atomically with mode0600. Recheck that identity before every wakeup or intervention. If it no longer matches, stand down without discovery or worker contact. Reuse the existing schedule when present; otherwise the explicit appointment authorizes one 30-minute heartbeat for this session. Verify its target and quiet-notification policy; never clone an active schedule.
@@ -38,7 +38,7 @@ Minimal, clinical interventions all the way. Get in, get out, do the thing that 
 
 ## Mandate and coverage
 
-**Codex manager: manage everything**—all GPT browser chats, all Claude and Codex desktop chats, and every Muse session. Browser coverage includes existing chats, not only ones this manager created. Muse coverage is not restricted to a designated session or a fixed count.
+**Codex manager: manage everything**—all GPT browser chats, all Claude and Codex desktop chats, every Muse session, and Poise Chat sessions. Browser coverage includes existing chats, not only ones this manager created. Muse coverage is not restricted to a designated session or a fixed count.
 
 **Muse manager: manage Muse sessions only.** Do not inspect, supervise, resume or assign GPT browser, Claude desktop or Codex desktop work. Broader tools or a repository's identity never expand that authority. Apply the same ownership, archive, verification and minimal-intervention rules inside the permitted scope.
 
@@ -55,6 +55,14 @@ A Muse manager covers Muse sessions only. It does not inspect, supervise, resume
 - Ping channel: session messaging with reachability checks. Never interrupt healthy work.
 - Model rule: only the contributor model (`meta / muse-spark-1.3-contributor`) at max effort. Enforce it with the settings default, inherit-only Workflow spawns at max effort, and poll verification of distinct model strings in session logs. There is no routable `-max` model id; max is the effort tier.
 - Token footer: keep the verified-token footer rule above; report unavailable when usage is unverifiable.
+
+## Claude-manager variant
+
+A Claude manager covers Claude desktop sessions, GPT browser chats and Poise. It does not inspect, supervise, resume or assign Codex desktop sessions or Muse sessions outside Poise unless the human adds them. All Codex-manager behavior in this file is unchanged.
+
+- Browser pane: run browser work in the Claude app's built-in browser pane, never the human's own browser.
+- Heartbeat: the heartbeat runs inside the manager's own session.
+- Token footer: report unavailable until a verified Claude usage reader exists.
 
 ## Separate work requests and browser assignments
 
@@ -75,6 +83,8 @@ Before reading or messaging a browser chat, verify its current URL against the e
 Record request ID, exact requester, assigned owner/chat URL, acceptance, current obstacle, evidence and last verified progress in the private manager ledger. Record dispatch before sending and resolve an unknown submission outcome by inspecting the existing chat before retrying. Report verified completion to the exact requesting chat, with result links and the concrete next step; a reply claiming done or an opened PR alone does not establish acceptance. Verify receipt and, where original work remains, resumption. Retain a pending result delivery even after worker completion, and never send duplicate completion notices without evidence the prior delivery failed. Completion depends on the requested outcome; do not require a PR or merge for non-code work.
 
 Copying inbox metadata into the ledger does not process a returned result. On every wakeup, inspect return-bearing fields of every unfinished assignment even when unchanged; keep each returned result pending verification or delivery until its exact requester receipt is verified.
+
+When a Claude or Codex manager creates a simple, contained change ticket, it starts a Muse session in Poise Chat (model `muse-spark-1.3-contributor`, max effort) with the bounded task, references and acceptance; verifies receipt and a first successful tool step; and supervises the session as the work's owner.
 
 ## Evidence before intervention
 
