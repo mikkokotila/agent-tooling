@@ -662,7 +662,17 @@ class Store:
                 raise ValueError("This checker already has a correction; correct its defective successor instead of branching")
             if has_run(check["id"]):
                 raise ValueError("A checker correction requires a fresh check identity without prior results")
-            pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target])
+            source = {}
+            if "retained_docs" in correction:
+                preflight = self.preflight(existing["repository"], existing["number"]) or {}
+                stamp = preflight.get("collected_at")
+                if (preflight.get("profile") != "validation" or not isinstance(stamp, (int, float))
+                        or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= 120
+                        or not preflight.get("base_sha") or preflight.get("base_sha") != preflight.get("base_sha_after")
+                        or preflight.get("branch_error")):
+                    raise ValueError("Reviewed documentation correction requires fresh stable live-target evidence")
+                source["source_tip"] = preflight["base_sha"]
+            pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target], **source)
             receipts.append({"source_plan_id": existing["plan_id"], "check_id": target,
                 **previous, "corrected_check_id": check["id"],
                 "corrected_input_digest": check["input_digest"], **correction, **pins})
