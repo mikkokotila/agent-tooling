@@ -639,7 +639,36 @@ def _source_blobs(root, files):
         yield from read(batch)
 
 
-def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
+def _source_permissions(root, files, *, canonical_fallback=False):
+    """Project Git bytes without replacing frozen filesystem permissions."""
+    observed, choices = {}, {}
+    for name, entry in files.items():
+        if entry is None or not stat.S_ISREG(entry[0]):
+            continue
+        try:
+            current = (root / name).lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        # Git records the owner-executable class, not all POSIX permissions.
+        if (stat.S_ISREG(current.st_mode)
+                and (current.st_mode & stat.S_IXUSR) == (entry[0] & stat.S_IXUSR)):
+            permissions = stat.S_IMODE(current.st_mode)
+            observed[name] = permissions
+            choices.setdefault(entry[0], set()).add(permissions)
+    for name, entry in files.items():
+        if entry is None or not stat.S_ISREG(entry[0]) or name in observed:
+            continue
+        # A removed/type-changed/executable-changed historical file has no
+        # directly matching mode. A uniform current mode is only a candidate:
+        # the complete historical digest must still equal its frozen pin.
+        # Ambiguity retains the previous canonical candidate, never a new pin.
+        candidates = choices.get(entry[0], set())
+        observed[name] = (next(iter(candidates)) if not canonical_fallback and len(candidates) == 1
+                          else stat.S_IMODE(entry[0]))
+    return observed
+
+
+def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None, canonical_fallback=False) -> str:
     """Hash current source, not HEAD, timestamps, caches, or test output.
 
     Every tracked and untracked nonignored repository file is included. Commit
@@ -653,6 +682,7 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     paths = {os.fsdecode(path) for path in _git(repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00") if path}
     source_files, source_directories = source_snapshot if source_snapshot is not None else ({}, None)
     source_contents = iter(_source_blobs(repository, source_files))
+    source_permissions = _source_permissions(repository, source_files, canonical_fallback=canonical_fallback)
     paths.update(source_files)
     explicit = set()
     for value in normalized["input_paths"]:
@@ -715,7 +745,7 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
                 elif path.exists():
                     raise ValueError("directory symlink inputs require explicit file inputs")
             else:
-                append(str(stat.S_IMODE(mode)).encode())
+                append(str(source_permissions[value]).encode())
                 append(b"file")
                 append(body)
             continue
@@ -751,12 +781,12 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None) -> str:
     return digest.hexdigest()
 
 
-def check_fingerprint(cwd, plan, check, *, source_snapshot=None):
+def check_fingerprint(cwd, plan, check, *, source_snapshot=None, canonical_fallback=False):
     """Bind a control's added inputs without changing retained check identities."""
     scoped = {"checks": [{key: check[key] for key in ("id", "argv", "reason", "cwd") if key in check}]}
     for name in ("input_paths", "env_names"):
         scoped[name] = sorted(set(plan.get(name, [])) | set(check.get(name, [])))
-    return fingerprint(cwd, scoped, source_snapshot=source_snapshot)
+    return fingerprint(cwd, scoped, source_snapshot=source_snapshot, canonical_fallback=canonical_fallback)
 
 
 def validation_decision(plan: dict, runs: list[dict], current_digest: str, check_id: str | None = None) -> dict:
