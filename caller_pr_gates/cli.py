@@ -699,8 +699,19 @@ def gateway(args, store):
             # Existing authorized Google deployment: the upstream PR owner may persist
             # only these two keys in the operator's fork. No other cross-repo writes.
             allowed_google_config = False
-            if (repo == 'autonomio/poise' and not issue and (google_secret or google_variable)
-                    and any(p['repository'] == repo and p['number'] == num for p in store.prs(sid))):
+            google_owner = None
+            if repo == 'autonomio/poise' and not issue and (google_secret or google_variable):
+                google_owner = next((p for p in store.prs(sid)
+                    if p['repository'] == repo and p['number'] == num), None)
+                if google_owner is None:
+                    try:
+                        retained = store.closed_review_owner(sid, repo, num, args.cwd)
+                        if retained['identity']['watch']['state'] == 'merged':
+                            google_owner = retained['identity']['registration']
+                    except ValueError:
+                        pass
+            if (google_owner and google_owner['client'] == args.client
+                    and Path(google_owner['cwd']).resolve() == Path(args.cwd).resolve()):
                 verb = (method or '').upper()
                 input_path = options.get('--input')
                 exact_args = (input_path and input_path != '-'
@@ -723,6 +734,24 @@ def gateway(args, store):
                     if allowed_google_config:
                         admitted_api_body = json.dumps(payload)
                         argv = ['api', endpoint, '--method', verb, '--input', '-']
+                        receipt = {'session_id': sid, 'repository': 'Vaquum/poise',
+                            'upstream_pr': args.target, 'endpoint': endpoint, 'method': verb,
+                            'payload_sha256': hashlib.sha256(admitted_api_body.encode()).hexdigest()}
+                        store.audit('github_google_configuration_attempt', receipt)
+                        try:
+                            result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd,
+                                input=admitted_api_body, text=True, capture_output=True, timeout=90)
+                        except Exception:
+                            store.audit('github_google_configuration_incomplete', receipt)
+                            raise RuntimeError('Google configuration is incomplete; read back fork metadata before retrying') from None
+                        if result.returncode:
+                            store.audit('github_google_configuration_incomplete', receipt)
+                            raise RuntimeError('Google configuration is incomplete; read back fork metadata before retrying')
+                        store.audit('github_google_configuration_written', receipt)
+                        print(json.dumps(receipt))
+                        # This is configuration under existing ownership, never PR adoption.
+                        # In particular a retired merged PR must remain retired and silent.
+                        return None
             # Restore the existing LinkedIn integration for the authorized site-stream repair.
             # The exact repository, owned PR, endpoints, verbs and payloads are bounded here;
             # branch protection, workflow approval requirements and arbitrary secrets stay denied.
@@ -754,7 +783,7 @@ def gateway(args, store):
                         # gh must receive these admitted bytes, never reopen a mutable caller file.
                         admitted_api_body = json.dumps(payload)
                         argv = ['api', endpoint, '--method', verb, '--input', '-']
-            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_google_config or allowed_stream_config or allowed_ci_rerun or allowed_slice_sweep):
+            if not (allowed_reply or allowed_runner_registration or allowed_release_email_config or allowed_stream_config or allowed_ci_rerun or allowed_slice_sweep):
                 raise ValueError('API gateway permits owned CI reruns, review replies and owned Origo runner registration; use resolve for thread resolution, gh pr/issue for other writes')
             if issue:
                 if not any(j['repository']==repo and j['number']==num for j in store.followups(sid)): raise ValueError('Document is not owned by this task; register post-review first')

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from caller_pr_gates.cli import gateway
+from caller_pr_gates.monitor import retire
 from caller_pr_gates.store import Store
 
 
@@ -33,7 +34,11 @@ def config(tmp_path):
 
 def test_retained_upstream_owner_can_persist_only_the_sealed_fork_secret(config):
     store, args, path = config
-    store.set_snapshot(UPSTREAM, 11, {'state': 'closed', 'merged': True}, [])
+    retire(store, UPSTREAM, 11, {'state': 'closed', 'merged': True,
+        'head': {'sha': 'a' * 40, 'ref': 'topic'}})
+    assert store.prs('s') == []
+    with store._connect() as db:
+        before = tuple(db.execute('SELECT state,owner_session,event_id FROM pr_watch').fetchone())
     admitted = json.loads(path.read_text())
 
     def child(argv, **kwargs):
@@ -45,6 +50,32 @@ def test_retained_upstream_owner_can_persist_only_the_sealed_fork_secret(config)
     with patch('caller_pr_gates.cli.subprocess.run', side_effect=child) as run:
         gateway(args, store)
     run.assert_called_once()
+    assert store.prs('s') == []
+    with store._connect() as db:
+        assert tuple(db.execute('SELECT state,owner_session,event_id FROM pr_watch').fetchone()) == before
+
+
+def test_closed_unmerged_work_cannot_authorize_configuration(config):
+    store, args, _ = config
+    retire(store, UPSTREAM, 11, {'state': 'closed', 'merged': False,
+        'head': {'sha': 'a' * 40, 'ref': 'topic'}})
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='API gateway permits'):
+            gateway(args, store)
+
+
+@pytest.mark.parametrize('outcome', ['timeout', 'failed'])
+def test_uncertain_write_keeps_an_incomplete_receipt_without_exposing_child_output(config, outcome, capsys):
+    store, args, _ = config
+    result = subprocess.CompletedProcess([], 1, 'private-output', 'private-output')
+    with patch('caller_pr_gates.cli.subprocess.run',
+               side_effect=subprocess.TimeoutExpired('gh', 90) if outcome == 'timeout' else None,
+               return_value=result):
+        with pytest.raises(RuntimeError, match='read back fork metadata before retrying'):
+            gateway(args, store)
+    assert 'private-output' not in capsys.readouterr().out
+    with store._connect() as db:
+        assert db.execute("SELECT count(*) FROM audit WHERE event='github_google_configuration_incomplete'").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize('method,suffix', [('POST', ''), ('PATCH', '/POISE_GOOGLE_CLIENT_ID')])
@@ -128,6 +159,20 @@ def test_flags_cannot_extend_or_override_the_admitted_operation(config, extra):
 def test_a_different_session_cannot_use_the_recorded_owners_pr(config):
     store, args, _ = config
     args.session = 'unrelated'
+    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+        with pytest.raises(ValueError, match='API gateway permits'):
+            gateway(args, store)
+
+
+@pytest.mark.parametrize('mismatch', ['client', 'checkout'])
+def test_client_and_checkout_must_match_before_the_configuration_write(config, mismatch):
+    store, args, path = config
+    if mismatch == 'client':
+        args.client = 'claude'
+    else:
+        other = path.parent / 'other-checkout'
+        other.mkdir()
+        args.cwd = str(other)
     with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
