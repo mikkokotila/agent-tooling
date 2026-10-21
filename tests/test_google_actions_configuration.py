@@ -47,7 +47,7 @@ def test_retained_upstream_owner_can_persist_only_the_sealed_fork_secret(config)
         assert json.loads(kwargs['input']) == admitted
         return subprocess.CompletedProcess(argv, 0)
 
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=child) as run:
+    with patch('caller_pr_gates.cli.github_run', side_effect=child) as run:
         gateway(args, store)
     run.assert_called_once()
     assert store.prs('s') == []
@@ -59,7 +59,7 @@ def test_closed_unmerged_work_cannot_authorize_configuration(config):
     store, args, _ = config
     retire(store, UPSTREAM, 11, {'state': 'closed', 'merged': False,
         'head': {'sha': 'a' * 40, 'ref': 'topic'}})
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -68,7 +68,7 @@ def test_closed_unmerged_work_cannot_authorize_configuration(config):
 def test_uncertain_write_keeps_an_incomplete_receipt_without_exposing_child_output(config, outcome, capsys):
     store, args, _ = config
     result = subprocess.CompletedProcess([], 1, 'private-output', 'private-output')
-    with patch('caller_pr_gates.cli.subprocess.run',
+    with patch('caller_pr_gates.cli.github_run',
                side_effect=subprocess.TimeoutExpired('gh', 90) if outcome == 'timeout' else None,
                return_value=result):
         with pytest.raises(RuntimeError, match='read back fork metadata before retrying'):
@@ -83,7 +83,7 @@ def test_only_the_google_client_id_variable_can_be_created_or_updated(config, me
     store, args, path = config
     path.write_text(json.dumps({'name': 'POISE_GOOGLE_CLIENT_ID', 'value': CLIENT}))
     args.arguments[1], args.arguments[3] = VARIABLE + suffix, method
-    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
+    with patch('caller_pr_gates.cli.github_run', return_value=subprocess.CompletedProcess([], 0)) as run:
         gateway(args, store)
     assert json.loads(run.call_args.kwargs['input']) == json.loads(path.read_text())
     assert run.call_args.args[0][-2:] == ['--input', '-']
@@ -99,7 +99,7 @@ def test_variable_payload_cannot_change_other_keys_or_store_a_secret(config, pay
     store, args, path = config
     args.arguments[1], args.arguments[3] = VARIABLE, 'POST'
     path.write_text(json.dumps(payload))
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -114,7 +114,7 @@ def test_variable_payload_cannot_change_other_keys_or_store_a_secret(config, pay
 def test_wrong_repository_key_settings_or_method_remain_denied(config, endpoint, method):
     store, args, _ = config
     args.arguments[1], args.arguments[3] = endpoint, method
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -131,7 +131,7 @@ def test_wrong_repository_key_settings_or_method_remain_denied(config, endpoint,
 def test_plaintext_malformed_and_extra_secret_fields_are_denied(config, payload):
     store, args, path = config
     path.write_text(json.dumps(payload))
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -141,7 +141,7 @@ def test_plaintext_malformed_and_extra_secret_fields_are_denied(config, payload)
 def test_another_target_or_unowned_pr_cannot_authorize_configuration(config, target):
     store, args, _ = config
     args.target = target
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError):
             gateway(args, store)
 
@@ -151,7 +151,7 @@ def test_another_target_or_unowned_pr_cannot_authorize_configuration(config, tar
 def test_flags_cannot_extend_or_override_the_admitted_operation(config, extra):
     store, args, _ = config
     args.arguments += extra
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -159,7 +159,7 @@ def test_flags_cannot_extend_or_override_the_admitted_operation(config, extra):
 def test_a_different_session_cannot_use_the_recorded_owners_pr(config):
     store, args, _ = config
     args.session = 'unrelated'
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -173,7 +173,7 @@ def test_client_and_checkout_must_match_before_the_configuration_write(config, m
         other = path.parent / 'other-checkout'
         other.mkdir()
         args.cwd = str(other)
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -182,7 +182,7 @@ def test_stdin_cannot_be_admitted_through_a_decoy_file(config):
     store, args, path = config
     (path.parent / '-').write_text(path.read_text())
     args.arguments[-1] = '-'
-    with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='API gateway permits'):
             gateway(args, store)
 
@@ -193,6 +193,6 @@ def test_relative_payload_is_read_from_the_owned_checkout(config, tmp_path, monk
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     args.arguments[-1] = path.name
-    with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run:
+    with patch('caller_pr_gates.cli.github_run', return_value=subprocess.CompletedProcess([], 0)) as run:
         gateway(args, store)
     assert json.loads(run.call_args.kwargs['input']) == json.loads(path.read_text())
