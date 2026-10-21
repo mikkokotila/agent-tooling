@@ -220,6 +220,8 @@ def private_checker_correction(cwd, plan, check, original, *, source_tip=None):
     """Admit a separately pinned Python entrypoint; retain its entire obligation."""
     root = Path(cwd).resolve()
     correction = correction_metadata(check.get("correction"))
+    if "retained_docs" in original.get("correction", {}):
+        raise ValueError("Retained documentation corrections cannot be replaced by another private checker")
     if "retained_docs" in correction:
         return _retained_docs_correction(root, plan, check, original, correction, source_tip)
     old, new = original["argv"], check["argv"]

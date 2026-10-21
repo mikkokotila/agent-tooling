@@ -162,9 +162,41 @@ def test_pair_refuses_changed_identity_invocation_controls_and_pins(paired, iden
 def test_pair_requires_current_normal_target_proof(paired, subtests):
     data = paired; store = data['store']; payload, _ = candidate(data, 'book')
     for patch in ({'collected_at': time.time() - 1000}, {'profile': 'full'}, {'collected_at': True},
-                  {'branch_error': 'target unavailable'}, {'base_sha': None}):
+                  {'branch_error': 'target unavailable'}, {'base_sha': None},
+                  {'component_errors': {'branch_freshness': 'comparison unavailable'}}):
         with subtests.test(patch=patch):
             store.set_preflight('Owner/Repo', 1, dict(data['proof'], **patch))
             with pytest.raises(ValueError): save(data, payload)
             assert store.validation_runs(data['row']['plan_id']) == [data['failed']]
     store.set_preflight('Owner/Repo', 1, data['proof'])
+
+
+@pytest.mark.parametrize('identifier', ['provenance', 'book', 'reader'])
+@pytest.mark.parametrize('executed', [False, True])
+def test_pair_cannot_be_downgraded_through_a_correction_successor(paired, identifier, executed):
+    data = paired; store = data['store']; root = data['root']
+    payload, check = candidate(data, identifier)
+    admitted = save(data, payload)['plan']
+    if executed:
+        # The isolated fixture checker fails if invoked. Its genuine failure
+        # must not be credited by a replacement that never verifies source.
+        failed = workflow.run_check(store, 's', 'Owner/Repo', 1, root, check['id'],
+                                    merged_head=data['local'][2]['head_sha'])['run']
+        assert failed['status'] == 'fail' and failed['exit_code'] > 0
+    before = store.validation_runs(admitted['plan_id'])
+    noop = data['controls'] / 'unverified.py'; noop.write_text('pass\n')
+    successor = deepcopy(check)
+    successor['id'] += '-unverified'
+    successor['input_paths'].append(str(noop.relative_to(root)))
+    successor['argv'] = [str(noop) if arg == str(data['controls'] / 'retained_checker.py') else arg
+                         for arg in check['argv']]
+    successor['correction'] = dict(check_id=check['id'], diagnosis='Replace the reviewed pair',
+        evidence_path=str(data['evidence'].relative_to(root)),
+        **({'run_id': failed['run_id']} if executed else {'unexecuted': True}))
+    payload['checks'].append(successor)
+    with pytest.raises(ValueError, match='Retained documentation corrections cannot be replaced'):
+        save(data, payload)
+    assert store.validation_plan('s', 'Owner/Repo', 1, root) == admitted
+    assert store.validation_runs(admitted['plan_id']) == before
+    phase = workflow.current_phase(store, admitted)
+    assert not phase.get('local_checks_passed') and not phase.get('corrected_failures')

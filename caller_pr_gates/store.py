@@ -671,7 +671,8 @@ class Store:
                 if (preflight.get("profile") != "validation" or not isinstance(stamp, (int, float))
                         or isinstance(stamp, bool) or not 0 <= time.time() - stamp <= REMOTE_EVIDENCE_TTL
                         or not preflight.get("base_sha") or preflight.get("base_sha") != preflight.get("base_sha_after")
-                        or preflight.get("branch_error")):
+                        or preflight.get("branch_error")
+                        or preflight.get("component_errors", {}).get("branch_freshness")):
                     raise ValueError("Reviewed documentation correction requires fresh stable live-target evidence")
                 source["source_tip"] = preflight["base_sha"]
             pins = private_checker_correction(existing["cwd"], plan, check, old_checks[target], **source)
