@@ -41,3 +41,9 @@ Deployment pointer schema 2 records `runtime_inventory` instead of the legacy `g
 Release 0.1.8 also preserves the reviewed local exact-tip publication fix across branch renames/worktree moves. Its complete observed 1.7.7 inventory is admitted only against the recorded prior commit/version; any further drift still refuses installation. Rollback restores that actual prior code and retains all current evidence.
 
 Release 0.1.9 records the pristine deployed catalogue hash separately from the repository source hash. It recognizes the prior pristine machine migration only through the original deployment journal. Human edits still remain protected and conflicting repository edits still stop installation.
+
+## Switchboard role updates
+
+Switchboard uses the Manager document installation path: update the checkout to the reviewed merged source, then run `make install`. A GitHub merge does not automatically pull or execute code on this machine. The same verified transactional deployment journals and restores the role file and both managed client appointment blocks; unrelated human instructions, Manager documents and private observer sessions/configuration are preserved. Reinstalling the same source is a no-op. Both role documents ship in the wheel.
+
+After installation, say “you are switchboard” in any workspace. The installed Codex/Claude appointment block points to `~/.codex/switchboard/SWITCHBOARD.md`; a Muse session can read that same canonical file when appointed. Installation never starts a Switchboard, creates private working state or changes a schedule. Existing loaded chats must reread instructions; installation cannot rewrite their current context.

@@ -15,7 +15,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
                 wheel.write(path, str(path.relative_to(ROOT)))
         for path in [ROOT / 'prompts.toml', ROOT / 'VERSION', *sorted((ROOT / 'config').glob('*'))]:
             wheel.write(path, 'agent_tooling_assets/' + str(path.relative_to(ROOT)))
-        for path in sorted((ROOT / 'manager').glob('*')):
+        for path in sorted((ROOT / 'manager').glob('*')) + sorted((ROOT / 'switchboard').glob('*')):
             if path.is_file() and path.suffix in {'.md', '.json', '.txt', '.py'}:
                 wheel.write(path, 'agent_tooling_assets/' + str(path.relative_to(ROOT)))
         dist = f'agent_tooling-{version}.dist-info/'

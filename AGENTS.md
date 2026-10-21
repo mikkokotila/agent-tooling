@@ -7,3 +7,7 @@ Declare verification with argv ["python3.13", "tools/manage.py", "verify"] and i
 ## Explicit manager appointment
 
 When the human says **“you are manager”** (or equivalent) in this repository, read [manager/MANAGER.md](manager/MANAGER.md) and follow its activation and succession procedure. That phrase is sufficient appointment; use a session-owned ledger and the permitted manager coverage: Codex manages all GPT browser, Claude/Codex desktop and Muse agents; Muse manages only Muse agents. Start fresh in a new manager chat and stop/delete its manager ledger when that session ends. Reuse one heartbeat without inheriting old task history. Never create a second manager or wake an archived chat without exact human permission. Other work in this repository does not activate this role. Every manager message follows the verified-token footer rule in that file.
+
+## Explicit Switchboard appointment
+
+When the human says **“you are switchboard”** (or equivalent), read [switchboard/SWITCHBOARD.md](switchboard/SWITCHBOARD.md). All three host variants cover all accessible local Claude, Codex and Muse sessions. Claude/Codex also check GPT browser chats in a verified new separate browser window; Muse need not. Claude browser chats are always excluded. Observe/report and relay actual human answers once; do not adopt Manager recovery. Other repository work or installation does not activate this role or restart stopped polling.
