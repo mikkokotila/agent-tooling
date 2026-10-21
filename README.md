@@ -1,5 +1,11 @@
 # Agent tooling
 
+## Local work manager
+
+Start a chat in this repository and say **“you are manager”**. [The manager mandate](manager/MANAGER.md) defines activation, authority, the existing-ledger/heartbeat handoff, archive permission, retirement and verified per-turn token reporting. `make install` installs its documents, request protocol and read-only usage helper alongside the existing hooks; operational state, sessions, access profiles and credentials stay private in `~/.codex/work-manager/`. Updating or installing instructions does not appoint a manager or create a schedule.
+
+## PR hooks
+
 Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.60 installs runtime 1.7.60.
 
 PRs above250 commits use explicitly paginated comparisons pinned to their full PR base/head SHAs. Complete counts, commit dates, unique identities, head inclusion and stable final PR identity remain required. Ordinary PR batching and all review/CI gates remain unchanged.

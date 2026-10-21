@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse, contextlib, ctypes, fcntl, hashlib, json, os, platform, re, shutil, shlex
 import sqlite3, subprocess, sys, tempfile, time, tomllib, uuid, xml.etree.ElementTree as ET
+import work_manager
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.build'
@@ -319,7 +320,8 @@ def desired_assets(home, current):
             str(home/'Library/LaunchAgents/local.caller-pr-monitor.plist'):render('monitor.plist',home)}
     for client,name in [('codex','AGENTS.md'),('claude','CLAUDE.md')]:
         target=home/('.'+client)/name
-        assets[str(target)]=merge_instructions(target.read_bytes() if target.exists() else b'',texts)
+        assets[str(target)]=work_manager.guidance(
+            merge_instructions(target.read_bytes() if target.exists() else b'',texts), ROOT, home)
         config=home/('.'+client)/('hooks.json' if client=='codex' else 'settings.json')
         assets[str(config)]=merge_hooks(config.read_bytes() if config.exists() else b'',json.loads(render(client+'-hooks.json',home)))
     target=home/'.codex/config.toml';original=target.read_bytes() if target.exists() else b''
@@ -336,6 +338,7 @@ def desired_assets(home, current):
             if key in current_trust and current_trust[key] != row: raise RuntimeError('Codex hook trust changed locally: '+key)
             if key not in current_trust: value+='\n[hooks.state.'+json.dumps(key)+']\ntrusted_hash = '+json.dumps(row['trusted_hash'])+'\n'
     assets[str(target)]=value.encode()
+    assets.update(work_manager.assets(ROOT, home))
     return assets
 
 def restore(journal):
