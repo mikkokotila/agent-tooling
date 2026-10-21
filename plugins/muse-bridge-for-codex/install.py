@@ -31,7 +31,7 @@ def main():
     script = str(root / 'bridge.py')
     destination = Path.home() / '.local/bin/muse-control'
     destination.parent.mkdir(parents=True, exist_ok=True)
-    body = '#!/bin/sh\nexec ' + shlex.join([runtime, script]) + ' "$@"\n'
+    body = '#!/bin/sh\n# muse-control managed wrapper\nexec ' + shlex.join([runtime, script]) + ' "$@"\n'
     if destination.exists():
         existing = destination.read_text()
         if 'bridge.py' not in existing or 'muse-control' not in existing:
