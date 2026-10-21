@@ -558,7 +558,7 @@ class Store:
             db.execute('BEGIN')
             return self._retained_validation_plan(db, sid, repo, num, directory)
 
-    def _final_coverage_context(self, db, sid, repo, original, final):
+    def _final_coverage_context(self, db, sid, repo, original, final, *, allow_running=False):
         if original == final:
             raise ValueError('Final coverage requires a distinct delivered successor PR')
         result = {'session_id': sid, 'repository': repo}
@@ -574,7 +574,7 @@ class Store:
             recorded = [identity[key]['cwd'] for key in ('registration', 'watch', 'checkout_anchor')]
             if any(str(Path(path).expanduser().resolve()) != plan['cwd'] for path in recorded):
                 raise ValueError('Final coverage requires each plan at its own recorded checkout')
-            if db.execute('''SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
+            if not allow_running and db.execute('''SELECT 1 FROM validation_runs r JOIN validation_plans p ON p.plan_id=r.plan_id
                              WHERE p.session_id=? AND p.repository=? AND p.number=? AND r.status='running' ''',
                           (sid, repo, number)).fetchone():
                 raise ValueError('Final coverage cannot conclude while either PR has an active execution')
@@ -585,7 +585,17 @@ class Store:
                     WHERE repository=? AND number=? ORDER BY recorded_at''', (repo, number))]}
         return result
 
-    def final_coverage_context(self, sid, repo, original, final):
+    def final_coverage_context(self, sid, repo, original, final, *, recover_exited=False):
+        if recover_exited:
+            with self._connect() as db:
+                db.execute('BEGIN')
+                self._final_coverage_context(db, sid, repo, original, final, allow_running=True)
+                runs = db.execute('''SELECT r.run_id FROM validation_runs r
+                    JOIN validation_plans p ON p.plan_id=r.plan_id
+                    WHERE p.session_id=? AND p.repository=? AND p.number IN (?,?) AND r.status='running' ''',
+                    (sid, repo, original, final)).fetchall()
+            for run in runs:
+                self.recover_validation_run(run['run_id'])
         with self._connect() as db:
             db.execute('BEGIN')
             return self._final_coverage_context(db, sid, repo, original, final)

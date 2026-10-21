@@ -516,3 +516,71 @@ def test_commit_status_identity_comes_from_the_existing_exact_head_read(subtests
                 assert result['checks'][0]['head_sha'] == SHA and result['checks'][0]['kind'] == 'status'
                 assert result['checks'][0]['conclusion'] == 'success'
             assert client.status_reads == 1
+
+
+def interrupted_browser(data, child):
+    row = data['context']['original']['row']
+    return data['store'].begin_validation(row['plan_id'], 'browser', row['input_digest'],
+        owner_pid=child.pid, owner_group=child.pid, session_id='s', retained=True)
+
+
+def test_qualifier_recovers_exited_owner_as_unknown_without_replaying_history(delivered):
+    data = delivered; store = data['store']
+    child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+    run = interrupted_browser(data, child)
+    assert child.wait(timeout=5) == 0
+    before = history(store)
+    shutil.rmtree(data['original'])
+    result = qualify(data)
+    assert result['qualification_verified'] is True
+    after = history(store)
+    assert {k: v for k, v in after.items() if k != 'validation_runs'} == {k: v for k, v in before.items() if k != 'validation_runs'}
+    actual = next(r for r in after['validation_runs'] if r['run_id'] == run['run_id'])
+    assert actual['status'] == 'unknown' and actual['finished_at'] is not None
+    assert actual['exit_code'] is None and actual['after_digest'] is None
+    assert {k: v for k, v in actual.items() if k not in {'status', 'finished_at'}} == {
+        k: v for k, v in run.items() if k not in {'status', 'finished_at'}}
+    assert [r for r in after['validation_runs'] if r['run_id'] != run['run_id']] == [
+        r for r in before['validation_runs'] if r['run_id'] != run['run_id']]
+    with store._connect() as db:
+        events = [json.loads(r[0]) for r in db.execute(
+            "SELECT fields FROM audit WHERE event='validation_interrupted_owner_exited'")]
+    assert events == [dict(run_id=run['run_id'], pid=child.pid, process_group=child.pid)]
+    assert {r['status'] for r in result['historical_runs']} == {'fail', 'unknown'}
+    assert workflow.successor_progress(store, data['context']['original']['row'])['qualification_verified'] is True
+
+
+@pytest.mark.parametrize('process_state', ['live', 'permission_denied'])
+def test_qualifier_keeps_live_or_unobservable_owner_running(delivered, monkeypatch, process_state):
+    data = delivered
+    child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'],
+        stdin=subprocess.PIPE, start_new_session=True)
+    try:
+        interrupted_browser(data, child)
+        before = history(data['store'])
+        if process_state == 'permission_denied':
+            def denied(*args):
+                raise PermissionError('process state is unavailable')
+            monkeypatch.setattr(os, 'killpg', denied)
+        with pytest.raises(ValueError, match='active execution'):
+            qualify(data)
+        assert history(data['store']) == before
+        assert not data['calls']
+        assert data['store'].final_coverage_receipt('s', data['context']['original']['row']['plan_id']) is None
+    finally:
+        child.communicate(timeout=5)
+
+
+def test_foreign_owner_cannot_recover_a_retained_run(delivered):
+    data = delivered; store = data['store']
+    child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+    interrupted_browser(data, child)
+    assert child.wait(timeout=5) == 0
+    before = history(store)
+    with pytest.raises(ValueError, match='exact retained owner'):
+        store.final_coverage_context('other', REPO, 1, 2, recover_exited=True)
+    with pytest.raises(ValueError, match='distinct delivered successor'):
+        store.final_coverage_context('s', REPO, 1, 1, recover_exited=True)
+    assert history(store) == before
+    with pytest.raises(ValueError, match='active execution'):
+        store.final_coverage_context('s', REPO, 1, 2)
