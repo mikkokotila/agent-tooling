@@ -80,8 +80,23 @@ def test_run_still_enforces_an_explicit_deadline_on_a_real_child():
     assert failure.value.timeout == 0.1
 
 
-def test_developer_git_launcher_preserves_version_templates_and_helpers(tmp_path):
-    env = dict(__import__('os').environ, PATH='/usr/bin:/bin')
+@pytest.mark.parametrize('template_source', ['environment', 'configuration'])
+@pytest.mark.parametrize('has_exclude', [False, True])
+def test_developer_git_launcher_preserves_version_templates_and_helpers(tmp_path, template_source, has_exclude):
+    templates = tmp_path / 'templates'
+    templates.mkdir()
+    (templates / 'template-marker').write_text('custom template\n')
+    if has_exclude:
+        (templates / 'info').mkdir()
+        (templates / 'info/exclude').write_text('# custom excludes\n')
+    config = tmp_path / 'gitconfig'
+    env = {'PATH': '/usr/bin:/bin', 'HOME': str(tmp_path),
+           'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': str(config)}
+    if template_source == 'environment':
+        env['GIT_TEMPLATE_DIR'] = str(templates)
+    else:
+        subprocess.run(['/usr/bin/git', 'config', '--file', str(config),
+                        'init.templateDir', str(templates)], env=env, check=True)
     expected = subprocess.check_output(['/usr/bin/git', '--version'], env=env)
     helpers = subprocess.check_output(['/usr/bin/git', '--exec-path'], env=env)
     manage.verification_git(env, tmp_path)
@@ -89,7 +104,8 @@ def test_developer_git_launcher_preserves_version_templates_and_helpers(tmp_path
     assert subprocess.check_output(['git', '--exec-path'], env=env) == helpers
     repo = tmp_path / 'repo'
     subprocess.run(['git', 'init', '--quiet', str(repo)], env=env, check=True)
-    assert (repo / '.git/info/exclude').is_file()
+    assert (repo / '.git/template-marker').read_text() == 'custom template\n'
+    assert (repo / '.git/info/exclude').is_file() is has_exclude
     assert subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], env=env) == b''
 
 
