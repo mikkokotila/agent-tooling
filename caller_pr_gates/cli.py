@@ -642,7 +642,22 @@ def gateway(args, store):
         endpoint, method, field_values, input_file = _api_request(argv)
         fields = bool(field_values) or input_file is not None
         api_write = method.upper() not in {'GET', 'HEAD'} if method else fields
-        if endpoint == DOCS_CONTEXTS and fields:
+        google_grant = (store.get_scope(sid) or {}).get('google_actions_configuration')
+        valid_google_grant = (isinstance(google_grant, dict)
+            and set(google_grant) == {'repository', 'authorizing_pr', 'approval_evidence'}
+            and isinstance(google_grant['repository'], str)
+            and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', google_grant['repository']) is not None
+            and all(part not in {'.', '..'} for part in google_grant['repository'].split('/'))
+            and isinstance(google_grant['authorizing_pr'], str)
+            and REF.fullmatch(google_grant['authorizing_pr']) is not None
+            and '/pull/' in google_grant['authorizing_pr']
+            and isinstance(google_grant['approval_evidence'], str)
+            and bool(google_grant['approval_evidence'].strip()))
+        google_prefix = f"repos/{google_grant['repository']}/actions/" if valid_google_grant else ''
+        google_secret = bool(google_prefix) and endpoint == google_prefix + 'secrets/POISE_GOOGLE_CLIENT_SECRET'
+        google_variable = bool(google_prefix) and endpoint in (google_prefix + 'variables',
+                                      google_prefix + 'variables/POISE_GOOGLE_CLIENT_ID')
+        if fields and (endpoint == DOCS_CONTEXTS or google_secret or google_variable):
             # A read-method spelling cannot bypass this operation's frozen-body admission.
             api_write = True
         if api_write:
@@ -693,6 +708,63 @@ def gateway(args, store):
                             pass
                     elif variable_endpoint:
                         allowed_release_email_config = payload == {'name': 'RESOLVENT_NOTIFY_FROM', 'value': 'Resolvent <resolvent@autonom.io>'}
+            # The immutable approved work-item names both repositories and the exact
+            # authorizing PR. Only the two integration keys are admitted by this grant.
+            allowed_google_config = False
+            google_owner = None
+            if (not issue and (google_secret or google_variable)
+                    and reference(google_grant['authorizing_pr']) == (repo, num, False)):
+                google_owner = next((p for p in store.prs(sid)
+                    if p['repository'] == repo and p['number'] == num), None)
+                if google_owner is None:
+                    try:
+                        retained = store.closed_review_owner(sid, repo, num, args.cwd)
+                        if retained['identity']['watch']['state'] == 'merged':
+                            google_owner = retained['identity']['registration']
+                    except ValueError:
+                        pass
+            if (google_owner and google_owner['client'] == args.client
+                    and Path(google_owner['cwd']).resolve() == Path(args.cwd).resolve()):
+                verb = (method or '').upper()
+                input_path = options.get('--input')
+                exact_args = (input_path and input_path != '-'
+                              and argv == ['api', endpoint, '--method', verb, '--input', input_path])
+                if exact_args and ((google_secret and verb == 'PUT') or
+                                   (google_variable and verb == ('POST' if endpoint.endswith('/variables') else 'PATCH'))):
+                    source = Path(input_path)
+                    if not source.is_absolute(): source = Path(args.cwd) / source
+                    payload = json.loads(source.read_text())
+                    if google_secret and isinstance(payload, dict) and set(payload) == {'key_id', 'encrypted_value'}:
+                        try:
+                            ciphertext = base64.b64decode(payload['encrypted_value'], validate=True)
+                            allowed_google_config = (len(ciphertext) > 48 and isinstance(payload['key_id'], str) and bool(payload['key_id']))
+                        except (ValueError, TypeError):
+                            pass
+                    elif google_variable and isinstance(payload, dict) and set(payload) == {'name', 'value'}:
+                        allowed_google_config = (payload['name'] == 'POISE_GOOGLE_CLIENT_ID'
+                            and isinstance(payload['value'], str)
+                            and re.fullmatch(r'[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com', payload['value']) is not None)
+                    if allowed_google_config:
+                        admitted_api_body = json.dumps(payload)
+                        argv = ['api', endpoint, '--method', verb, '--input', '-']
+                        receipt = {'session_id': sid, 'repository': google_grant['repository'],
+                            'upstream_pr': args.target, 'endpoint': endpoint, 'method': verb,
+                            'payload_sha256': hashlib.sha256(admitted_api_body.encode()).hexdigest()}
+                        store.audit('github_google_configuration_attempt', receipt)
+                        try:
+                            result = github_run(['gh', *argv], runner=subprocess.run, cwd=args.cwd,
+                                input=admitted_api_body, text=True, capture_output=True, timeout=90)
+                        except Exception:
+                            store.audit('github_google_configuration_incomplete', receipt)
+                            raise RuntimeError('Google configuration is incomplete; read back fork metadata before retrying') from None
+                        if result.returncode:
+                            store.audit('github_google_configuration_incomplete', receipt)
+                            raise RuntimeError('Google configuration is incomplete; read back fork metadata before retrying')
+                        store.audit('github_google_configuration_written', receipt)
+                        print(json.dumps(receipt))
+                        # This is configuration under existing ownership, never PR adoption.
+                        # In particular a retired merged PR must remain retired and silent.
+                        return None
             # Restore the existing LinkedIn integration for the authorized site-stream repair.
             # The exact repository, owned PR, endpoints, verbs and payloads are bounded here;
             # branch protection, workflow approval requirements and arbitrary secrets stay denied.
