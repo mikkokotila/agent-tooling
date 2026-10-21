@@ -28,7 +28,7 @@ def completed_usage(path):
             item = event.get('payload', {})
             kind = item.get('type')
             if kind == 'task_started':
-                active = (item.get('turn_id'), prior)
+                active = (item.get('turn_id'), prior, False)
             elif kind == 'token_count':
                 usage = (item.get('info') or {}).get('total_token_usage')
                 if not isinstance(usage, dict):
@@ -39,11 +39,13 @@ def completed_usage(path):
                     continue
                 if prior and any(usage[k] < prior[k] for k in COUNTERS):
                     active = None
+                if active:
+                    active = (active[0], active[1], True)
                 prior = usage
             elif kind == 'task_complete':
                 # Do not return an earlier turn when the latest one lacks proof.
                 result = None
-                if not active or not active[0] or active[0] != item.get('turn_id'):
+                if not active or not active[0] or not active[2] or active[0] != item.get('turn_id'):
                     continue
                 base = active[1]
                 if base is None or prior is None:

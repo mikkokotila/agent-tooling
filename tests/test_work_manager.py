@@ -50,6 +50,7 @@ def test_completed_turn_sums_calls_and_does_not_double_count_cached_or_reasoning
 
 
 @pytest.mark.parametrize('events', [
+    [count(20, 3), event('task_started', turn_id='a'), event('task_complete', turn_id='a')],
     [event('task_started', turn_id='a'), count(20, 3), event('task_complete', turn_id='a')],
     [count(20, 3), event('task_started', turn_id='a'), count(10, 2), event('task_complete', turn_id='a')],
     [count(10, 2), event('task_started', turn_id='a'), count(20, 3), event('task_complete', turn_id='other')],
