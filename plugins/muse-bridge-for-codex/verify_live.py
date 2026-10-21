@@ -18,9 +18,10 @@ def main():
     env = dict(os.environ)
     home = Path(env['CODEX_HOME'])
     assert (home / 'config.toml').exists(), 'Install provider in the isolated CODEX_HOME first'
-    command = ['codex', '-c', 'mcp_servers.muse_control.enabled=false']
+    command = ['codex']
+    diagnostic = tempfile.TemporaryFile(mode='w+t')
     process = subprocess.Popen(command + ['app-server'], stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=diagnostic,
                                text=True, env=env)
     timer = threading.Timer(30, process.kill)
     timer.start()
@@ -28,11 +29,14 @@ def main():
         process.stdin.write(json.dumps({'id': 1, 'method': 'initialize', 'params': {
             'clientInfo': {'name': 'muse_bridge_verification', 'version': bridge.VERSION},
             'capabilities': {}}}) + '\n')
-        process.stdin.write('{"method":"initialized"}\n')
-        process.stdin.write('{"id":2,"method":"model/list","params":{}}\n')
         process.stdin.flush()
         for line in process.stdout:
             message = json.loads(line)
+            if message.get('id') == 1:
+                assert 'error' not in message, safe(str(message))
+                process.stdin.write('{"method":"initialized"}\n')
+                process.stdin.write('{"id":2,"method":"model/list","params":{}}\n')
+                process.stdin.flush()
             if message.get('id') == 2:
                 assert 'error' not in message, safe(str(message))
                 models = message['result']['data']
@@ -43,11 +47,13 @@ def main():
                 print('Codex model/list: Muse Contributor, max only', flush=True)
                 break
         else:
-            raise RuntimeError('Codex model/list did not return')
+            diagnostic.seek(0)
+            raise RuntimeError('Codex model/list did not return: ' + safe(diagnostic.read()[-3000:]))
     finally:
         timer.cancel()
         process.terminate()
         process.wait(timeout=10)
+        diagnostic.close()
     before = bridge.call_tool('muse_status', {})['providerGuard']
     with tempfile.TemporaryDirectory(prefix='muse-codex-live-') as directory:
         workspace = Path(directory)

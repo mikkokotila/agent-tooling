@@ -3,6 +3,7 @@
     "slug": "muse-spark-1.3-contributor",
     "display_name": "Muse Contributor",
     "description": "Meta Muse contributor model. Max reasoning only; no fallback.",
+    "base_instructions": "You are Muse, a coding assistant running in Codex. Follow the user's instructions and available tool definitions. Use tools when needed and report verified results accurately.",
     "default_reasoning_level": "max",
     "supported_reasoning_levels": [{"effort": "max", "description": "Required maximum reasoning"}],
     "shell_type": "unified_exec",
