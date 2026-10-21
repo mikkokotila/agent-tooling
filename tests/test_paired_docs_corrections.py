@@ -178,8 +178,7 @@ def test_pair_cannot_be_downgraded_through_a_correction_successor(paired, identi
     payload, check = candidate(data, identifier)
     admitted = save(data, payload)['plan']
     if executed:
-        # The isolated fixture checker fails if invoked. Its genuine failure
-        # must not be credited by a replacement that never verifies source.
+        # These isolated controls fail if invoked; keep their actual failures.
         failed = workflow.run_check(store, 's', 'Owner/Repo', 1, root, check['id'],
                                     merged_head=data['local'][2]['head_sha'])['run']
         assert failed['status'] == 'fail' and failed['exit_code'] > 0
@@ -190,6 +189,8 @@ def test_pair_cannot_be_downgraded_through_a_correction_successor(paired, identi
     successor['input_paths'].append(str(noop.relative_to(root)))
     successor['argv'] = [str(noop) if arg == str(data['controls'] / 'retained_checker.py') else arg
                          for arg in check['argv']]
+    if identifier == 'reader':
+        successor['argv'][1] = 'LIMEN_PYTHON=' + str(noop)
     successor['correction'] = dict(check_id=check['id'], diagnosis='Replace the reviewed pair',
         evidence_path=str(data['evidence'].relative_to(root)),
         **({'run_id': failed['run_id']} if executed else {'unexecuted': True}))
