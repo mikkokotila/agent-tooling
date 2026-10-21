@@ -28,3 +28,10 @@ class ConfigTests(unittest.TestCase):
     def test_missing_final_newline_is_valid(self):
         actual = provider.config_text('model="old"', 'http://127.0.0.1', Path('/catalog'))
         self.assertEqual('max', tomllib.loads(actual)['model_reasoning_effort'])
+
+    def test_isolated_and_user_configurations_cannot_share_a_backup(self):
+        state = Path('/state')
+        user = Path('/user/.codex/config.toml')
+        isolated = Path('/smoke/config.toml')
+        self.assertNotEqual(provider.backup_path(user, state), provider.backup_path(isolated, state))
+        self.assertEqual(provider.backup_path(user, state), provider.backup_path(user, state))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import plistlib
@@ -60,6 +61,12 @@ def config_text(original, base_url, catalog):
     return result
 
 
+def backup_path(config, state):
+    # A smoke CODEX_HOME must never occupy the user's real backup slot.
+    identity = hashlib.sha256(str(config.resolve()).encode()).hexdigest()
+    return state / 'config-backups' / (identity + '.toml')
+
+
 def install(root):
     """Run after the controller runtime is installed at a stable local path."""
     import bridge
@@ -102,7 +109,7 @@ def install(root):
         raise RuntimeError(response['error'])
     config = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'config.toml'
     original = config.read_text() if config.exists() else ''
-    backup = state / 'codex-config.before-muse.toml'
+    backup = backup_path(config, state)
     if not backup.exists():
         atomic(backup, original.encode())
     body = config_text(original, response['result']['base_url'], root / 'catalog.json')
