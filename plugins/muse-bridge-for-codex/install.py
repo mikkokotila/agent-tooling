@@ -36,6 +36,8 @@ def main():
         existing = destination.read_text()
         if 'bridge.py' not in existing or 'muse-control' not in existing:
             raise SystemExit('An unrelated muse-control executable already exists; refusing to replace it.')
+    config_home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex'))
+    config_home.mkdir(parents=True, exist_ok=True)
     subprocess.run([codex, 'mcp', 'add', 'muse_control', '--', runtime, script, 'mcp'], check=True)
     temp = destination.with_name('.muse-control.install.' + str(os.getpid()))
     temp.write_text(body)
