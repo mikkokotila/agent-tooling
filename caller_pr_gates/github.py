@@ -182,7 +182,54 @@ async def _threads(client: Any, variables: dict) -> list[dict]:
         cursor = next_cursor
 
 
-async def _commits(client: Any, variables: dict) -> list[dict]:
+async def _comparison_commits(client: Any, variables: dict, raw: dict) -> list[dict]:
+    """PR commit connections cap at250; explicit comparison pages do not."""
+    base = _mapping(raw.get('base'), 'PR comparison base').get('sha')
+    head = _mapping(raw.get('head'), 'PR comparison head').get('sha')
+    if any(not re.fullmatch(r'[a-fA-F0-9]{40}', str(sha)) for sha in (base, head)):
+        raise EvidenceError('Missing full PR comparison base/head identity')
+    count = raw['commits']
+    if type(count) is not int or not 250 < count <= 1000000:
+        raise EvidenceError('Invalid large PR commit count')
+    path = f"/repos/{variables['owner']}/{variables['repo']}/compare/{base}...{head}"
+    result, seen, identity = [], set(), None
+    for page in range(1, (count + 99) // 100 + 1):
+        data = _mapping(await client.get(path, params={'per_page': 100, 'page': page}),
+                        'PR commit comparison')
+        ancestor = _mapping(data.get('merge_base_commit'), 'comparison ancestor').get('sha')
+        behind = data.get('behind_by')
+        current = (_mapping(data.get('base_commit'), 'comparison base').get('sha'),
+                   ancestor, data.get('total_commits'), data.get('ahead_by'), behind, data.get('status'))
+        if (current[0] != base or not re.fullmatch(r'[a-fA-F0-9]{40}', str(ancestor))
+                or type(current[2]) is not int or current[2] != count
+                or type(current[3]) is not int or current[3] != count
+                or type(behind) is not int or behind < 0
+                or current[5] != ('ahead' if behind == 0 else 'diverged')
+                or identity is not None and current != identity):
+            raise EvidenceError('PR commit comparison identity/count changed or is incomplete')
+        identity = current
+        batch = data.get('commits')
+        if not isinstance(batch, list) or len(batch) != min(100, count - len(result)):
+            raise EvidenceError('PR commit comparison page is incomplete')
+        for item in batch:
+            item = _mapping(item, 'comparison commit')
+            sha = item.get('sha')
+            date = _mapping(_mapping(item.get('commit'), 'commit metadata').get('committer'),
+                            'commit committer').get('date')
+            if not re.fullmatch(r'[a-fA-F0-9]{40}', str(sha)) or not isinstance(date, str) or not date:
+                raise EvidenceError('Missing comparison commit identity/date')
+            if sha in seen:
+                raise EvidenceError('Duplicate PR comparison commit')
+            seen.add(sha)
+            result.append({'oid': sha, 'committedDate': date})
+    if len(result) != count or head not in seen:
+        raise EvidenceError('PR commit comparison omits the current head or declared commits')
+    return result
+
+
+async def _commits(client: Any, variables: dict, raw: dict) -> list[dict]:
+    if isinstance(raw.get('commits'), int) and raw['commits'] > 250:
+        return await _comparison_commits(client, variables, raw)
     result = []
     cursor = None
     cursors = set()
@@ -358,7 +405,7 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     async def branch_read():return initial_branch
     threads, reviews, issues, commits, files, checkruns, statuses, workflows, rule_evidence, branch_evidence, closure_evidence = await asyncio.gather(
         _threads(client, variables), _reviews(client, variables),
-        _rest_pages(client, f"{prefix}/issues/{number}/comments"), _commits(client, variables),
+        _rest_pages(client, f"{prefix}/issues/{number}/comments"), _commits(client, variables, raw),
         files_read(),
         _rest_pages(client, f"{prefix}/commits/{head}/check-runs", {"filter": "all"}, "check_runs"),
         _rest_pages(client, f"{prefix}/commits/{head}/statuses"),
@@ -446,11 +493,13 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     if not after_head:
         raise EvidenceError("Missing final head")
     # Metadata changes also invalidate an apparently clean read, even on a stable commit.
-    for field in ("state", "merged", "draft", "updated_at"):
+    for field in ("state", "merged", "draft", "updated_at", "commits"):
         if raw.get(field) != after.get(field):
             raise EvidenceError(f"PR {field} changed during evidence collection; retry required")
     if raw['merged'] and _merged_source(raw) != _merged_source(after):
         raise EvidenceError('Merged source identity changed during evidence collection')
+    if raw['commits'] > 250 and (after.get('base') or {}).get('sha') != (raw.get('base') or {}).get('sha'):
+        raise EvidenceError('PR comparison base changed during evidence collection')
     branch_evidence = await _branch_final_read(client, prefix, branch_evidence)
     branch_error = branch_evidence.pop('branch_error', None)
     branch_evidence['base_ref_after'] = (after.get('base') or {}).get('ref')
@@ -616,7 +665,7 @@ async def collect_review_with_client(client,repository,number):
     raw=_mapping(raw,'review PR');head=_mapping(raw.get('head'),'review head').get('sha')
     if not re.fullmatch(r'[a-fA-F0-9]{40}',str(head)):raise EvidenceError('Missing current review head')
     threads,reviews,issues,commits=await asyncio.gather(_threads(client,variables),_reviews(client,variables),
-        _rest_pages(client,f'/repos/{repository}/issues/{number}/comments'),_commits(client,variables))
+        _rest_pages(client,f'/repos/{repository}/issues/{number}/comments'),_commits(client,variables,raw))
     if len(commits)!=raw.get('commits'):raise EvidenceError('Review commit chronology incomplete')
     comments=[]
     for thread in threads:
