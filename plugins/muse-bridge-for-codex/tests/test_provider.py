@@ -18,7 +18,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual('muse', parsed['model_provider'])
         self.assertEqual('disabled', parsed['web_search'])
         self.assertEqual({'command': 'test'}, parsed['mcp_servers']['test'])
-        self.assertTrue(actual.startswith('# comment\n'))
+        self.assertIn('# comment\n', actual)
         self.assertEqual(actual, provider.config_text(actual, 'http://127.0.0.1:1/secret', Path('/catalog.json')))
 
     def test_unrelated_provider_name_is_not_overwritten(self):
@@ -35,3 +35,16 @@ class ConfigTests(unittest.TestCase):
         isolated = Path('/smoke/config.toml')
         self.assertNotEqual(provider.backup_path(user, state), provider.backup_path(isolated, state))
         self.assertEqual(provider.backup_path(user, state), provider.backup_path(user, state))
+
+    def test_multiline_instructions_are_opaque_to_setting_edits(self):
+        original = ('developer_instructions = """\nKeep this example:\nmodel = "example"\n'
+                    '[model_providers.muse]\nname = "example"\n"""\nmodel = "old"\n')
+        actual = provider.config_text(original, 'http://127.0.0.1', Path('/catalog'))
+        self.assertEqual(tomllib.loads(original)['developer_instructions'],
+                         tomllib.loads(actual)['developer_instructions'])
+
+    def test_indented_unrelated_table_survives_provider_update(self):
+        original = ('[model_providers.muse]\nname = "Muse Contributor (max only)"\n'
+                    'base_url = "old"\n  [mcp_servers.unrelated]\ncommand = "keep"\n')
+        actual = provider.config_text(original, 'http://127.0.0.1', Path('/catalog'))
+        self.assertEqual({'command': 'keep'}, tomllib.loads(actual)['mcp_servers']['unrelated'])

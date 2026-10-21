@@ -6,7 +6,6 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
-import re
 import secrets
 import signal
 import socket
@@ -30,34 +29,116 @@ def atomic(path, body, mode=0o600):
         temp.unlink(missing_ok=True)
 
 
+def _statements(source):
+    """TOML statement spans, keeping multiline strings/arrays opaque.
+
+    tomllib validates the syntax; this scanner only locates edit boundaries.
+    Every edit is also checked for semantic preservation before writing.
+    """
+    start = index = depth = 0
+    quote = None
+    triple = comment = False
+    while index < len(source):
+        char = source[index]
+        if comment:
+            if char == '\n':
+                comment = False
+                if depth == 0:
+                    yield source[start:index + 1]
+                    start = index + 1
+        elif quote:
+            if quote == '"' and char == '\\':
+                index += 2
+                continue
+            if triple and source.startswith(quote * 3, index):
+                end = index + 3
+                while end < len(source) and source[end] == quote:
+                    end += 1
+                index = end
+                quote = None
+                continue
+            if not triple and char == quote:
+                quote = None
+        elif char == '#':
+            comment = True
+        elif char in ('"', "'"):
+            quote = char
+            triple = source.startswith(char * 3, index)
+            if triple:
+                index += 3
+                continue
+        elif char in '[{':
+            depth += 1
+        elif char in ']}':
+            depth -= 1
+        elif char == '\n' and depth == 0:
+            yield source[start:index + 1]
+            start = index + 1
+        index += 1
+    if start < len(source):
+        yield source[start:]
+
+
+def _table_path(statement):
+    value = tomllib.loads(statement + '\n__muse_table_probe__ = true\n')
+    def find(node, path=()):
+        if isinstance(node, list):
+            return find(node[-1], path)
+        if '__muse_table_probe__' in node:
+            return path
+        for key, child in node.items():
+            found = find(child, path + (key,))
+            if found is not None:
+                return found
+        return None
+    return find(value)
+
+
+def _unrelated(config):
+    # Deep-copy parsed values, including TOML dates, without serialization.
+    import copy
+    value = copy.deepcopy(config)
+    for key in ('model', 'model_provider', 'model_reasoning_effort', 'model_catalog_json'):
+        value.pop(key, None)
+    if 'model_providers' in value:
+        value['model_providers'].pop('muse', None)
+        if not value['model_providers']:
+            value.pop('model_providers')
+    return value
+
+
 def config_text(original, base_url, catalog):
-    """Replace only owned settings; preserve all unrelated text and TOML tables."""
+    """Edit owned settings, then prove unrelated TOML values are unchanged."""
     parsed = tomllib.loads(original)
     updates = {'model': 'muse-spark-1.3-contributor', 'model_provider': 'muse',
                'model_reasoning_effort': 'max', 'model_catalog_json': str(catalog)}
-    lines = original.splitlines(keepends=True)
-    first_table = next((i for i, line in enumerate(lines) if line.lstrip().startswith('[')), len(lines))
-    head, rest = ''.join(lines[:first_table]), ''.join(lines[first_table:])
-    if head and not head.endswith('\n'):
-        head += '\n'
-    for key, value in updates.items():
-        pattern = re.compile(r'^' + re.escape(key) + r'\s*=.*(?:\n|$)', re.M)
-        replacement = key + ' = ' + json.dumps(value) + '\n'
-        if pattern.search(head):
-            head = pattern.sub(lambda _m: replacement, head)
-        else:
-            head += replacement
     # Installer owns this provider table; reject pre-existing unrelated names.
     existing = parsed.get('model_providers', {}).get('muse')
-    if existing and existing.get('name') != 'Muse Contributor (max only)':
+    if existing and (not isinstance(existing, dict) or existing.get('name') != 'Muse Contributor (max only)'):
         raise ValueError('An unrelated model_providers.muse table already exists')
-    table = re.compile(r'^\[model_providers\.muse\]\s*\n.*?(?=^\[|\Z)', re.M | re.S)
-    rest = table.sub('', rest)
+    kept = []
+    section = ()
+    for statement in _statements(original):
+        if statement.lstrip().startswith('['):
+            section = _table_path(statement)
+            if section[:2] != ('model_providers', 'muse'):
+                kept.append(statement)
+            continue
+        if section[:2] == ('model_providers', 'muse'):
+            continue
+        fields = tomllib.loads(statement)
+        if section == () and set(fields).intersection(updates):
+            continue
+        if section == ('model_providers',) and 'muse' in fields:
+            continue
+        kept.append(statement)
+    head = ''.join(key + ' = ' + json.dumps(value) + '\n' for key, value in updates.items())
     provider = ('\n[model_providers.muse]\nname = "Muse Contributor (max only)"\n'
                 'base_url = ' + json.dumps(base_url) + '\nwire_api = "responses"\n'
                 'requires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
-    result = head + rest.rstrip() + '\n' + provider
-    tomllib.loads(result)
+    result = head + ''.join(kept).strip('\n') + '\n' + provider
+    if _unrelated(tomllib.loads(result)) != _unrelated(parsed):
+        raise ValueError('Provider configuration would change unrelated settings; refusing to write')
     return result
 
 

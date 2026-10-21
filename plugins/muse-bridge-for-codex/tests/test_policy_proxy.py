@@ -289,6 +289,28 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(event, body)
         self.assertEqual(0, self.proxy.snapshot()['response_blocked'])
 
+    def test_sse_bare_cr_delimiters_preserve_separate_events(self):
+        first = b'data: {"type":"response.output_text.delta","delta":"OK"}\r\r'
+        second = b'data: {"type":"response.completed"}\r\r'
+        self.factory.response = Response(content_type='text/event-stream', chunks=[first, second])
+        status, body = self.request()
+        self.assertEqual(200, status)
+        self.assertEqual(first + second, body)
+        self.assertEqual(0, self.proxy.snapshot()['response_blocked'])
+        self.assertIsNone(policy._SSE_SEPARATOR.search(b'data: {}\r\n'))
+
+    def test_fixed_gateway_port_can_restart_after_streamed_connection(self):
+        gateway = {'port': self.base.port, 'key': 'private-codex-key'}
+        self.factory.response = Response(content_type='text/event-stream', chunks=[b'data: [DONE]\n\n'])
+        self.assertEqual(200, self.request()[0])
+        self.proxy.close()
+        self.proxy = policy.PolicyProxy(gateway=gateway)
+        self.proxy._connection_factory = self.factory
+        self.base = urlsplit(self.proxy.start())
+        self.addCleanup(self.proxy.close)
+        self.assertEqual(gateway['port'], self.base.port)
+        self.assertEqual(200, self.request()[0])
+
     def test_sse_model_mismatch_stops_before_that_event(self):
         good = b'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
         bad = b'data: {"response":{"model":"other","output":"PRIVATE OUTPUT"}}\n\n'

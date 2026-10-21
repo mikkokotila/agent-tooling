@@ -26,7 +26,7 @@ UPSTREAM = "https://api.meta.ai/v1"
 _MAX_BODY = 64 * 1024 * 1024
 _MAX_EVENT = 4 * 1024 * 1024
 _UPSTREAM_TIMEOUT = 600
-_SSE_SEPARATOR = re.compile(rb"\r?\n\r?\n")
+_SSE_SEPARATOR = re.compile(rb"(?>\r\n|\r|\n)(?>\r\n|\r|\n)")
 _TRUTHY = frozenset(("true", "1", "on"))
 _INFERENCE_PATHS = frozenset(("/responses",))
 _HOP_HEADERS = frozenset((
@@ -151,7 +151,7 @@ def _validate_sse_event(event):
 class _LocalServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
-    allow_reuse_address = False
+    allow_reuse_address = True
 
 
 class PolicyProxy:
