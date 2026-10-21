@@ -257,11 +257,17 @@ class Service:
     def start(self):
         for attempt in range(3):
             p=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',self.plist],capture_output=True,text=True,timeout=10)
-            if not p.returncode or self.running(): break
-            if attempt==2: raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
+            if not p.returncode or self.running():
+                try:
+                    run(['launchctl','kickstart','-p',self.target],capture_output=True,timeout=10)
+                except subprocess.CalledProcessError as error:
+                    # A successful bootstrap can precede visibility of the new job.
+                    if error.returncode!=113 or attempt==2: raise
+                else:
+                    if not self.running(): raise RuntimeError('Monitor did not start')
+                    return
+            elif attempt==2: raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
             time.sleep(.25*(attempt+1))  # A just-removed launchd job can reject immediate bootstrap.
-        run(['launchctl','kickstart','-p',self.target],capture_output=True,timeout=10)
-        if not self.running(): raise RuntimeError('Monitor did not start')
 
 def runtime_matches(python):
     if not python.exists(): return False
