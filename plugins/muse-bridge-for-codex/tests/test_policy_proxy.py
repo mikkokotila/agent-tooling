@@ -299,6 +299,22 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(0, self.proxy.snapshot()['response_blocked'])
         self.assertIsNone(policy._SSE_SEPARATOR.search(b'data: {}\r\n'))
 
+    def test_sse_initial_utf8_bom_is_validated_and_preserved(self):
+        event = ('\ufeffdata: ' + json.dumps({'response': {'model': policy.MODEL}}) + '\n\n').encode()
+        self.factory.response = Response(content_type='text/event-stream', chunks=[event[:1], event[1:3], event[3:]])
+        status, body = self.request()
+        self.assertEqual(200, status)
+        self.assertEqual(event, body)
+        self.assertEqual(0, self.proxy.snapshot()['response_blocked'])
+
+    def test_sse_initial_utf8_bom_cannot_hide_an_alternate_model(self):
+        event = '\ufeffdata: {"response":{"model":"other"}}\n\n'.encode()
+        self.factory.response = Response(content_type='text/event-stream', chunks=[event[:1], event[1:]])
+        status, body = self.request()
+        self.assertEqual(200, status)
+        self.assertEqual(b'', body)
+        self.assertEqual(1, self.proxy.snapshot()['response_blocked'])
+
     def test_fixed_gateway_port_can_restart_after_streamed_connection(self):
         gateway = {'port': self.base.port, 'key': 'private-codex-key'}
         self.factory.response = Response(content_type='text/event-stream', chunks=[b'data: [DONE]\n\n'])

@@ -48,3 +48,23 @@ class ConfigTests(unittest.TestCase):
                     'base_url = "old"\n  [mcp_servers.unrelated]\ncommand = "keep"\n')
         actual = provider.config_text(original, 'http://127.0.0.1', Path('/catalog'))
         self.assertEqual({'command': 'keep'}, tomllib.loads(actual)['mcp_servers']['unrelated'])
+
+    def test_inline_provider_maps_preserve_other_providers_and_reinstall(self):
+        for key in ('model_providers', '"model_\\u0070roviders"'):
+            original = (key + ' = {other = {name = "Keep", wire_api = "responses", '
+                        'requires_openai_auth = true, request_max_retries = 2, '
+                        'auth = {command = "helper", args = ["get"]}}}\n'
+                        '[mcp_servers.keep]\ncommand="keep"\n')
+            actual = provider.config_text(original, 'http://127.0.0.1', Path('/catalog'))
+            parsed = tomllib.loads(actual)
+            self.assertEqual(tomllib.loads(original)['model_providers']['other'], parsed['model_providers']['other'])
+            self.assertEqual({'command': 'keep'}, parsed['mcp_servers']['keep'])
+            self.assertEqual('responses', parsed['model_providers']['muse']['wire_api'])
+            self.assertEqual(actual, provider.config_text(actual, 'http://127.0.0.1', Path('/catalog')))
+
+    def test_non_ascii_paths_and_unrelated_nan_remain_valid(self):
+        import math
+        actual = provider.config_text('unrelated = nan\n', 'http://127.0.0.1', Path('/runtime/\U0001f431/catalog.json'))
+        parsed = tomllib.loads(actual)
+        self.assertTrue(math.isnan(parsed['unrelated']))
+        self.assertEqual('/runtime/\U0001f431/catalog.json', parsed['model_catalog_json'])

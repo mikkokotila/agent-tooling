@@ -130,11 +130,14 @@ def _validate_response(document):
             raise _PolicyError("response_model_not_allowed")
 
 
-def _validate_sse_event(event):
+def _validate_sse_event(event, first=False):
     try:
         # SSE has ASCII line endings. str.splitlines also splits legal JSON
         # characters such as U+2028/U+2029 inside generated text.
-        lines = re.split(r"\r\n|\r|\n", event.decode("utf-8"))
+        decoded = event.decode("utf-8")
+        if first:
+            decoded = decoded.removeprefix('\ufeff')
+        lines = re.split(r"\r\n|\r|\n", decoded)
     except UnicodeError:
         raise _PolicyError("invalid_response_encoding") from None
     data = []
@@ -458,11 +461,12 @@ class PolicyProxy:
 
     def _stream(self, handler, response):
         pending = bytearray()
+        first = True
         while not self._stopping.is_set():
             chunk = response.read1(64 * 1024)
             if not chunk:
                 if pending:
-                    _validate_sse_event(bytes(pending))
+                    _validate_sse_event(bytes(pending), first=first)
                     handler.wfile.write(pending)
                     handler.wfile.flush()
                 return
@@ -478,7 +482,8 @@ class PolicyProxy:
                     raise _PolicyError("response_event_too_large")
                 event = bytes(pending[:end])
                 del pending[:end]
-                _validate_sse_event(event)
+                _validate_sse_event(event, first=first)
+                first = False
                 handler.wfile.write(event)
                 handler.wfile.flush()
         raise _PolicyError("proxy_closed")

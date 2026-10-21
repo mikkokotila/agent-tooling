@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
+import datetime
 import os
 from pathlib import Path
 import plistlib
@@ -107,17 +109,66 @@ def _unrelated(config):
     return value
 
 
+def _same_values(left, right):
+    if isinstance(left, float) and isinstance(right, float) and math.isnan(left) and math.isnan(right):
+        return True
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_values(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_same_values(a, b) for a, b in zip(left, right))
+    return type(left) is type(right) and left == right
+
+
+def _toml_value(value):
+    """Encode only the inline provider map; all other statements stay intact."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False).replace('\x7f', '\\u007f')
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return '[' + ', '.join(_toml_value(item) for item in value) + ']'
+    if isinstance(value, dict):
+        return '{' + ', '.join(_toml_value(k) + ' = ' + _toml_value(v) for k, v in value.items()) + '}'
+    raise ValueError('Unsupported TOML value; refusing to change configuration')
+
+
+def _direct_provider_assignment(statement):
+    quote = None
+    index = 0
+    while index < len(statement):
+        char = statement[index]
+        if quote:
+            if quote == '"' and char == '\\':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == '=':
+            return tomllib.loads(statement[:index] + ' = {}') == {'model_providers': {}}
+        index += 1
+    return False
+
+
 def config_text(original, base_url, catalog):
     """Edit owned settings, then prove unrelated TOML values are unchanged."""
     parsed = tomllib.loads(original)
     updates = {'model': 'muse-spark-1.3-contributor', 'model_provider': 'muse',
                'model_reasoning_effort': 'max', 'model_catalog_json': str(catalog)}
+    owned = {'name': 'Muse Contributor (max only)', 'base_url': base_url, 'wire_api': 'responses',
+             'requires_openai_auth': False, 'request_max_retries': 0, 'stream_max_retries': 0}
     # Installer owns this provider table; reject pre-existing unrelated names.
     existing = parsed.get('model_providers', {}).get('muse')
     if existing and (not isinstance(existing, dict) or existing.get('name') != 'Muse Contributor (max only)'):
         raise ValueError('An unrelated model_providers.muse table already exists')
     kept = []
     section = ()
+    inline = False
     for statement in _statements(original):
         if statement.lstrip().startswith('['):
             section = _table_path(statement)
@@ -127,17 +178,22 @@ def config_text(original, base_url, catalog):
         if section[:2] == ('model_providers', 'muse'):
             continue
         fields = tomllib.loads(statement)
+        if section == () and 'model_providers' in fields and _direct_provider_assignment(statement):
+            providers = dict(fields['model_providers'])
+            providers['muse'] = owned
+            kept.append('model_providers = ' + _toml_value(providers) + '\n')
+            inline = True
+            continue
         if section == () and set(fields).intersection(updates):
             continue
         if section == ('model_providers',) and 'muse' in fields:
             continue
         kept.append(statement)
-    head = ''.join(key + ' = ' + json.dumps(value) + '\n' for key, value in updates.items())
-    provider = ('\n[model_providers.muse]\nname = "Muse Contributor (max only)"\n'
-                'base_url = ' + json.dumps(base_url) + '\nwire_api = "responses"\n'
-                'requires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
+    head = ''.join(key + ' = ' + _toml_value(value) + '\n' for key, value in updates.items())
+    provider = '' if inline else ('\n[model_providers.muse]\n' + ''.join(
+        key + ' = ' + _toml_value(value) + '\n' for key, value in owned.items()))
     result = head + ''.join(kept).strip('\n') + '\n' + provider
-    if _unrelated(tomllib.loads(result)) != _unrelated(parsed):
+    if not _same_values(_unrelated(tomllib.loads(result)), _unrelated(parsed)):
         raise ValueError('Provider configuration would change unrelated settings; refusing to write')
     return result
 
