@@ -1,0 +1,17 @@
+{
+  "name": "muse-bridge-for-codex",
+  "version": "0.1.1",
+  "description": "Control local Muse sessions with a provider guard that permits only muse-spark-1.3-contributor at max effort.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Muse Bridge for Codex",
+    "shortDescription": "Muse contributor at max",
+    "longDescription": "Control local Muse sessions with a provider guard that permits only muse-spark-1.3-contributor at max effort.",
+    "developerName": "Mikko Kotila",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Local agent control"
+    ]
+  }
+}
