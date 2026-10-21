@@ -61,3 +61,11 @@ def test_role_host_matrix_and_browser_isolation_contract():
     assert 'A tab or group in the user' in role
     assert 'no supported separate-window capability' in role
     assert 'you are switchboard' in (ROOT / 'AGENTS.md').read_text()
+
+
+def test_explain_links_are_bound_to_the_observer_host():
+    role = (ROOT / 'switchboard/SWITCHBOARD.md').read_text()
+    assert 'On Codex use codex://threads/' in role
+    assert 'On Claude or Muse use only a verified return-to-current-observer link' in role
+    assert 'never put a Claude/Muse session ID in a Codex URL' in role
+    assert 'explicitly report explain unavailable with that update ID' in role
