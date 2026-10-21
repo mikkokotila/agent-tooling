@@ -42,7 +42,7 @@ Exactly three headings: Blockers; Findings; Decisions & completions. None under 
 
 Save every update with stable update ID, evidence, source identity, explainPrompt and explainLink. Explain uses codex://threads/CURRENT_SWITCHBOARD_ID?prompt=URL_ENCODED_REQUEST naming the actual update ID and exact source title and requesting a slightly fuller evidence-based explanation of change, importance and uncertainty. The link prepares a request; the human must press Send. Preserve earlier update entries while that history is retained. Never hardcode this old chat's ID in the reusable package.
 
-Local Codex: codex://threads/THREAD_ID. Ordinary ChatGPT: https://chatgpt.com/c/CONVERSATION_ID unless a desktop deep link is actually verified. Claude Code: claude://code/continue?session=DESKTOP_LOCAL_ID from verified mapping, never CLI UUID. Ordinary Claude: claude://claude.ai/chat/UUID only when verified.
+Local Codex: codex://threads/THREAD_ID. Ordinary ChatGPT: https://chatgpt.com/c/CONVERSATION_ID unless a desktop deep link is actually verified. Claude Code: claude://code/continue?session=DESKTOP_LOCAL_ID from verified mapping, never CLI UUID. Claude browser chats are excluded and receive no monitoring links.
 
 Default silence on unchanged/non-actionable state. Explicit human standing reports override silence for their named source only. Follow the current client's required heartbeat NOTIFY/DONT_NOTIFY envelope; do not mistake the trigger itself for a report-worthy event.
 

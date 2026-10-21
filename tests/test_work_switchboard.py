@@ -19,7 +19,7 @@ def test_client_routes_preserve_personal_manager_and_private_state(tmp_path):
     for client, filename in [('codex', 'AGENTS.md'), ('claude', 'CLAUDE.md')]:
         target = tmp_path / ('.' + client) / filename
         target.parent.mkdir(exist_ok=True)
-        original = work_manager.guidance(b'Personal prefix.\n## Personal\nKeep this.\n', ROOT, tmp_path)
+        original = work_manager.guidance(b'Personal prefix.\n<!-- caller-pr-gates:begin -->\n<!-- caller-pr-gates:end -->\n## Personal\nKeep this.\n', ROOT, tmp_path)
         target.write_bytes(original)
         assets = manage.desired_assets(tmp_path, None)
         updated = assets[str(target)]
