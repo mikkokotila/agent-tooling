@@ -4,6 +4,9 @@
 
 Start a chat in this repository and say **“you are manager”**. [The manager mandate](manager/MANAGER.md) defines activation, authority, Codex-wide versus Muse-only coverage, the session-owned ledger/heartbeat lifecycle, archive permission, retirement and verified per-turn token reporting. `make install` installs its documents, request protocol and read-only usage helper alongside the existing hooks; operational state, sessions, access profiles and credentials stay private in `~/.codex/work-manager/`. A new manager chat starts fresh; ending it stops its polling and removes its working ledger. Private machine configuration survives separately. Updating or installing instructions does not appoint a manager or end its active session.
 
+Say **“you are switchboard”** to take the [Switchboard role](switchboard/SWITCHBOARD.md). The same normal installer deploys its mandate to `~/.codex/switchboard/SWITCHBOARD.md` and appointment pointers to both Codex and Claude personal instructions, so the phrase works from any workspace. All host variants observe every accessible local Claude/Codex/Muse session; Claude/Codex additionally check GPT browser chats in a verified dedicated new window, Muse need not, and Claude browser chats are never inspected. Source work/recovery remains with owners/Manager. Fresh sessions do not inherit historical questions or restart stopped polling.
+
+
 ## PR hooks
 
 Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.60 installs runtime 1.7.60.
