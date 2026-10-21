@@ -2,7 +2,7 @@
 
 ## Local work manager
 
-Start a chat in this repository and say **“you are manager”**. [The manager mandate](manager/MANAGER.md) defines activation, authority, the existing-ledger/heartbeat handoff, archive permission, retirement and verified per-turn token reporting. `make install` installs its documents, request protocol and read-only usage helper alongside the existing hooks; operational state, sessions, access profiles and credentials stay private in `~/.codex/work-manager/`. Updating or installing instructions does not appoint a manager or create a schedule.
+Start a chat in this repository and say **“you are manager”**. [The manager mandate](manager/MANAGER.md) defines activation, authority, Codex-wide versus Muse-only coverage, the session-owned ledger/heartbeat lifecycle, archive permission, retirement and verified per-turn token reporting. `make install` installs its documents, request protocol and read-only usage helper alongside the existing hooks; operational state, sessions, access profiles and credentials stay private in `~/.codex/work-manager/`. A new manager chat starts fresh; ending it stops its polling and removes its working ledger. Private machine configuration survives separately. Updating or installing instructions does not appoint a manager or end its active session.
 
 ## PR hooks
 
