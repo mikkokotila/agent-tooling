@@ -68,3 +68,13 @@ class ConfigTests(unittest.TestCase):
         parsed = tomllib.loads(actual)
         self.assertTrue(math.isnan(parsed['unrelated']))
         self.assertEqual('/runtime/\U0001f431/catalog.json', parsed['model_catalog_json'])
+
+    def test_dotted_provider_assignments_can_be_updated(self):
+        original = ('model_providers.muse.name = "Muse Contributor (max only)"\n'
+                    'model_providers.muse.base_url = "old"\n'
+                    'model_providers.other.name = "Keep"\n'
+                    '[mcp_servers.keep]\ncommand="keep"\n')
+        actual = tomllib.loads(provider.config_text(original, 'http://127.0.0.1', Path('/catalog')))
+        self.assertEqual({'name': 'Keep'}, actual['model_providers']['other'])
+        self.assertEqual('http://127.0.0.1', actual['model_providers']['muse']['base_url'])
+        self.assertEqual({'command': 'keep'}, actual['mcp_servers']['keep'])

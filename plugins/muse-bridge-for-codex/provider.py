@@ -136,25 +136,6 @@ def _toml_value(value):
     raise ValueError('Unsupported TOML value; refusing to change configuration')
 
 
-def _direct_provider_assignment(statement):
-    quote = None
-    index = 0
-    while index < len(statement):
-        char = statement[index]
-        if quote:
-            if quote == '"' and char == '\\':
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-        elif char in ('"', "'"):
-            quote = char
-        elif char == '=':
-            return tomllib.loads(statement[:index] + ' = {}') == {'model_providers': {}}
-        index += 1
-    return False
-
-
 def config_text(original, base_url, catalog):
     """Edit owned settings, then prove unrelated TOML values are unchanged."""
     parsed = tomllib.loads(original)
@@ -168,31 +149,27 @@ def config_text(original, base_url, catalog):
         raise ValueError('An unrelated model_providers.muse table already exists')
     kept = []
     section = ()
-    inline = False
     for statement in _statements(original):
         if statement.lstrip().startswith('['):
             section = _table_path(statement)
-            if section[:2] != ('model_providers', 'muse'):
+            if section[:1] != ('model_providers',):
                 kept.append(statement)
             continue
-        if section[:2] == ('model_providers', 'muse'):
+        if section[:1] == ('model_providers',):
             continue
         fields = tomllib.loads(statement)
-        if section == () and 'model_providers' in fields and _direct_provider_assignment(statement):
-            providers = dict(fields['model_providers'])
-            providers['muse'] = owned
-            kept.append('model_providers = ' + _toml_value(providers) + '\n')
-            inline = True
-            continue
         if section == () and set(fields).intersection(updates):
             continue
-        if section == ('model_providers',) and 'muse' in fields:
+        if section == () and 'model_providers' in fields:
             continue
         kept.append(statement)
+    # One canonical root map handles inline tables, dotted assignments and
+    # explicit tables uniformly. Other provider values are retained exactly.
+    providers = dict(parsed.get('model_providers', {}))
+    providers['muse'] = owned
     head = ''.join(key + ' = ' + _toml_value(value) + '\n' for key, value in updates.items())
-    provider = '' if inline else ('\n[model_providers.muse]\n' + ''.join(
-        key + ' = ' + _toml_value(value) + '\n' for key, value in owned.items()))
-    result = head + ''.join(kept).strip('\n') + '\n' + provider
+    head += 'model_providers = ' + _toml_value(providers) + '\n'
+    result = head + ''.join(kept).strip('\n') + '\n'
     if not _same_values(_unrelated(tomllib.loads(result)), _unrelated(parsed)):
         raise ValueError('Provider configuration would change unrelated settings; refusing to write')
     return result
