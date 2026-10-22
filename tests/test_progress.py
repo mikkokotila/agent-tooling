@@ -130,7 +130,7 @@ class ValidationProgressRegression(unittest.TestCase):
         (self.root / ".gitignore").write_text("node_modules/\nignored.json\n")
         plan = {**self.plan, "input_paths": ["node_modules"]}
         for relative in [".cache/behavior-ledger-CgPwmk/other.mjs",
-                         ".cache/behavior-ledger-stable/worker.mjs",
+                         ".cache/behavior-ledger-persistent/worker.mjs",
                          "example/behavior-ledger-CgPwmk/worker.mjs"]:
             with self.subTest(relative=relative):
                 path = self.root / "node_modules" / relative
