@@ -387,3 +387,34 @@ environment copies can remain inactive for the retired integration until normal
 rollout; deleting an Actions secret does not erase existing container or host
 configuration. Successful deployment evidence records the exact merged release's
 deployment and does not claim inspection of every retained runtime environment.
+
+### Owned Origo hosted source-suite fallback
+
+Release0.1.62 permits the current owner of an open `Vaquum/Origo` PR to dispatch only
+`.github/workflows/pr_checks_tests.yml` with `runner=github`. This uses the existing
+full source-native suite when its self-hosted runner is unavailable; no check,
+workflow, runner resource or repository setting is changed. The exact recorded
+client and checkout must be clean at the same-repository PR head and current main
+ancestry. The workflow file at both immutable base and head must match reviewed
+Git blob `6bf211fb8bbc65040bd5848040e36f2c2d463134`.
+
+Save JSON containing exactly `{"ref":"CURRENT_PR_HEAD_BRANCH","inputs":{"runner":"github"}}`.
+Then use the ordinary owned target and exact API form:
+
+```sh
+caller-pr-gates github --session SESSION --client CLIENT --cwd OWNED_CHECKOUT \
+  --target https://github.com/Vaquum/Origo/pull/NUMBER -- \
+  api repos/Vaquum/Origo/actions/workflows/pr_checks_tests.yml/dispatches \
+  --method POST --input SAVED_JSON
+```
+
+The admitted bytes are frozen before the write. Other inputs, refs, workflows,
+repositories, methods, headers, stdin bodies and foreign owners remain denied.
+The command fixes the internal GitHub API version to `2026-03-10` and requires the
+[dispatch response's exact workflow-run ID and URLs](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success requires that returned
+run's exact head, branch, repository, workflow and dispatch event, followed by
+unchanged PR/checkout/owner readback. Missing or raced outcomes record incomplete
+evidence and refuse automatic retry; inspect the actual dispatch outcome before
+another invocation. A concurrent dispatch cannot substitute its run identity.
+A verified dispatch receipt establishes the run identity, never CI success,
+review completion or merge readiness. All existing PR gates remain required.
