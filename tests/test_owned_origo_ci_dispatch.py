@@ -99,7 +99,7 @@ def test_owned_origo_dispatch_freezes_payload_and_verifies_actual_run(store, dis
     'unowned', 'foreign_receipt', 'wrong_cwd', 'wrong_client', 'closed', 'merged',
     'unknown_merged', 'head_race', 'behind', 'base_race', 'fork', 'dirty', 'origin',
     'local_head', 'local_branch', 'main_workflow', 'head_workflow', 'bad_ref', 'bad_runner',
-    'extra_inputs', 'extra_flags', 'stdin', 'method', 'workflow', 'repository', 'issue',
+    'extra_inputs', 'extra_flags', 'caller_header', 'stdin', 'method', 'workflow', 'repository', 'issue',
     'pull_head', 'pull_base', 'pull_repo_id', 'owner_race', 'checkout_race',
 ])
 def test_origo_dispatch_refuses_unowned_or_changed_inputs_before_post(store, dispatch_case, fault, tmp_path):
@@ -128,6 +128,7 @@ def test_origo_dispatch_refuses_unowned_or_changed_inputs_before_post(store, dis
     elif fault == 'bad_runner': case['request'].write_text(json.dumps({'ref': local['branch'], 'inputs': {'runner': 'self-hosted'}}))
     elif fault == 'extra_inputs': case['request'].write_text(json.dumps({'ref': local['branch'], 'inputs': {'runner': 'github', 'extra': True}}))
     elif fault == 'extra_flags': value.arguments += ['--hostname', 'other.example']
+    elif fault == 'caller_header': value.arguments += ['--header', 'X-GitHub-Api-Version: 2022-11-28']
     elif fault == 'stdin': value.arguments[-1] = '-'
     elif fault == 'method': value.arguments[3] = 'PUT'
     elif fault == 'workflow': value.arguments[1] = ENDPOINT.replace('pr_checks_tests.yml', 'deploy.yml')
