@@ -423,6 +423,7 @@ def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, me
     """Run only the reviewed hosted source suite for the exact owned Origo head."""
     workflow = '.github/workflows/pr_checks_tests.yml'
     trusted_blob = '6bf211fb8bbc65040bd5848040e36f2c2d463134'
+    api_version = '2026-03-10'
     expected = 'repos/Vaquum/Origo/actions/workflows/pr_checks_tests.yml/dispatches'
     if repo != 'Vaquum/Origo' or issue or endpoint != expected:
         return None
@@ -437,7 +438,6 @@ def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, me
     from .github import collect_validation
     from .policy import branch_freshness_gate
     from .publication import source, exact_source
-    from urllib.parse import quote
     owner = owned_pr(store, sid, repo, number)
 
     def current_owner():
@@ -486,49 +486,38 @@ def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, me
         blob = read(f'repos/{repo}/contents/{workflow}?ref={ref}')
         if blob.get('path') != workflow or blob.get('sha') != trusted_blob or blob.get('type') != 'file':
             raise ValueError('Origo source-suite workflow differs from the reviewed trusted blob')
-    runs_path = (f'repos/{repo}/actions/workflows/pr_checks_tests.yml/runs'
-                 f'?event=workflow_dispatch&branch={quote(branch, safe="")}&per_page=100')
-
-    def runs(timeout=15):
-        rows = read(runs_path, timeout).get('workflow_runs')
-        if not isinstance(rows, list) or any(not isinstance(row, dict) or type(row.get('id')) is not int for row in rows):
-            raise ValueError('Origo CI run inventory is incomplete')
-        return rows
-
-    before = {row['id'] for row in runs()}
     if (not same_pr(read(f'repos/{repo}/pulls/{number}'))
             or not current_owner() or source(args.cwd, stable=True) != local):
         raise ValueError('Origo CI owner, checkout, PR head or target changed before dispatch')
     body = json.dumps(frozen)
     receipt = {'session_id': sid, 'repository': repo, 'number': number,
                'head_sha': head, 'head_ref': branch, 'workflow': workflow,
-               'workflow_blob': trusted_blob, 'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
+               'workflow_blob': trusted_blob, 'api_version': api_version,
+               'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
     store.audit('github_origo_ci_dispatch_attempt', receipt)
     try:
-        result = github_run(['gh', 'api', expected, '--method', 'POST', '--input', '-'],
+        result = github_run(['gh', 'api', expected, '--method', 'POST', '--input', '-',
+                             '--header', f'X-GitHub-Api-Version: {api_version}'],
                             runner=subprocess.run, cwd=args.cwd, input=body,
                             text=True, capture_output=True, timeout=30)
         if result.returncode:
             raise RuntimeError('GitHub did not confirm workflow dispatch')
-        deadline = time.monotonic() + 30
-        while True:
-            found = [row for row in runs(min(10, max(.1, deadline - time.monotonic())))
-                     if row['id'] not in before]
-            if found:
-                if len(found) != 1:
-                    raise RuntimeError('Workflow dispatch has ambiguous new run identities')
-                run = read(f'repos/{repo}/actions/runs/{found[0]["id"]}', timeout=10)
-                url = f'https://github.com/{repo}/actions/runs/{found[0]["id"]}'
-                if (run.get('id') != found[0]['id'] or run.get('head_sha') != head
-                        or run.get('head_branch') != branch or run.get('path') != workflow
-                        or run.get('event') != 'workflow_dispatch' or run.get('html_url') != url
-                        or (run.get('head_repository') or {}).get('full_name') != repo):
-                    raise RuntimeError('Dispatched CI run does not match the frozen owned head')
-                receipt.update(run_id=run['id'], run_url=url)
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError('Dispatched CI run did not become observable within30seconds')
-            time.sleep(min(1, max(0, deadline - time.monotonic())))
+        dispatched = json.loads(result.stdout)
+        run_id = dispatched.get('workflow_run_id')
+        if type(run_id) is not int or run_id <= 0:
+            raise RuntimeError('GitHub did not return the dispatched workflow run identity')
+        run_path = f'repos/{repo}/actions/runs/{run_id}'
+        url = f'https://github.com/{repo}/actions/runs/{run_id}'
+        if (dispatched.get('run_url') != 'https://api.github.com/' + run_path
+                or dispatched.get('html_url') != url):
+            raise RuntimeError('GitHub dispatch response URLs do not match its run identity')
+        receipt.update(run_id=run_id, run_url=url)
+        run = read(run_path)
+        if (run.get('id') != run_id or run.get('head_sha') != head
+                or run.get('head_branch') != branch or run.get('path') != workflow
+                or run.get('event') != 'workflow_dispatch' or run.get('html_url') != url
+                or (run.get('head_repository') or {}).get('full_name') != repo):
+            raise RuntimeError('Dispatched CI run does not match the frozen owned head')
         if (not same_pr(read(f'repos/{repo}/pulls/{number}'))
                 or not current_owner() or source(args.cwd, stable=True) != local):
             raise RuntimeError('Origo CI owner, checkout, PR head or target changed during dispatch')

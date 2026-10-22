@@ -375,10 +375,11 @@ caller-pr-gates github --session SESSION --client CLIENT --cwd OWNED_CHECKOUT \
 
 The admitted bytes are frozen before the write. Other inputs, refs, workflows,
 repositories, methods, headers, stdin bodies and foreign owners remain denied.
-The command records a private attempt and discovers one new workflow run within a
-bounded30-second observation window. Success requires its exact head, branch,
-repository, workflow and dispatch event, followed by unchanged PR/checkout/owner
-readback. Ambiguous, missing or raced outcomes record incomplete evidence and
-refuse automatic retry; inspect actual workflow runs before another invocation.
+The command fixes the internal GitHub API version to `2026-03-10` and requires the
+[dispatch response's exact workflow-run ID and URLs](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success requires that returned
+run's exact head, branch, repository, workflow and dispatch event, followed by
+unchanged PR/checkout/owner readback. Missing or raced outcomes record incomplete
+evidence and refuse automatic retry; inspect the actual dispatch outcome before
+another invocation. A concurrent dispatch cannot substitute its run identity.
 A verified dispatch receipt establishes the run identity, never CI success,
 review completion or merge readiness. All existing PR gates remain required.

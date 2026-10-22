@@ -1,8 +1,10 @@
 import json
 import subprocess
-from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
+from caller_pr_gates import cli
 from caller_pr_gates.cli import gateway
 from test_cli import args, store
 from test_policy import snapshot
@@ -31,8 +33,10 @@ def dispatch_case(store, tmp_path, monkeypatch):
                event='workflow_dispatch', html_url=f'https://github.com/{REPO}/actions/runs/100',
                head_repository=dict(full_name=REPO))
     case = dict(args=value, snapshot=snap, local=local, pull=pull, run=run, request=request,
-                writes=[], posted=False, before=[], after=[dict(run)], blobs={}, after_post=None,
-                before_write=None, post_error=False)
+                writes=[], reads=[], posted=False, blobs={}, after_post=None,
+                before_write=None, post_error=False, response=dict(
+                    workflow_run_id=100, run_url=f'https://api.github.com/repos/{REPO}/actions/runs/100',
+                    html_url=run['html_url']), empty_response=False, missing_run=False)
 
     async def validation(*_args):
         return snap
@@ -40,18 +44,21 @@ def dispatch_case(store, tmp_path, monkeypatch):
     def github(argv, **kwargs):
         target = argv[2]
         if '--method' in argv:
-            assert argv == ['gh', 'api', ENDPOINT, '--method', 'POST', '--input', '-']
+            assert argv == ['gh', 'api', ENDPOINT, '--method', 'POST', '--input', '-',
+                            '--header', 'X-GitHub-Api-Version: 2026-03-10']
             case['writes'].append((argv, kwargs))
             case['posted'] = True
             if case['after_post']:
                 case['after_post']()
-            return subprocess.CompletedProcess(argv, int(case['post_error']), stdout='')
+            return subprocess.CompletedProcess(argv, int(case['post_error']), stdout=(
+                '' if case['empty_response'] else json.dumps(case['response'])))
+        case['reads'].append(target)
         if '/contents/' in target:
             ref = target.rsplit('=', 1)[1]
             result = dict(path=WORKFLOW, sha=case['blobs'].get(ref, BLOB), type='file')
-        elif '/workflows/pr_checks_tests.yml/runs?' in target:
-            result = {'workflow_runs': case['after'] if case['posted'] else case['before']}
         elif target == f'repos/{REPO}/actions/runs/100':
+            if case['missing_run']:
+                raise subprocess.CalledProcessError(1, argv)
             result = case['run']
         elif target == f'repos/{REPO}/pulls/608':
             if not case['posted'] and case['before_write']:
@@ -141,20 +148,21 @@ def test_origo_dispatch_refuses_unowned_or_changed_inputs_before_post(store, dis
 
 
 @pytest.mark.parametrize('fault', ['head', 'branch', 'workflow', 'repository', 'event', 'id', 'url',
-                                  'ambiguous', 'missing', 'head_after', 'owner_after', 'checkout_after', 'post_error'])
-def test_dispatched_run_requires_exact_head_readback_and_never_retries(store, dispatch_case, monkeypatch, fault):
+                                  'missing_id', 'empty_response', 'api_url', 'html_url', 'boolean_id',
+                                  'zero_id', 'missing_run', 'head_after', 'owner_after', 'checkout_after', 'post_error'])
+def test_dispatched_run_requires_exact_head_readback_and_never_retries(store, dispatch_case, fault):
     case = dispatch_case
     fields = {'head': 'head_sha', 'branch': 'head_branch', 'workflow': 'path',
               'event': 'event', 'id': 'id', 'url': 'html_url'}
     if fault in fields: case['run'][fields[fault]] = 'different'
     elif fault == 'repository': case['run']['head_repository']['full_name'] = 'fork/Origo'
-    elif fault == 'ambiguous': case['after'].append(dict(case['run'], id=101))
-    elif fault == 'missing':
-        case['after'] = []
-        clock = [0]
-        monkeypatch.setattr('caller_pr_gates.cli.time', SimpleNamespace(
-            monotonic=lambda: clock[0], sleep=lambda _seconds: clock.__setitem__(0, 30),
-        ))
+    elif fault == 'missing_id': case['response'].pop('workflow_run_id')
+    elif fault == 'empty_response': case['empty_response'] = True
+    elif fault == 'api_url': case['response']['run_url'] = 'https://api.github.com/repos/other/repo/actions/runs/100'
+    elif fault == 'html_url': case['response']['html_url'] = 'https://github.com/other/repo/actions/runs/100'
+    elif fault == 'boolean_id': case['response']['workflow_run_id'] = True
+    elif fault == 'zero_id': case['response']['workflow_run_id'] = 0
+    elif fault == 'missing_run': case['missing_run'] = True
     elif fault == 'head_after': case['after_post'] = lambda: case['pull']['head'].update(sha='b' * 40)
     elif fault == 'owner_after':
         def change_owner():
@@ -180,3 +188,22 @@ def test_relative_dispatch_input_is_bound_to_owned_checkout(store, dispatch_case
     case['args'].arguments[-1] = 'dispatch.json'
     gateway(case['args'], store)
     assert json.loads(case['writes'][0][1]['input'])['ref'] == case['local']['branch']
+
+
+def test_dispatch_reads_only_its_returned_id_even_with_a_concurrent_run(store, dispatch_case):
+    case = dispatch_case
+    # A concurrent server dispatch has the same branch/head and appears first.
+    # Only this POST's returned ID can prove attribution to runner=github.
+    other = dict(case['run'], id=101, html_url=f'https://github.com/{REPO}/actions/runs/101')
+    original = cli.github_run
+
+    def github(argv, **kwargs):
+        if '/workflows/pr_checks_tests.yml/runs?' in argv[2]:
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({'workflow_runs': [other]}))
+        if argv[2] == f'repos/{REPO}/actions/runs/101':
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(other))
+        return original(argv, **kwargs)
+
+    with patch('caller_pr_gates.cli.github_run', github):
+        gateway(case['args'], store)
+    assert case['reads'][-2:] == [f'repos/{REPO}/actions/runs/100', f'repos/{REPO}/pulls/608']
