@@ -666,6 +666,9 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            if endpoint == 'repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY':
+                from .origo_secret_retirement import retire
+                return retire(args, store, sid, argv, github_run)
             if endpoint in {DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CONTEXTS}:
                 return _documentation_configuration(args, store, sid, argv, endpoint, repo, num, issue)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)

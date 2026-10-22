@@ -352,3 +352,38 @@ No registration, monitor restart, database repair or placeholder PR is needed. C
 Record the human-approved configuration as a separate immutable work-item with the ordinary `scope --file SAVED_SCOPE --work-item CONFIGURATION_ID` command. Include `google_actions_configuration` with exactly `repository` (the operator fork), `authorizing_pr` (the exact owned source PR URL) and nonempty `approval_evidence` quoting the human authorization. No deployment identity or credential value is installed as a source constant. The grant allows only the integration's client-ID variable and sealed client-secret, in that one repository, for that recorded PR's exact client/session/checkout. Its retained merged owner may finish deployment preparation without reopening or rearming the PR; closed unmerged work stays denied. Other work-items and PR scope baselines remain immutable.
 
 Use `github --session SESSION --client CLIENT --cwd CHECKOUT --target AUTHORIZING_PR -- api ENDPOINT --method METHOD --input SAVED_JSON`. For `POISE_GOOGLE_CLIENT_ID`, POST `repos/APPROVED_REPOSITORY/actions/variables` to create, or PATCH the same path plus `/POISE_GOOGLE_CLIENT_ID` to update, with exactly `name` and `value`. For `POISE_GOOGLE_CLIENT_SECRET`, PUT `repos/APPROVED_REPOSITORY/actions/secrets/POISE_GOOGLE_CLIENT_SECRET` with exactly GitHub's `key_id` and base64 `encrypted_value`. Seal with that fork's current public key first; never put plaintext secrets in the JSON, arguments or logs. Only a saved JSON file is accepted and the admitted bytes are forwarded through stdin. Other repositories, keys, settings, fields and method overrides stay denied. The write receipt contains only identity and a payload hash. Read back variable/secret metadata before releasing the existing deployment hold; a merge or successful API exit alone is not persistence proof. This capability authorizes no new grant, workflow dispatch or deployment.
+
+### Retire Origo's deployed CryptoHFTData Actions secret
+
+Release0.1.63/runtime1.7.63 adds only the bodyless DELETE of
+`repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY`. Record the existing human
+provider-removal authorization in immutable work-item
+`origo-608-retire-cryptohftdata-actions-secret`, with member
+`origo_cryptohftdata_secret_retirement` containing exactly `repository: Vaquum/Origo`,
+`authorizing_pr: https://github.com/Vaquum/Origo/pull/608` and nonempty
+`approval_evidence`. The original root owner/client/checkout must be retained with
+PR608 merged. This route never merges, adopts or rearms that PR.
+
+Use the existing gateway with `--target https://github.com/Vaquum/Origo/pull/608`
+and exactly `-- api repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY --method DELETE`.
+No body, headers, other key or configuration operation is admitted. Admission
+requires the exact merge SHA's successful `Deploy On Merge` run, successful image
+deployment job/step, current main retaining that merge, and credential absence in
+bounded immutable Git blobs for both revisions. Exact commits must already exist
+locally; admission does not fetch or change checkout files. Source/deployment
+identity is rechecked before and after the operation.
+
+An atomic fixed-operation receipt permits only one attempted DELETE, including
+concurrent callers. The relay admits only that one exact HTTP write, without
+redirects or retries. Verification requires metadata200, DELETE204 and metadata404.
+Preflight404 is a refusal because it is not authorization proof. Receipts contain
+only whitelisted metadata, identities and source digests. Failed, interrupted,
+drifted or unknown outcomes remain incomplete and prevent another DELETE; use
+existing read-only metadata requests for investigation. No automatic retry,
+override, account revocation or other credential operation is provided.
+
+Retained live collectors/workers are never restarted by this route. Their old
+environment copies can remain inactive for the retired integration until normal
+rollout; deleting an Actions secret does not erase existing container or host
+configuration. Successful deployment evidence records the exact merged release's
+deployment and does not claim inspection of every retained runtime environment.
