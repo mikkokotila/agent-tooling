@@ -127,7 +127,7 @@ class ValidationProgressRegression(unittest.TestCase):
         self.assertNotEqual(before, fingerprint(self.root, plan))
 
     def test_ledger_cache_neighbors_and_symlinks_remain_inputs(self):
-        (self.root / ".gitignore").write_text("node_modules/\n")
+        (self.root / ".gitignore").write_text("node_modules/\nignored.json\n")
         plan = {**self.plan, "input_paths": ["node_modules"]}
         for relative in [".cache/behavior-ledger-CgPwmk/other.mjs",
                          ".cache/behavior-ledger-stable/worker.mjs",
