@@ -764,6 +764,12 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None, canonical_
                     if (len(child.parts) >= 5 and child.parts[-5:-2] == ("node_modules", ".vite", "vitest")
                             and re.fullmatch(r"[0-9a-f]{40}", child.parts[-2]) and name == "results.json"):
                         continue
+                    # Poise bundles its development ledger worker from source into
+                    # a fresh mkdtemp directory; this is generated output, not a dependency.
+                    if (len(child.parts) >= 4 and child.parts[-4:-2] == ("node_modules", ".cache")
+                            and re.fullmatch(r"behavior-ledger-[A-Za-z0-9]{6}", child.parts[-2])
+                            and name == "worker.mjs" and not (repository / child).is_symlink()):
+                        continue
                     input_files.add(child.as_posix())
         # Never omit current private contents while reconstructing a historical
         # file/missing path. The old pin must prove those contents unchanged.

@@ -105,6 +105,62 @@ class ValidationProgressRegression(unittest.TestCase):
         cache.write_text("three")
         self.assertNotEqual(before, fingerprint(self.root, directory_plan))
 
+    def test_dependency_directory_ignores_generated_ledger_worker_but_hashes_inputs(self):
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        package = self.root / "node_modules" / "esbuild" / "index.js"
+        package.parent.mkdir(parents=True)
+        package.write_text("bundler one")
+        cache = self.root / "node_modules" / ".cache" / "behavior-ledger-CgPwmk" / "worker.mjs"
+        plan = {**self.plan, "input_paths": ["node_modules"]}
+        before = fingerprint(self.root, plan)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("generated bundle one")
+        self.assertEqual(before, fingerprint(self.root, plan))
+        cache.write_text("generated bundle two")
+        self.assertEqual(before, fingerprint(self.root, plan))
+        cache.unlink()
+        self.assertEqual(before, fingerprint(self.root, plan))
+        package.write_text("bundler two")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+        package.write_text("bundler one")
+        (self.root / "source.py").write_text("worker_source = 2\n")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+
+    def test_ledger_cache_neighbors_and_symlinks_remain_inputs(self):
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        plan = {**self.plan, "input_paths": ["node_modules"]}
+        for relative in [".cache/behavior-ledger-CgPwmk/other.mjs",
+                         ".cache/behavior-ledger-stable/worker.mjs",
+                         "example/behavior-ledger-CgPwmk/worker.mjs"]:
+            with self.subTest(relative=relative):
+                path = self.root / "node_modules" / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("one")
+                before = fingerprint(self.root, plan)
+                path.write_text("two")
+                self.assertNotEqual(before, fingerprint(self.root, plan))
+        cache = self.root / "node_modules" / ".cache" / "behavior-ledger-CgPwmk" / "worker.mjs"
+        target = self.root / "ignored.json"
+        target.write_text("one")
+        cache.symlink_to(target)
+        before = fingerprint(self.root, plan)
+        target.write_text("two")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+
+    def test_explicit_and_tracked_ledger_worker_cache_files_remain_inputs(self):
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        cache = self.root / "node_modules" / ".cache" / "behavior-ledger-CgPwmk" / "worker.mjs"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("one")
+        plan = {**self.plan, "input_paths": ["node_modules", cache.relative_to(self.root).as_posix()]}
+        before = fingerprint(self.root, plan)
+        cache.write_text("two")
+        self.assertNotEqual(before, fingerprint(self.root, plan))
+        self.git("add", "--force", "node_modules")
+        before = fingerprint(self.root, {**self.plan, "input_paths": ["node_modules"]})
+        cache.write_text("three")
+        self.assertNotEqual(before, fingerprint(self.root, {**self.plan, "input_paths": ["node_modules"]}))
+
     def test_symlink_target_changes_are_hashed(self):
         (self.root / "ignored.json").write_text("one")
         (self.root / "linked.json").symlink_to("ignored.json")
