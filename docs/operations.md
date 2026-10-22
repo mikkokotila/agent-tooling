@@ -352,3 +352,34 @@ No registration, monitor restart, database repair or placeholder PR is needed. C
 Record the human-approved configuration as a separate immutable work-item with the ordinary `scope --file SAVED_SCOPE --work-item CONFIGURATION_ID` command. Include `google_actions_configuration` with exactly `repository` (the operator fork), `authorizing_pr` (the exact owned source PR URL) and nonempty `approval_evidence` quoting the human authorization. No deployment identity or credential value is installed as a source constant. The grant allows only the integration's client-ID variable and sealed client-secret, in that one repository, for that recorded PR's exact client/session/checkout. Its retained merged owner may finish deployment preparation without reopening or rearming the PR; closed unmerged work stays denied. Other work-items and PR scope baselines remain immutable.
 
 Use `github --session SESSION --client CLIENT --cwd CHECKOUT --target AUTHORIZING_PR -- api ENDPOINT --method METHOD --input SAVED_JSON`. For `POISE_GOOGLE_CLIENT_ID`, POST `repos/APPROVED_REPOSITORY/actions/variables` to create, or PATCH the same path plus `/POISE_GOOGLE_CLIENT_ID` to update, with exactly `name` and `value`. For `POISE_GOOGLE_CLIENT_SECRET`, PUT `repos/APPROVED_REPOSITORY/actions/secrets/POISE_GOOGLE_CLIENT_SECRET` with exactly GitHub's `key_id` and base64 `encrypted_value`. Seal with that fork's current public key first; never put plaintext secrets in the JSON, arguments or logs. Only a saved JSON file is accepted and the admitted bytes are forwarded through stdin. Other repositories, keys, settings, fields and method overrides stay denied. The write receipt contains only identity and a payload hash. Read back variable/secret metadata before releasing the existing deployment hold; a merge or successful API exit alone is not persistence proof. This capability authorizes no new grant, workflow dispatch or deployment.
+
+### Owned Origo hosted source-suite fallback
+
+Release0.1.62 permits the current owner of an open `Vaquum/Origo` PR to dispatch only
+`.github/workflows/pr_checks_tests.yml` with `runner=github`. This uses the existing
+full source-native suite when its self-hosted runner is unavailable; no check,
+workflow, runner resource or repository setting is changed. The exact recorded
+client and checkout must be clean at the same-repository PR head and current main
+ancestry. The workflow file at both immutable base and head must match reviewed
+Git blob `6bf211fb8bbc65040bd5848040e36f2c2d463134`.
+
+Save JSON containing exactly `{"ref":"CURRENT_PR_HEAD_BRANCH","inputs":{"runner":"github"}}`.
+Then use the ordinary owned target and exact API form:
+
+```sh
+caller-pr-gates github --session SESSION --client CLIENT --cwd OWNED_CHECKOUT \
+  --target https://github.com/Vaquum/Origo/pull/NUMBER -- \
+  api repos/Vaquum/Origo/actions/workflows/pr_checks_tests.yml/dispatches \
+  --method POST --input SAVED_JSON
+```
+
+The admitted bytes are frozen before the write. Other inputs, refs, workflows,
+repositories, methods, headers, stdin bodies and foreign owners remain denied.
+The command fixes the internal GitHub API version to `2026-03-10` and requires the
+[dispatch response's exact workflow-run ID and URLs](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success requires that returned
+run's exact head, branch, repository, workflow and dispatch event, followed by
+unchanged PR/checkout/owner readback. Missing or raced outcomes record incomplete
+evidence and refuse automatic retry; inspect the actual dispatch outcome before
+another invocation. A concurrent dispatch cannot substitute its run identity.
+A verified dispatch receipt establishes the run identity, never CI success,
+review completion or merge readiness. All existing PR gates remain required.
