@@ -23,7 +23,7 @@ A failed private Python checker can be corrected through an explicit `correction
 
 Narrow validation preflights pin actual lifecycle, head and target ancestry while allowing unrelated comment timestamps to change. Full review and completion freshness remain unchanged.
 
-Dependency-directory validation fingerprints exclude Vitest's regenerated timing records. Dependency code, tracked files and explicitly declared cache files remain inputs.
+Dependency-directory validation fingerprints exclude Vitest's regenerated timing records and Poise's generated `node_modules/.cache/behavior-ledger-<six alphanumeric characters>/worker.mjs` bundles. Dependency code, source, tracked files, symlinks and explicitly declared cache files remain inputs.
 
 The GitHub gateway can create the exact private personal repository authorized in the recorded scope (`repository_creation`: `full_name`, `visibility=private`, `approval_evidence`). It admits only `repo create OWNER/NAME --private [--description TEXT]`, verifies the authenticated owner and reads back identity and visibility. Clone, push, public creation and other repository mutations remain outside this operation. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 
