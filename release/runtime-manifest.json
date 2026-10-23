@@ -2,7 +2,7 @@
   "gate_files": {
     "caller_pr_gates/__init__.py": "1c7f88a74f84ea6e22e5b27429a20b3f03e61086aa31a043d90301461340c166",
     "caller_pr_gates/checklist.py": "e4147517383c5180621ee1f226b2c427402a0abc5c7c22fd8f8b7d2d09b35744",
-    "caller_pr_gates/cli.py": "7ae7899b60f04db3441a793334d60b7d1f7ed983a7f72ff4b245c27bf9fac338",
+    "caller_pr_gates/cli.py": "ff8d981c149b2873b4ce30af4d4d55e6755adc41e899254489158b2114837fb9",
     "caller_pr_gates/closure.py": "6a710b15fb36b9d3d2611caa20eafe0d63637135cab471032ce55c4bea6d692f",
     "caller_pr_gates/collections.py": "5fbdd87d38f43d8f6219f26c813865cbda742535de72b75acb9719aa105922bd",
     "caller_pr_gates/copilot.py": "64dd5dc0a566a9337d55d977cf3e5798f4007e1452e1f33a21b265c296a2355a",
@@ -31,9 +31,10 @@
     "caller_pr_gates/transport.py": "35269b7c4e1ff47745cd56066c3371d73aa99d3b5838cc5b497f376ae9e2bb47",
     "caller_pr_gates/troubleshooting.py": "23c0be4b5d71f9021ce5b4ade351e88b09289a3bb78552f1d8375dd445805f1d",
     "caller_pr_gates/turns.py": "08f5af03f48dc977d0d0486726445c9dd646b9c44a31aa66e8802ebf5946833e",
-    "caller_pr_gates/workflow.py": "5320010397313af636e66f379238714a0e4178824dffaf0b7c2ce6b5bf42f194"
+    "caller_pr_gates/workflow.py": "5320010397313af636e66f379238714a0e4178824dffaf0b7c2ce6b5bf42f194",
+    "caller_pr_gates/limen_docs_recovery.py": "b76a5f6f9cde185ab8927ebd283abe17713c93ac8bf304e0b73f36a301957e54"
   },
   "known_defects": [],
-  "runtime_version": "1.7.70",
-  "version": "0.1.70"
+  "runtime_version": "1.7.71",
+  "version": "0.1.71"
 }

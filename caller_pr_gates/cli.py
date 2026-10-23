@@ -782,6 +782,11 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            from .limen_docs_recovery import dispatch as dispatch_limen_docs
+            docs_recovery = dispatch_limen_docs(args, store, sid, repo, num, issue, endpoint, method, argv, github_run)
+            if docs_recovery is not None:
+                print(json.dumps(docs_recovery))
+                return None
             from .governance import configure as configure_governance
             governance = configure_governance(args, store, sid, repo, num, issue, endpoint, method, argv, github_run)
             if governance is not None:
