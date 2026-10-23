@@ -36,6 +36,7 @@ def context(tmp_path, monkeypatch):
     head = git('rev-parse', 'HEAD')
     home = tmp_path / 'codex'; (home / 'sessions').mkdir(parents=True)
     monkeypatch.setenv('CODEX_HOME', str(home))
+    monkeypatch.setenv('CODEX_THREAD_ID', NEW)
     quote = 'Repair all open PRs by this contributor in this repository.'
     raw = json.dumps(dict(type='response_item', payload=dict(type='message', role='user',
                      content=[dict(type='input_text', text=quote)])))
@@ -168,3 +169,32 @@ def test_running_validation_is_scoped_to_the_transferred_pr(context,running_numb
 def test_general_registration_does_not_transfer(context):
     context['store'].register(NEW,'codex',REPO,1,str(context['new']))
     assert watch(context['store'])['owner_session']==OLD
+
+
+@pytest.mark.parametrize('actual',[None,OLD,'33333333-3333-4333-8333-333333333333'])
+def test_session_argument_cannot_impersonate_native_requester(context,monkeypatch,actual):
+    if actual is None:monkeypatch.delenv('CODEX_THREAD_ID')
+    else:monkeypatch.setenv('CODEX_THREAD_ID',actual)
+    async def unread(path):
+        pytest.fail('Foreign or missing native requester must fail before reading another root grant/transcript')
+    with pytest.raises(ValueError,match='native'):
+        transfer(context,reader=unread)
+    assert watch(context['store'])['owner_session']==OLD
+
+
+def test_recorded_native_child_can_act_for_its_existing_root(context,monkeypatch):
+    child='33333333-3333-4333-8333-333333333333'
+    context['store'].record_session(child,'codex',str(context['new']),parent_session=NEW)
+    monkeypatch.setenv('CODEX_THREAD_ID',child)
+    receipt=transfer(context)
+    assert receipt['native_requester']==child
+    assert watch(context['store'])['owner_session']==NEW
+
+
+@pytest.mark.parametrize('author',['dependabot[bot]','github-actions[bot]'])
+def test_exact_github_app_author_is_eligible(context,author):
+    scope=deepcopy(context['scope']);scope['pr_ownership_transfer']['author']=author
+    context['store'].record_scope(NEW,scope,work_item='app-author')
+    context['pull']['user']['login']=author
+    transfer(context,'app-author')
+    assert watch(context['store'])['owner_session']==NEW

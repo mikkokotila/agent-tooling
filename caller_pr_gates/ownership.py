@@ -13,6 +13,21 @@ import uuid
 from .publication import exact_source, source
 
 
+def _requester(store, sid, db=None):
+    actual = os.environ.get('CODEX_THREAD_ID')
+    if not actual:
+        raise ValueError('Transfer requires the actual native CODEX_THREAD_ID requester')
+    uuid.UUID(actual)
+    if db is None:
+        with store._connect() as connection:
+            return _requester(store, sid, connection)
+    session = db.execute('SELECT client FROM sessions WHERE session_id=?', (actual,)).fetchone()
+    if (not session or session['client'] != 'codex'
+            or store._root(actual, store._parents(db)) != sid):
+        raise ValueError('Transfer destination is not the actual native requesting root')
+    return actual
+
+
 def _identity(value):
     if not isinstance(value, dict) or set(value) != {'session_id', 'client', 'cwd'}:
         raise ValueError('Transfer needs exact session, client and checkout identities')
@@ -93,7 +108,7 @@ def _grant(store, sid, repository, number, client, cwd, work_item):
             'repository', 'number', 'author', 'head_sha', 'from', 'to', 'human_messages'}
             or grant['repository'] != repository or grant['number'] != number
             or type(grant['number']) is not int
-            or not isinstance(grant['author'], str) or not re.fullmatch(r'[A-Za-z0-9-]+', grant['author'])
+            or not isinstance(grant['author'], str) or not re.fullmatch(r'[A-Za-z0-9-]+(?:\[bot\])?', grant['author'])
             or not isinstance(grant['head_sha'], str) or not re.fullmatch(r'[0-9a-f]{40}', grant['head_sha'])):
         raise ValueError('Transfer needs an immutable grant for this exact PR, author and head')
     before, after = _identity(grant['from']), _identity(grant['to'])
@@ -146,6 +161,7 @@ def _idle(db, repository, number, watch):
 
 async def transfer(store, sid, repository, number, client, cwd, work_item, *, reader=None):
     """No remote mutation, chat wakeup or validation credit is created here."""
+    requester = _requester(store, sid)
     scope, grant = _grant(store, sid, repository, number, client, cwd, work_item)
     if reader is None:
         from .transport import GitHubClient
@@ -163,6 +179,8 @@ async def transfer(store, sid, repository, number, client, cwd, work_item, *, re
     _live(await reader(path), grant)
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
+        if _requester(store, sid, db) != requester:
+            raise ValueError('Native requester identity changed before transfer')
         current_scope = store._scope_row(db, sid, work_item)
         if not current_scope or json.loads(current_scope['scope']) != scope:
             raise ValueError('Human transfer grant changed during collection')
@@ -188,6 +206,7 @@ async def transfer(store, sid, repository, number, client, cwd, work_item, *, re
             raise ValueError('Native archive or checkout identity changed before transfer')
         _human_messages(target_native, grant['human_messages'], scope.get('approval_evidence'))
         receipt = dict(repository=repository, number=number, head_sha=grant['head_sha'],
+                       native_requester=requester,
                        previous_watch=dict(watch), previous_destination_scope=json.loads(previous_scope['scope']) if previous_scope else None,
                        original_scope=json.loads(original_scope['scope']), grant=grant, work_item=work_item,
                        approval_evidence=scope['approval_evidence'], transferred_at=time.time(), completion_verified=False)
