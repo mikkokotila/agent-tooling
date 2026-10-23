@@ -737,6 +737,11 @@ def gateway(args, store):
     argv = args.arguments
     admitted_api_body = None
     if argv and argv[0] == '--': argv = argv[1:]
+    if getattr(args, 'withdrawn_reason', None) is not None:
+        require_owner()
+        from .withdrawal import close
+        print(json.dumps(close(args, store, sid, argv, github_run)))
+        return None
     if argv[:2] == ['repo', 'create']:
         return create_scoped_repository(args, store, argv)
     if len(argv) < 2 or argv[0] not in {'pr', 'issue', 'api'}:
@@ -1089,7 +1094,7 @@ def main():
     p = owned('qualify-successor'); p.add_argument('--pr', required=True); p.add_argument('--successor', required=True)
     p.add_argument('--cwd', required=True, help='Exact recorded final qualification checkout')
     p.add_argument('--file', required=True, help='Explicit coverage of the original scope and declaration differences')
-    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('--withdrawn-reason',help='Withdraw only this canonically owned PR, with a recorded public reason and no completion credit'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())
