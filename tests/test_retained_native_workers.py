@@ -52,6 +52,7 @@ def native(local, tmp_path, monkeypatch):
     head = git(root, 'rev-parse', 'HEAD')
     snap.update(repository=REPO, head_sha=head, head_sha_after=head, commit_shas=[head], collected_at=time.time(),
                 **fresh_branch(head, base=head), **closing_link(head, REPO, 11))
+    snap['freshness_policy'] = dict(repository=REPO, head_sha=head, base_ref=snap['base_ref'], required=True)
     store.set_snapshot(REPO, 1, snap, evaluate_pr(snap, []))
     plan.clear()
     plan.update(checks=[dict(id='app-check', argv=['npm', 'run', 'check'], reason='Full application gate')],
