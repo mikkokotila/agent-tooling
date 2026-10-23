@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "muse_control": {
+      "command": "python3",
+      "args": [
+        "${PLUGIN_ROOT}/bridge.py",
+        "mcp"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}
