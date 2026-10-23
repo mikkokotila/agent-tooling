@@ -9,11 +9,9 @@ import os
 from pathlib import Path
 import plistlib
 import secrets
-import signal
 import socket
 import subprocess
 import sys
-import time
 import tomllib
 
 
@@ -181,8 +179,8 @@ def backup_path(config, state):
     return state / 'config-backups' / (identity + '.toml')
 
 
-def install(root):
-    """Run after the controller runtime is installed at a stable local path."""
+def prepare_install(root):
+    """Prepare the service while the installer owns the daemon lifetime lock."""
     import bridge
     state = bridge.STATE
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -190,17 +188,6 @@ def install(root):
     gateway = state / 'gateway.json'
     if not gateway.exists():
         atomic(gateway, json.dumps({'port': 0, 'key': secrets.token_urlsafe(32)}).encode())
-    # Stop only this bridge's daemon, retaining every durable Muse session.
-    try:
-        status = bridge.call_tool('muse_status', {})
-        os.kill(status['pid'], signal.SIGTERM)
-        deadline = time.monotonic() + 15
-        while bridge.SOCKET.exists() and time.monotonic() < deadline:
-            time.sleep(.1)
-        if bridge.SOCKET.exists():
-            raise RuntimeError('Existing bridge did not stop; provider installation aborted')
-    except (ConnectionError, FileNotFoundError):
-        pass
     label = 'local.muse-bridge-for-codex'
     agent = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
     domain = 'gui/' + str(os.getuid())
@@ -211,6 +198,14 @@ def install(root):
                                  'WorkingDirectory': str(root),
                                  'StandardOutPath': str(state / 'daemon.log'),
                                  'StandardErrorPath': str(state / 'daemon.log')}))
+    return domain, agent
+
+
+def install(root, service):
+    """Activate only after the installer releases the daemon lifetime lock."""
+    import bridge
+    state = bridge.STATE
+    domain, agent = service
     subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], check=True)
     bridge.ensure_daemon()
     with socket.socket(socket.AF_UNIX) as connection:

@@ -8,6 +8,7 @@ The guard also blocks Muse's built-in helpers when they request a lower effort; 
 
 Requires Python 3.11+, Codex CLI, and authenticated Muse 1.4.11 with the verified MSP schema. A changed Muse protocol stops startup until reverified.
 Install tools: `python3 install.py`. Add the selector provider: `python3 install.py --provider`, then restart Codex.
+Both install modes refuse while the persistent controller holds its lifetime lock, before changing runtime files, the CLI wrapper or Codex settings. Let managed sessions finish, stop that controller, then retry; installation never stops live Muse work automatically. The lock stays held through publication and provider service preparation, and is released before the new daemon starts. A successful reinstall uses the new runtime on its next controller start, rather than silently keeping old code in memory.
 Check health: `muse-control call muse_status`.
 Run offline checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`.
 
