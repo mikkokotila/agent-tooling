@@ -74,6 +74,26 @@ def release_proof(cwd, read):
         raise ValueError('The exact native-only release marker is required')
 
 
+def deployment_inventory(read, *, allow_target_active=False):
+    first = read(f'repos/{REPOSITORY}/actions/workflows/deploy_on_merge.yml/runs?per_page=100&page=1')
+    total, values = first.get('total_count'), first.get('workflow_runs')
+    if type(total) is not int or not 0 < total <= 200 or not isinstance(values, list):
+        raise ValueError('Complete deployment inventory exceeds its bound or is absent')
+    if total > 100:
+        second = read(f'repos/{REPOSITORY}/actions/workflows/deploy_on_merge.yml/runs?per_page=100&page=2')
+        if second.get('total_count') != total or not isinstance(second.get('workflow_runs'), list):
+            raise ValueError('Deployment inventory changed while paged')
+        values = values + second['workflow_runs']
+    if (len(values) != total or any(not isinstance(item, dict) or type(item.get('id')) is not int
+                                   or item['id'] < 1 for item in values)
+            or len({item['id'] for item in values}) != total
+            or sum(item['id'] == RUN for item in values) != 1
+            or any(item['id'] > RUN or (item['id'] != RUN or not allow_target_active)
+                   and item.get('status') != 'completed' for item in values)):
+        raise ValueError('A newer, active, missing or ambiguous deployment prevents retirement continuation')
+    return values
+
+
 def retry(args, store, sid, argv, run):
     if args.target != PR or argv != ['api', ENDPOINT, '--method', 'POST']:
         raise ValueError('Only the exact bodyless latest Origo608 continuation retry is admitted')
@@ -120,24 +140,6 @@ def retry(args, store, sid, argv, run):
                 and value.get('path') == WORKFLOW
                 and (value.get('repository') or {}).get('full_name') == REPOSITORY)
 
-    def inventory(*, after=False):
-        first = read(f'repos/{REPOSITORY}/actions/workflows/deploy_on_merge.yml/runs?per_page=100&page=1')
-        total, values = first.get('total_count'), first.get('workflow_runs')
-        if type(total) is not int or not 0 < total <= 200 or not isinstance(values, list):
-            raise ValueError('Complete deployment inventory exceeds its bound or is absent')
-        if total > 100:
-            second = read(f'repos/{REPOSITORY}/actions/workflows/deploy_on_merge.yml/runs?per_page=100&page=2')
-            if second.get('total_count') != total or not isinstance(second.get('workflow_runs'), list):
-                raise ValueError('Deployment inventory changed while paged')
-            values = values + second['workflow_runs']
-        if (len(values) != total or any(not isinstance(item, dict) or type(item.get('id')) is not int
-                                       or item['id'] < 1 for item in values)
-                or len({item['id'] for item in values}) != total
-                or sum(item['id'] == RUN for item in values) != 1
-                or any(item['id'] > RUN or (item['id'] != RUN or not after)
-                       and item.get('status') != 'completed' for item in values)):
-            raise ValueError('A newer, active, missing or ambiguous deployment prevents retry')
-
     def prerequisites():
         pr = read(f'repos/{REPOSITORY}/pulls/608')
         head, base = pr.get('head') or {}, pr.get('base') or {}
@@ -161,7 +163,7 @@ def retry(args, store, sid, argv, run):
                 or value.get('conclusion') != 'failure' or type(value.get('run_attempt')) is not int
                 or value['run_attempt'] != 1 or (value.get('repository') or {}).get('id') != repository['id']):
             raise ValueError('Only the original failed push deployment attempt is retryable')
-        inventory()
+        deployment_inventory(read)
 
     prerequisites()
     sources = source_proof(args.cwd, MERGE)
@@ -234,7 +236,7 @@ def retry(args, store, sid, argv, run):
         if (owner() != frozen_owner
                 or read(f'repos/{REPOSITORY}/git/ref/heads/main').get('object', {}).get('sha') != MERGE):
             raise ValueError('Deployment source or owner changed during retry')
-        inventory(after=True)
+        deployment_inventory(read, allow_target_active=True)
     except BaseException as error:
         store.audit(EVENT + 'incomplete', {**receipt, 'write_requests': writes,
                                           'error_type': type(error).__name__})
