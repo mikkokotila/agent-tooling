@@ -6,6 +6,7 @@ it verifies upstream TLS normally. No global config, certificates or tokens
 are written. The private socket and child-only config disappear on return.
 """
 from __future__ import annotations
+import hashlib
 import http.server
 import json
 import os
@@ -27,6 +28,34 @@ def local(command):
 
 def credentials():return local(['auth','token'])
 def settings():return dict(line.split('=',1) for line in local(['config','list']).splitlines() if '=' in line)
+
+OWNER_LOGIN='mikkokotila'
+
+def query_login():return local(['api','user','--jq','.login'])
+
+def token_login(token=None):
+    """Login behind the admitted token, cached per token so writes add no lookup per request."""
+    token=credentials() if token is None else token
+    key=hashlib.sha256(token.encode()).hexdigest()
+    directory=Path(os.environ.get('CALLER_PR_GATES_STATE_DIR') or Path.home()/'.local/state/caller-pr-gates')
+    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+    path=directory/'github-identity.json'
+    try:cached=json.loads(path.read_text())
+    except (OSError,ValueError):cached={}
+    if not isinstance(cached,dict):cached={}
+    login=cached.get(key)
+    if isinstance(login,str) and login:return login
+    try:login=query_login()
+    except Exception as error:raise RuntimeError('Authenticated account lookup failed; refusing the GitHub write without a verified owner identity') from error
+    if not isinstance(login,str) or not login:raise RuntimeError('Authenticated account lookup failed; refusing the GitHub write without a verified owner identity')
+    cached[key]=login
+    path.write_text(json.dumps(cached,sort_keys=True));path.chmod(0o600)
+    return login
+
+def require_owner():
+    login=token_login()
+    if login.lower()!=OWNER_LOGIN.lower():
+        raise ValueError(f"GitHub writes require the owner identity '{OWNER_LOGIN}'; the active token belongs to '{login}'. Switch gh to the owner account (gh auth switch --user {OWNER_LOGIN}) and retry.")
 
 class UnixServer(socketserver.ThreadingMixIn,http.server.HTTPServer):
     address_family=socket.AF_UNIX;daemon_threads=True
