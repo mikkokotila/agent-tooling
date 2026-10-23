@@ -51,7 +51,9 @@ class InstallTests(unittest.TestCase):
 
     def test_running_controller_refuses_both_modes_without_mutation_or_signal(self):
         code = ('import fcntl,os,pathlib,sys; f=open(sys.argv[1],"a"); '
-                'fcntl.flock(f,fcntl.LOCK_EX); pathlib.Path(sys.argv[2]).write_text(str(os.getpid())); sys.stdin.read()')
+                'fcntl.flock(f,fcntl.LOCK_EX); ready=pathlib.Path(sys.argv[2]); '
+                'temporary=ready.with_suffix(".tmp"); temporary.write_text(str(os.getpid())); '
+                'temporary.replace(ready); sys.stdin.read()')
         lock = self.state / 'daemon.lock'
         ready = self.home / 'lock-ready'
         process = subprocess.Popen([sys.executable, '-c', code, str(lock), str(ready)], stdin=subprocess.PIPE,
