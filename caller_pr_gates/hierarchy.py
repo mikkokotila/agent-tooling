@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import subprocess
 
-from .ghrelay import run as github_run
+from .ghrelay import run as github_run, require_owner
 
 QUERY = '''query($owner:String!,$repo:String!,$parent:Int!,$child:Int!){
   repository(owner:$owner,name:$repo){
@@ -57,6 +57,7 @@ async def link(store, sid, parent_url, child_url, *, client=None):
             raise ValueError('Child already has a different parent; no replacement performed')
         return dict(parent=expected_parent, child=expected_child, status='already_linked')
 
+    require_owner()
     result = github_run(['gh', 'api', f'repos/{repo}/issues/{parent}/sub_issues', '--method', 'POST',
                          '-F', f'sub_issue_id={nodes["child"]["fullDatabaseId"]}', '-F', 'replace_parent=false'],
                         runner=subprocess.run, text=True, capture_output=True, timeout=30)

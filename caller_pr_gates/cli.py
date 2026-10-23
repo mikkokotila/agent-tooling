@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from .store import Store
-from .ghrelay import run as github_run
+from .ghrelay import run as github_run, require_owner
 
 REF = re.compile(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(pull|issues)/(\d+)')
 DOC = re.compile(r'\b(?:PRD|product requirements document|slice(?:\s+\d+)?)\b', re.I)
@@ -708,6 +708,7 @@ def create_scoped_repository(args, store, argv):
              and bool(approved['approval_evidence'].strip()))
     if not valid:
         raise ValueError('Repository creation requires the exact approved private repository; clone, push and other repository operations are not admitted')
+    require_owner()
     actor = github_run(['gh', 'api', 'user'], runner=subprocess.run, cwd=args.cwd,
                        text=True, capture_output=True, timeout=30)
     if actor.returncode:
@@ -750,6 +751,8 @@ def gateway(args, store):
     target_info = _gateway_target(args, argv) if mutation else None
     if target_info and (len(argv) < 3 or not REF.fullmatch(argv[2].rstrip('/'))):
         argv = [*argv[:2], target_info[0], *argv[2:]]
+    if creation or mutation:
+        require_owner()
     if argv[0] == 'api':
         endpoint, method, field_values, input_file = _api_request(argv)
         fields = bool(field_values) or input_file is not None
@@ -773,6 +776,7 @@ def gateway(args, store):
             # A read-method spelling cannot bypass this operation's frozen-body admission.
             api_write = True
         if api_write:
+            require_owner()
             release = re.fullmatch(r'repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/([1-9][0-9]*)', endpoint)
             if release:
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
@@ -1132,6 +1136,7 @@ def main():
             if any(str(o['id']) in member_ids and not o['handled'] for o in handling['evidence'].get('obligations',[])):
                 raise ValueError('REVIEW_HANDLED FAIL: record a real fix/nonfix for every comment in this thread before resolving')
             query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}'
+            require_owner()
             result=github_run(['gh','api','graphql','-f','query='+query,'-f','id='+args.thread],runner=subprocess.run,text=True,capture_output=True,timeout=30)
             if result.returncode: raise RuntimeError(result.stderr.strip())
             output=json.loads(result.stdout)
