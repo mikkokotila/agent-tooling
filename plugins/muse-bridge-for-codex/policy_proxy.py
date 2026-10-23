@@ -386,7 +386,7 @@ class PolicyProxy:
             if native.get('authorization', '').startswith('Bearer '):
                 with self._lock:
                     self._native_headers = native
-                self._auth_ready.set()
+                    self._auth_ready.set()
         headers.update({"Content-Type": "application/json", "Content-Length": str(len(body)),
                         "Accept-Encoding": "identity", "Connection": "close"})
         connection = None
@@ -403,7 +403,7 @@ class PolicyProxy:
             if client and response.status == 401:
                 with self._lock:
                     self._native_headers = None
-                self._auth_ready.clear()
+                    self._auth_ready.clear()
             if 300 <= response.status < 400:
                 raise _PolicyError("upstream_redirect_not_allowed")
             encoding = response.getheader("Content-Encoding", "identity").lower().strip()

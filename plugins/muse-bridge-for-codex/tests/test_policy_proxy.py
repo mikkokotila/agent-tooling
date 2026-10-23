@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 
@@ -142,6 +143,38 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(401, self.request()[0])
         self.assertFalse(self.proxy.credentials_ready())
         self.assertIsNone(self.proxy._native_headers)
+
+    def test_native_capture_cannot_publish_ready_after_concurrent_gateway_expiry(self):
+        self.proxy._gateway = {'key': 'private-codex-key', 'port': self.base.port}
+        self.assertEqual(200, self.request()[0])
+        native_base = self.base
+        gateway_base = urlsplit(self.proxy.gateway_url())
+        original_set = self.proxy._auth_ready.set
+        expiries = []
+        refreshes = []
+        self.proxy.refresh_credentials = lambda: refreshes.append(True)
+
+        def publish_ready():
+            # Force the competing 401 only when capture permits an interleaving.
+            # The locked publication cannot admit it until its pair is complete.
+            if not self.proxy._lock.locked():
+                self.base = gateway_base
+                self.factory.response = Response(status=401)
+                try:
+                    expiries.append(self.request()[0])
+                finally:
+                    self.base = native_base
+                    self.factory.response = Response()
+            original_set()
+
+        with patch.object(self.proxy._auth_ready, 'set', side_effect=publish_ready):
+            self.assertEqual(200, self.request(headers={'Authorization': 'Bearer NEW NATIVE'})[0])
+        self.base = gateway_base
+        status = self.request(headers={'Authorization': 'Bearer UNTRUSTED'})[0]
+        self.assertEqual(200, status, f'gateway expired during capture: {expiries}; refreshes: {refreshes}')
+        self.assertTrue(self.proxy.credentials_ready())
+        self.assertEqual('Bearer NEW NATIVE', self.factory.requests[-1][3]['authorization'])
+        self.assertEqual([], refreshes)
 
     def test_model_missing_normalized_or_alternate_never_reaches_upstream(self):
         for model in (None, "muse-spark-1.3", "muse-spark-1.2-contributor", "other"):
