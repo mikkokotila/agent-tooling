@@ -90,13 +90,20 @@ def _graphql_code(document):
             index=end if stop>=end else stop+1
             out.append('\n')
         elif char=='"':
-            triple=document.startswith('"""',index)
-            index+=3 if triple else 1;closed=False
-            while index<end:
-                if document[index]=='\\':index+=2;continue
-                if triple and document.startswith('"""',index):index+=3;closed=True;break
-                if not triple and document[index]=='"':index+=1;closed=True;break
-                index+=1
+            if document.startswith('"""',index):
+                # A backslash before the delimiter escapes it even when that
+                # backslash is itself escaped; only a bare delimiter closes.
+                index+=3;closed=False
+                while index<end:
+                    if document[index]=='\\' and document.startswith('"""',index+1):index+=4;continue
+                    if document.startswith('"""',index):index+=3;closed=True;break
+                    index+=1
+            else:
+                index+=1;closed=False
+                while index<end:
+                    if document[index]=='\\':index+=2;continue
+                    if document[index]=='"':index+=1;closed=True;break
+                    index+=1
             if not closed:return None
             out.append('""')
         else:out.append(char);index+=1
@@ -111,6 +118,10 @@ def _graphql_read_only(body):
     code=_graphql_code(document)
     if code is None:return False
     for match in re.finditer(r'\b(mutation|subscription)\b',code):
+        # An operation keyword is never preceded by another operation keyword;
+        # that position holds the operation's name instead. A colon after the
+        # keyword is a field alias. Anything else is a real operation.
+        if re.search(r'\b(query|mutation|subscription)[\s,]*$',code[:match.start()]):continue
         if not re.match(r'[\s,]*:',code[match.end():]):return False
     return True
 
