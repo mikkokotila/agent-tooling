@@ -419,6 +419,118 @@ def _owned_slice_sweep_allowed(store, sid, repo, number, issue, endpoint, method
     return True
 
 
+def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, method, argv):
+    """Run only the reviewed hosted source suite for the exact owned Origo head."""
+    workflow = '.github/workflows/pr_checks_tests.yml'
+    trusted_blob = '6bf211fb8bbc65040bd5848040e36f2c2d463134'
+    api_version = '2026-03-10'
+    expected = 'repos/Vaquum/Origo/actions/workflows/pr_checks_tests.yml/dispatches'
+    if repo != 'Vaquum/Origo' or issue or endpoint != expected:
+        return None
+    if (method != 'POST' or len(argv) != 6
+            or argv != ['api', expected, '--method', 'POST', '--input', argv[-1]]
+            or argv[-1] == '-'):
+        raise ValueError('Origo CI dispatch requires the exact saved-file API request')
+    path = Path(argv[-1])
+    if not path.is_absolute(): path = Path(args.cwd) / path
+    payload = json.loads(path.read_text())
+    from .workflow import owned_pr
+    from .github import collect_validation
+    from .policy import branch_freshness_gate
+    from .publication import source, exact_source
+    owner = owned_pr(store, sid, repo, number)
+
+    def current_owner():
+        with store._connect() as db:
+            root = store._root(sid, store._parents(db))
+            row = db.execute("SELECT cwd,client FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state='open'", (repo, number, root)).fetchone()
+            return (row is not None and row['client'] == args.client
+                    and Path(row['cwd']).resolve() == Path(args.cwd).resolve())
+
+    if not current_owner():
+        raise ValueError('Origo CI dispatch requires the current owner and exact checkout')
+    local = source(args.cwd, stable=True)
+    if not exact_source(owner, local):
+        raise ValueError('Origo CI dispatch requires the clean owned repository checkout')
+    snapshot = asyncio.run(collect_validation(repo, number))
+    head, branch = snapshot.get('head_sha'), local['branch']
+    if (snapshot.get('state') != 'open' or snapshot.get('merged') is not False
+            or snapshot.get('head_sha_after') != head or head != local['head']
+            or snapshot.get('head_repository') != repo or snapshot.get('base_repository') != repo
+            or snapshot.get('base_ref') != 'main'
+            or branch_freshness_gate(snapshot)['status'] != 'PASS'):
+        raise ValueError('Origo CI dispatch requires an owned same-repository fresh stable PR head')
+    frozen = {'ref': branch, 'inputs': {'runner': 'github'}}
+    if not branch or payload != frozen:
+        raise ValueError('Origo CI dispatch permits only its current head branch and runner=github')
+
+    def read(target, timeout=15):
+        result = github_run(['gh', 'api', target], runner=subprocess.run, cwd=args.cwd,
+                            capture_output=True, text=True, check=True, timeout=timeout)
+        return json.loads(result.stdout)
+
+    def same_pr(pull):
+        source_repo = (pull.get('head') or {}).get('repo') or {}
+        target_repo = (pull.get('base') or {}).get('repo') or {}
+        return (pull.get('state') == 'open' and pull.get('merged') is False
+                and pull.get('draft') is False
+                and (pull.get('head') or {}).get('ref') == branch
+                and (pull.get('head') or {}).get('sha') == head
+                and (pull.get('base') or {}).get('ref') == 'main'
+                and (pull.get('base') or {}).get('sha') == snapshot['base_sha']
+                and source_repo.get('full_name') == target_repo.get('full_name') == repo
+                and type(source_repo.get('id')) is int and source_repo['id'] > 0
+                and source_repo.get('id') == target_repo.get('id'))
+
+    for ref in (snapshot['base_sha'], head):
+        blob = read(f'repos/{repo}/contents/{workflow}?ref={ref}')
+        if blob.get('path') != workflow or blob.get('sha') != trusted_blob or blob.get('type') != 'file':
+            raise ValueError('Origo source-suite workflow differs from the reviewed trusted blob')
+    if (not same_pr(read(f'repos/{repo}/pulls/{number}'))
+            or not current_owner() or source(args.cwd, stable=True) != local):
+        raise ValueError('Origo CI owner, checkout, PR head or target changed before dispatch')
+    tag = f'caller-pr-gates/ci-{head}'
+    body = json.dumps({'ref': tag, 'inputs': {'runner': 'github'}})
+    receipt = {'session_id': sid, 'repository': repo, 'number': number,
+               'head_sha': head, 'head_ref': branch, 'dispatch_tag': tag, 'workflow': workflow,
+               'workflow_blob': trusted_blob, 'api_version': api_version,
+               'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
+    store.audit('github_origo_ci_dispatch_attempt', receipt)
+    try:
+        from .dispatch_ref import tag_ref
+        tag_ref(repo, tag, head, read, github_run, args.cwd)
+        result = github_run(['gh', 'api', expected, '--method', 'POST', '--input', '-',
+                             '--header', f'X-GitHub-Api-Version: {api_version}'],
+                            runner=subprocess.run, cwd=args.cwd, input=body,
+                            text=True, capture_output=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('GitHub did not confirm workflow dispatch')
+        dispatched = json.loads(result.stdout)
+        run_id = dispatched.get('workflow_run_id')
+        if type(run_id) is not int or run_id <= 0:
+            raise RuntimeError('GitHub did not return the dispatched workflow run identity')
+        run_path = f'repos/{repo}/actions/runs/{run_id}'
+        url = f'https://github.com/{repo}/actions/runs/{run_id}'
+        if (dispatched.get('run_url') != 'https://api.github.com/' + run_path
+                or dispatched.get('html_url') != url):
+            raise RuntimeError('GitHub dispatch response URLs do not match its run identity')
+        receipt.update(run_id=run_id, run_url=url)
+        run = read(run_path)
+        if (run.get('id') != run_id or run.get('head_sha') != head
+                or run.get('head_branch') != tag or run.get('path') != workflow
+                or run.get('event') != 'workflow_dispatch' or run.get('html_url') != url
+                or (run.get('head_repository') or {}).get('full_name') != repo):
+            raise RuntimeError('Dispatched CI run does not match the frozen owned head')
+        if (not same_pr(read(f'repos/{repo}/pulls/{number}'))
+                or not current_owner() or source(args.cwd, stable=True) != local):
+            raise RuntimeError('Origo CI owner, checkout, PR head or target changed during dispatch')
+    except Exception:
+        store.audit('github_origo_ci_dispatch_incomplete', receipt)
+        raise RuntimeError('Origo CI dispatch outcome is unverified; inspect workflow runs before any retry') from None
+    store.audit('github_origo_ci_dispatch_verified', receipt)
+    return receipt
+
+
 def _owned_ci_rerun_allowed(store, sid, repo, number, issue, endpoint, method, argv):
     """One retry of an owned current-head failed/cancelled CI run; never a review."""
     match = re.fullmatch(re.escape(f'repos/{repo}/actions/') + r'(jobs|runs)/([1-9][0-9]*)/rerun', endpoint)
@@ -670,6 +782,19 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            from .limen_release import dispatch as dispatch_limen_release
+            dispatched_release = dispatch_limen_release(args, store, sid, repo, num, issue,
+                                                        endpoint, method, argv, github_run)
+            if dispatched_release is not None:
+                print(json.dumps(dispatched_release))
+                return None
+            if endpoint == 'repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY':
+                from .origo_secret_retirement import retire
+                return retire(args, store, sid, argv, github_run)
+            dispatch = _owned_origo_ci_dispatch(args, store, sid, repo, num, issue, endpoint, method, argv)
+            if dispatch is not None:
+                print(json.dumps(dispatch))
+                return None
             if endpoint in {DOCS_ENVIRONMENT, DOCS_SECRET, DOCS_CONTEXTS}:
                 return _documentation_configuration(args, store, sid, argv, endpoint, repo, num, issue)
             allowed_reply = _api_reply_allowed(repo, num, issue, endpoint, method or 'POST', field_values, input_file)
