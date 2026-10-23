@@ -8,6 +8,8 @@ The route preserves the freshly observed conflicts, failed or pending checks and
 
 An atomic, bounded per-PR lease excludes active monitor, recovery, scoped-delivery and validation work. The source, native requester, canonical owner and remote identity are rechecked before closing. Retirement and the withdrawal receipt require closed, unmerged readback at the same head/repository/refs and unchanged local ownership/source. GitHub close offers no expected-head compare-and-set: a concurrent remote update can leave the outcome unverified. One durable attempt per head prevents replay after failures or unknown outcomes; investigate the actual state read-only. No branch deletion, reopening, API payload or extra close flags are admitted.
 
+The ordinary monitor may observe the successful close before withdrawal readback. Finalization accepts that existing retirement only while the original reservation remains within its deadline and retains its worker PID, with the same canonical owner/client/checkout and retired registration. Every retirement after the recorded attempt must prove the same closed, unmerged head with no waived gates; any intervening registration or transfer refuses this continuation. The withdrawal receipt cites the causal audit IDs and does not duplicate retirement. Missing proof, changed ownership, rearmed watches or lost reservations remain unverified.
+
 The v0.1.0 baseline was captured from the installed 1.7.0 package, not from the older scratch source named by its former release manifest.
 
 | Component | Versioned source | Live location |

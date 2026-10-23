@@ -15,7 +15,7 @@ from .publication import exact_source, source
 from .transport import GitHubClient
 
 
-def _owner(store, db, sid, repository, number, client, directory):
+def _owner(store, db, sid, repository, number, client, directory, *, retired=False):
     requester = os.environ.get('CODEX_THREAD_ID')
     if not requester:
         raise ValueError('Withdrawal requires the actual native Codex requester')
@@ -29,9 +29,9 @@ def _owner(store, db, sid, repository, number, client, directory):
     if (client != 'codex' or not session or session['client'] != client
             or not root_session or root_session['client'] != client
             or store._root(requester, parent) != sid or store._root(sid, parent) != sid
-            or not watch or watch['state'] != 'open' or watch['owner_session'] != sid
+            or not watch or watch['state'] != ('closed' if retired else 'open') or watch['owner_session'] != sid
             or watch['client'] != client or watch['cwd'] != directory
-            or not registered or registered['status'] != 'active'
+            or not registered or registered['status'] != ('retired_closed' if retired else 'active')
             or registered['client'] != client or registered['cwd'] != directory):
         raise ValueError('Withdrawal requires the actual canonical root owner, client and exact checkout')
     return {key: watch[key] for key in ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')} | {
@@ -96,16 +96,32 @@ def _claim(store, sid, pin, receipt):
         db.execute('UPDATE pr_watch SET lease_until=?,worker_pid=? WHERE repository=? AND number=?',
                    (deadline, os.getpid(), pin['repository'], pin['number']))
         store._audit(db, 'pr_withdrawal_attempt', receipt)
-        return deadline
+        return deadline, db.execute('SELECT last_insert_rowid()').fetchone()[0]
 
 
-def _held(store, db, sid, pin, deadline):
-    if _owner(store, db, sid, pin['repository'], pin['number'], pin['client'], pin['cwd']) != pin:
-        raise ValueError('Withdrawal lost its exact canonical owner')
-    row = db.execute('SELECT worker_pid,lease_until FROM pr_watch WHERE repository=? AND number=?',
+def _held(store, db, sid, pin, deadline, *, attempt=None, head=None):
+    row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?',
                      (pin['repository'], pin['number'])).fetchone()
-    if row['worker_pid'] != os.getpid() or row['lease_until'] != deadline or deadline <= time.time():
+    retired = attempt is not None and row is not None and row['state'] == 'closed'
+    expected = dict(pin, state='closed') if retired else pin
+    if _owner(store, db, sid, pin['repository'], pin['number'], pin['client'], pin['cwd'], retired=retired) != expected:
+        raise ValueError('Withdrawal lost its exact canonical owner')
+    if row['worker_pid'] != os.getpid() or row['lease_until'] != (0 if retired else deadline) or deadline <= time.time():
         raise ValueError('Withdrawal lost its reserved owner lease')
+    if not retired:
+        return []
+    # Normal monitoring may observe our successful close before readback. It
+    # clears the lease deadline but retains the worker PID. Accept only that
+    # causally proved retirement, never a rearmed/replaced watch or lost lease.
+    history = [dict(event) for event in db.execute('''SELECT id,event,fields FROM audit WHERE id>?
+        AND event IN ('pr_monitor_retired','pr_registered','pr_owner_transferred')
+        AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=? ORDER BY id''',
+        (attempt, pin['repository'], pin['number']))]
+    if not history or any(event['event'] != 'pr_monitor_retired'
+            or (fields := json.loads(event['fields'])).get('state') != 'closed'
+            or fields.get('head_sha') != head or fields.get('gates_waived') is not False for event in history):
+        raise ValueError('Withdrawal lacks matching causal monitor retirement evidence')
+    return [event['id'] for event in history]
 
 
 def close(args, store, sid, argv, run):
@@ -136,7 +152,8 @@ def close(args, store, sid, argv, run):
     receipt = dict(pin, **identity, reason=reason.strip(), observed_gates=gates,
                    unresolved_gates=[g for g in gates if g['status'] != 'PASS'],
                    evidence_collected_at=snapshot['collected_at'], completion_verified=False, gates_waived=False)
-    deadline = _claim(store, sid, pin, receipt)
+    deadline, attempt = _claim(store, sid, pin, receipt)
+    receipt['attempt_audit_id'] = attempt
     try:
         before = asyncio.run(asyncio.wait_for(client.get(f'/repos/{repository}/pulls/{number}'), 20))
         if _identity(before, repository, number, local['head']) != identity:
@@ -155,18 +172,24 @@ def close(args, store, sid, argv, run):
             raise ValueError('Withdrawal readback identity changed; closure is unverified')
         with store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            _held(store, db, sid, pin, deadline)
+            retired = _held(store, db, sid, pin, deadline, attempt=attempt, head=local['head'])
             if source(directory, stable=True) != local:
                 raise ValueError('Withdrawal checkout changed before retirement')
             # Commit ordinary unmerged retirement and its ownership proof in
             # one transaction; a replaced watch must never be retired here.
-            db.execute('''UPDATE pr_watch SET state='closed',branch=?,event_id=NULL,payload=NULL,
-                delivery_state=NULL,error=NULL,lease_until=0,worker_pid=NULL,terminal_notice=0,updated_at=?
-                WHERE repository=? AND number=?''', (identity['head_ref'], time.time(), repository, number))
-            db.execute("UPDATE prs SET status='retired_closed',updated_at=? WHERE repository=? AND number=? AND status='active'",
-                       (time.time(), repository, number))
-            store._audit(db, 'pr_monitor_retired', dict(repository=repository, number=number,
-                         state='closed', head_sha=local['head'], gates_waived=False))
+            if retired:
+                db.execute('UPDATE pr_watch SET worker_pid=NULL,terminal_notice=0 WHERE repository=? AND number=?',
+                           (repository, number))
+            else:
+                db.execute('''UPDATE pr_watch SET state='closed',branch=?,event_id=NULL,payload=NULL,
+                    delivery_state=NULL,error=NULL,lease_until=0,worker_pid=NULL,terminal_notice=0,updated_at=?
+                    WHERE repository=? AND number=?''', (identity['head_ref'], time.time(), repository, number))
+                db.execute("UPDATE prs SET status='retired_closed',updated_at=? WHERE repository=? AND number=? AND status='active'",
+                           (time.time(), repository, number))
+                store._audit(db, 'pr_monitor_retired', dict(repository=repository, number=number,
+                             state='closed', head_sha=local['head'], gates_waived=False))
+                retired = [db.execute('SELECT last_insert_rowid()').fetchone()[0]]
+            receipt['retirement_audit_ids'] = retired
             store._audit(db, 'pr_withdrawn', receipt)
         return dict(closed=True, withdrawn=True, **receipt)
     except BaseException:

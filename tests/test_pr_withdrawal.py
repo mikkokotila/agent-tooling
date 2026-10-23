@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from caller_pr_gates import cli, ghrelay, progress, withdrawal
+from caller_pr_gates import cli, ghrelay, monitor, progress, withdrawal
 from caller_pr_gates.policy import evaluate_pr
 from caller_pr_gates.store import Store
 from test_policy import check, comment
@@ -258,3 +258,69 @@ def test_normal_merge_and_close_keep_all_existing_gates(context, monkeypatch, op
     with pytest.raises(ValueError, match='every separate PR gate'):
         cli.gateway(arguments(context, ['pr', operation, URL], reason=None), context['store'])
     assert not context['calls'] and not events(context['store'], 'pr_withdrawal_attempt')
+
+
+@pytest.mark.parametrize('phase', ['write', 'readback'])
+def test_normal_monitor_can_retire_the_successful_close_before_finalization(context, capsys, phase):
+    store = context['store']
+    before = evidence(store)
+    def retire():
+        monitor.retire(store, REPO, 1, deepcopy(context['pull']))
+    def write(argv):
+        if phase == 'write':
+            retire()
+        return subprocess.CompletedProcess(argv, 0)
+    def readback(read):
+        if read == 3 and phase == 'readback':
+            retire()
+    context['write_hook'], context['read_hook'] = write, readback
+    cli.gateway(arguments(context), store)
+    result = json.loads(capsys.readouterr().out)
+    assert result['withdrawn'] is True and result['completion_verified'] is False
+    assert result['gates_waived'] is False and result['unresolved_gates']
+    assert evidence(store) == before
+    assert len(events(store, 'pr_monitor_retired')) == 1
+    assert len(events(store, 'pr_withdrawn')) == 1
+    assert not events(store, 'pr_withdrawal_unverified')
+    assert len(result['retirement_audit_ids']) == 1
+    assert result['retirement_audit_ids'][0] > result['attempt_audit_id']
+    assert not store.prs(SID)
+    with store._connect() as db:
+        watch = dict(db.execute('SELECT * FROM pr_watch').fetchone())
+    assert watch['state'] == 'closed' and watch['worker_pid'] is None and watch['lease_until'] == 0
+
+
+@pytest.mark.parametrize('change', ['head', 'merged', 'owner', 'rearm', 'missing-proof', 'lost-pid', 'foreign-retirement'])
+def test_monitor_retirement_cannot_hide_changed_identity_rearm_or_lost_reservation(context, change):
+    store = context['store']
+    before = evidence(store)
+    def write(argv):
+        raw = deepcopy(context['pull'])
+        if change == 'head':
+            raw['head']['sha'] = 'b' * 40
+        elif change == 'merged':
+            raw['merged'] = True
+        monitor.retire(store, REPO, 1, raw, checklist=True)
+        if change == 'rearm':
+            store.register(SID, 'codex', REPO, 1, str(context['root']))
+            monitor.retire(store, REPO, 1, deepcopy(context['pull']))
+        elif change == 'foreign-retirement':
+            monitor.retire(store, REPO, 1, dict(deepcopy(context['pull']), head=dict(raw['head'], sha='b' * 40)))
+            monitor.retire(store, REPO, 1, deepcopy(context['pull']))
+        elif change == 'owner':
+            with store._connect() as db:
+                db.execute('UPDATE pr_watch SET owner_session=?', (OTHER,))
+        elif change == 'missing-proof':
+            with store._connect() as db:
+                db.execute("DELETE FROM audit WHERE event='pr_monitor_retired'")
+        elif change == 'lost-pid':
+            with store._connect() as db:
+                db.execute('UPDATE pr_watch SET worker_pid=NULL')
+        return subprocess.CompletedProcess(argv, 0)
+    context['write_hook'] = write
+    with pytest.raises(ValueError, match='Withdrawal'):
+        cli.gateway(arguments(context), store)
+    assert len(context['calls']) == 1
+    assert evidence(store) == before
+    assert not events(store, 'pr_withdrawn')
+    assert events(store, 'pr_withdrawal_unverified')[0]['completion_verified'] is False
