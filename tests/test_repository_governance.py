@@ -34,7 +34,7 @@ class RepositoryClient(Client):
         value = await super().get(path, params)
         if '/compare/' in path:
             value.update(merge_base_commit={'sha': 'd' * 40}, ahead_by=1, behind_by=1, status='diverged')
-        if '/pulls/50' in path:
+        if path.endswith('/pulls/50'):
             value.update(state='open', merged=False)
         return value
 
