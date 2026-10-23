@@ -66,14 +66,19 @@ def configure(args, store, sid, repo, number, issue, endpoint, method, argv, run
 
     def owner():
         from .workflow import owned_pr
-        owned_pr(store, sid, repo, number)
         session = store.session(sid)
         with store._connect() as db:
-            watch = db.execute("SELECT * FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state='open'",
+            watch = db.execute("SELECT * FROM pr_watch WHERE repository=? AND number=? AND owner_session=? AND state IN ('open','merged')",
                                (repo, number, sid)).fetchone()
         if (not session or session['root_session'] != sid or session['client'] != args.client
                 or not watch or watch['client'] != args.client or Path(watch['cwd']).resolve() != Path(args.cwd).resolve()):
             raise ValueError('Governance configuration requires the recorded owner, client and checkout')
+        if watch['state'] == 'merged':
+            retained = store.closed_review_owner(sid, repo, number, args.cwd)
+            if retained['identity']['watch']['state'] != 'merged':
+                raise ValueError('Governance configuration requires a genuinely merged retained source')
+        else:
+            owned_pr(store, sid, repo, number)
         origin = subprocess.run(['git', '-C', args.cwd, 'remote', 'get-url', 'origin'],
                                 capture_output=True, text=True, timeout=3, check=True).stdout.strip().removesuffix('.git')
         if origin.casefold() not in {f'https://github.com/{repo}'.casefold(), f'git@github.com:{repo}'.casefold(),
@@ -89,16 +94,21 @@ def configure(args, store, sid, repo, number, issue, endpoint, method, argv, run
 
     def pr_identity():
         pr = read(f'{prefix}/pulls/{number}')
-        if (pr.get('number') != number or pr.get('state') != 'open' or pr.get('merged') is not False
+        lifecycle = (pr.get('state'), pr.get('merged'))
+        if (pr.get('number') != number or lifecycle not in {('open', False), ('closed', True)}
                 or pr.get('draft') is not False or (pr.get('base') or {}).get('ref') != 'main'):
-            raise ValueError('Governance configuration needs the live open non-draft PR targeting main')
-        identity = {}
+            raise ValueError('Governance configuration needs the recorded open or merged non-draft PR targeting main')
+        identity = {'lifecycle': lifecycle}
         for side in ('base', 'head'):
             branch = pr.get(side) or {}
             if ((branch.get('repo') or {}).get('full_name') != repo
                     or not re.fullmatch(r'[0-9a-f]{40}', str(branch.get('sha')))):
                 raise ValueError('Governance configuration PR repository/head identity is unavailable')
             identity[side] = (branch['sha'], branch.get('ref'))
+        if lifecycle == ('closed', True):
+            cached = (store.snapshot(repo, number) or {}).get('snapshot') or {}
+            if cached.get('head_sha') != identity['head'][0]:
+                raise ValueError('Merged governance continuation must retain its recorded source head')
         return identity
 
     owner()

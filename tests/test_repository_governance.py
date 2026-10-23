@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from caller_pr_gates import cli, github, governance, hook
+from caller_pr_gates import cli, github, governance, hook, monitor
 from caller_pr_gates.monitor import actionable
 from caller_pr_gates.policy import branch_freshness_gate, evaluate_pr
 from test_branch_freshness import behind
@@ -236,3 +236,29 @@ def test_only_missing_required_origo_prd_label_can_be_created(configuration, mod
         else:
             with pytest.raises(ValueError): cli.gateway(value, store)
     assert len(writes) == (1 if mode == 'create' else 0)
+
+
+@pytest.mark.parametrize('retired', [False, True])
+@pytest.mark.parametrize('mode', ['merged', 'closed_without_merge', 'wrong_head'])
+def test_approved_settings_continue_only_for_recorded_merged_source(configuration, retired, mode):
+    store, root, values, writes, remote, path = configuration
+    repo = 'Vaquum/Origo'
+    pr = values[f'repos/{repo}/pulls/614']
+    pr.update(state='closed', merged=mode != 'closed_without_merge')
+    cached = dict(snapshot(), repository=repo, number=614, state='closed', merged=True)
+    if mode == 'wrong_head': cached['head_sha'] = 'f' * 40
+    store.set_snapshot(repo, 614, cached, [])
+    if retired:
+        monitor.retire(store, repo, 614, pr, checklist=True)
+    endpoint = f'repos/{repo}/rulesets/5406599'
+    path.write_text(json.dumps(governance.desired(values[endpoint], repo, True)))
+    value = args(['api', endpoint, '--method', 'PUT', '--input', str(path)])
+    value.target, value.cwd = f'https://github.com/{repo}/pull/614', str(root)
+    with patch('caller_pr_gates.cli.github_run', remote):
+        if mode == 'merged':
+            assert cli.gateway(value, store)['repository'] == repo
+        else:
+            with pytest.raises(ValueError): cli.gateway(value, store)
+    assert len(writes) == (1 if mode == 'merged' else 0)
+    if retired:
+        assert not any(p['repository'] == repo for p in store.prs('s'))
