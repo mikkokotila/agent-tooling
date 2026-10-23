@@ -163,29 +163,30 @@ def retire(args, store, sid, argv, github_run):
             raise ValueError('PR608 is not the exact retained merged main-target source change')
         merge = _sha(pr.get('merge_commit_sha'))
         main = _sha(_object(read('repos/Vaquum/Origo/git/ref/heads/main').get('object')).get('sha'))
-        if main != merge:
-            comparison = read(f'repos/Vaquum/Origo/compare/{merge}...{main}')
-            if (comparison.get('status') not in {'ahead', 'identical'}
-                    or _object(comparison.get('merge_base_commit')).get('sha') != merge):
-                raise ValueError('Current main does not retain the merged source change')
+        from .origo_deploy_retry import (MERGE, ORIGIN_MERGE, RUN, WORKFLOW_ID,
+                                         continuation, release_proof)
+        if merge != ORIGIN_MERGE or main != MERGE:
+            raise ValueError('Only the exact reviewed latest retirement descendant may qualify')
+        continuation_sha256 = continuation(store, sid)
+        release_proof(args.cwd, read)
         workflow = read('repos/Vaquum/Origo/actions/workflows/deploy_on_merge.yml')
-        if (type(workflow.get('id')) is not int or workflow['id'] < 1 or workflow.get('path') != WORKFLOW
+        if (type(workflow.get('id')) is not int or workflow['id'] != WORKFLOW_ID or workflow.get('path') != WORKFLOW
                 or workflow.get('name') != 'Deploy On Merge' or workflow.get('state') != 'active'):
             raise ValueError('The exact active deployment workflow is unavailable')
         runs = read('repos/Vaquum/Origo/actions/workflows/deploy_on_merge.yml/runs'
-                    f'?branch=main&event=push&head_sha={merge}&per_page=100')
+                    f'?branch=main&event=push&head_sha={main}&per_page=100')
         candidates = runs.get('workflow_runs')
         if (not isinstance(candidates, list) or not candidates or len(candidates) > 100
                 or runs.get('total_count') != len(candidates)
                 or any(not isinstance(item, dict) or type(item.get('id')) is not int
-                       or item['id'] < 1 or item.get('head_sha') != merge for item in candidates)):
+                       or item['id'] != RUN or item.get('head_sha') != main for item in candidates)):
             raise ValueError('The exact merge deployment run inventory is incomplete')
-        if len({item['id'] for item in candidates}) != len(candidates):
+        if len(candidates) != 1 or len({item['id'] for item in candidates}) != len(candidates):
             raise ValueError('Deployment run identities are ambiguous')
         run_id = max(item['id'] for item in candidates)
         run = read('repos/Vaquum/Origo/actions/runs/' + str(run_id))
         repository = _object(run.get('repository'))
-        if (type(run.get('id')) is not int or run['id'] != run_id or run.get('head_sha') != merge or run.get('head_branch') != 'main' or run.get('event') != 'push'
+        if (type(run.get('id')) is not int or run['id'] != run_id or run.get('head_sha') != main or run.get('head_branch') != 'main' or run.get('event') != 'push'
                 or run.get('workflow_id') != workflow['id'] or run.get('path') != WORKFLOW
                 or repository.get('full_name') != REPOSITORY or repository.get('id') != base_repo['id']
                 or run.get('status') != 'completed' or run.get('conclusion') != 'success'
@@ -211,6 +212,7 @@ def retire(args, store, sid, argv, github_run):
         return {'head': head['sha'], 'base': _sha(base.get('sha')), 'merge': merge, 'main': main,
                 'repository_id': base_repo['id'], 'merged_at': _timestamp(pr['merged_at']),
                 'workflow_id': workflow['id'], 'run_id': run['id'], 'run_attempt': run['run_attempt'],
+                'continuation_scope_sha256': continuation_sha256,
                 'job_id': job['id'], 'job_completed_at': _timestamp(job['completed_at']),
                 'step_number': steps[0]['number'], 'step_completed_at': _timestamp(steps[0]['completed_at'])}
 
@@ -247,6 +249,11 @@ def retire(args, store, sid, argv, github_run):
         if (store._closed_review_owner(db, sid, REPOSITORY, 608) != frozen_owner['retained']
                 or not scope or _digest(json.loads(scope['scope'])) != frozen_owner['scope_sha256']):
             raise ValueError('Retirement owner or grant changed before reservation')
+        from .origo_deploy_retry import WORK_ITEM as CONTINUATION_WORK_ITEM
+        continuation_scope = store._scope_row(db, sid, CONTINUATION_WORK_ITEM)
+        if (not continuation_scope
+                or _digest(json.loads(continuation_scope['scope'])) != proof['continuation_scope_sha256']):
+            raise ValueError('Deployment continuation grant changed before secret reservation')
         store._audit(db, EVENT + 'attempt', receipt)
 
     lock, writes = threading.Lock(), 0

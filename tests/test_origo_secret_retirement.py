@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from caller_pr_gates import origo_deploy_retry as continuation
 from caller_pr_gates.cli import gateway
 from caller_pr_gates.monitor import retire
 from caller_pr_gates.origo_secret_retirement import ENDPOINT, EVENT, FIXED, GRANT, PR, WORK_ITEM, source_proof
@@ -94,13 +95,23 @@ def case(tmp_path, monkeypatch):
     git(tmp_path, 'config', 'commit.gpgsign', 'false')
     git(tmp_path, 'remote', 'add', 'origin', 'https://github.com/Vaquum/Origo.git')
     (tmp_path / '.gitignore').write_text('state/\ndifferent-state/\n')
-    for name in FIXED | {'origo/source.py'}:
+    for name in FIXED | set(continuation.BOUNDARIES) | {'origo/source.py'}:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('# Explicit source-presence protocol control; no deployed application.\n')
+    (tmp_path / 'pyproject.toml').write_text('[project]\nversion="3.34.56"\n[tool.origo.release]\nnative_jobs_only_version="3.34.56"\n')
     git(tmp_path, 'add', '.')
     git(tmp_path, 'commit', '-qm', 'test: establish immutable source protocol control')
+    origin = git(tmp_path, 'rev-parse', 'HEAD')
+    (tmp_path / 'pyproject.toml').write_text('[project]\nversion="3.34.57"\n[tool.origo.release]\nnative_jobs_only_version="3.34.57"\n')
+    git(tmp_path, 'add', '.')
+    git(tmp_path, 'commit', '-qm', 'test: establish exact deployment descendant control')
     revision = git(tmp_path, 'rev-parse', 'HEAD')
+    boundaries = {path: git(tmp_path, 'rev-parse', f'{origin}:{path}') for path in continuation.BOUNDARIES}
+    for name, value in (('ORIGIN_MERGE', origin), ('MERGE', revision), ('RUN', 31),
+                        ('WORKFLOW_ID', 23), ('BOUNDARIES', boundaries),
+                        ('PROJECT_BLOB', git(tmp_path, 'rev-parse', 'HEAD:pyproject.toml'))):
+        monkeypatch.setattr(continuation, name, value)
     store = Store(tmp_path / 'state')
     store.register('s', 'codex', REPO, 608, str(tmp_path))
     scope = {'agreed_scope': 'Retire only the obsolete CryptoHFTData Actions secret after verified deployment.',
@@ -109,10 +120,21 @@ def case(tmp_path, monkeypatch):
         'slice_count': 0, 'slice_ids': [], 'approved_at': 1,
         GRANT: {'repository': REPO, 'authorizing_pr': PR, 'approval_evidence': 'Original human provider-removal authorization.'}}
     store.record_scope('s', scope, work_item=WORK_ITEM)
-    retire(store, REPO, 608, {'state': 'closed', 'merged': True, 'head': {'sha': revision, 'ref': 'topic'}})
+    store.record_scope('s', {**scope, continuation.GRANT: {
+        'repository': REPO, 'authorizing_pr': PR, 'source_merge': origin, 'deployment_sha': revision,
+        'run_id': 31, 'version': continuation.VERSION, 'approval_evidence': 'Exact latest continuation control.'}},
+        work_item=continuation.WORK_ITEM)
+    retire(store, REPO, 608, {'state': 'closed', 'merged': True, 'head': {'sha': origin, 'ref': 'topic'}})
     args = SimpleNamespace(session='s', client='codex', cwd=str(tmp_path), target=PR,
                            arguments=['api', ENDPOINT, '--method', 'DELETE'])
     remote = Remote(revision)
+    remote.values['repos/Vaquum/Origo/pulls/608']['merge_commit_sha'] = origin
+    remote.values['repos/Vaquum/Origo/pulls/608']['head']['sha'] = origin
+    remote.values[f'repos/Vaquum/Origo/compare/{origin}...{revision}'] = {
+        'status': 'ahead', 'merge_base_commit': {'sha': origin}}
+    remote.values.update({f'repos/Vaquum/Origo/contents/{path}?ref={revision}': {
+        'path': path, 'type': 'file', 'sha': blob}
+        for path, blob in {**boundaries, 'pyproject.toml': continuation.PROJECT_BLOB}.items()})
     monkeypatch.setattr('caller_pr_gates.cli.github_run', remote)
     monkeypatch.setattr('caller_pr_gates.origo_secret_retirement.httpx.request', remote.http)
     return store, args, remote, revision, scope
@@ -167,8 +189,8 @@ def test_unrelated_or_unowned_secret_operation_never_reaches_http(case, fault, t
 
 @pytest.mark.parametrize('fault', ['unmerged', 'head', 'base', 'run-sha', 'run-failed', 'run-attempt',
                                  'run-id', 'truncated', 'job-skipped', 'step-skipped', 'pre404',
-                                 'merge-time', 'job-time', 'step-time'])
-def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fault):
+                                 'merge-time', 'job-time', 'step-time', 'superseded-run', 'continuation-grant', 'boundary'])
+def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fault, monkeypatch):
     store, args, remote, revision, _scope = case
     pr, run = remote.values['repos/Vaquum/Origo/pulls/608'], remote.values['repos/Vaquum/Origo/actions/runs/31']
     job = remote.values['repos/Vaquum/Origo/actions/runs/31/attempts/1/jobs?per_page=100']['jobs'][0]
@@ -184,6 +206,12 @@ def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fau
                       f'?branch=main&event=push&head_sha={revision}&per_page=100']['total_count'] = 101
     elif fault == 'job-skipped': job['conclusion'] = 'skipped'
     elif fault == 'step-skipped': job['steps'][0]['conclusion'] = 'skipped'
+    elif fault == 'superseded-run':
+        remote.values['repos/Vaquum/Origo/actions/workflows/deploy_on_merge.yml/runs'
+                      f'?branch=main&event=push&head_sha={revision}&per_page=100']['workflow_runs'][0]['id'] = 30
+    elif fault == 'continuation-grant': monkeypatch.setattr(continuation, 'GRANT', 'deliberate_missing_grant')
+    elif fault == 'boundary':
+        remote.values[f'repos/Vaquum/Origo/contents/{continuation.WORKFLOW}?ref={revision}']['sha'] = 'b' * 40
     elif fault == 'merge-time': pr['merged_at'] = 123
     elif fault == 'job-time': job['completed_at'] = 'deliberate invalid timestamp'
     elif fault == 'step-time': job['steps'][0]['completed_at'] = '2026-10-23T00:00:00+02:00'
@@ -211,7 +239,7 @@ def test_source_proof_reads_exact_bounded_git_objects_not_mutable_checkout(case,
         source_proof(args.cwd, git(root, 'rev-parse', 'HEAD'))
 
 
-@pytest.mark.parametrize('state', ['descendant', 'unrelated', 'reintroduced'])
+@pytest.mark.parametrize('state', ['unreviewed-descendant', 'unrelated', 'reintroduced'])
 def test_current_main_must_retain_merge_and_credential_absence(case, state):
     store, args, remote, revision, _scope = case
     root = Path(args.cwd)
@@ -225,12 +253,9 @@ def test_current_main_must_retain_merge_and_credential_absence(case, state):
         'status': 'diverged' if state == 'unrelated' else 'ahead',
         'merge_base_commit': {'sha': 'a' * 40 if state == 'unrelated' else revision},
     }
-    if state == 'descendant':
-        assert gateway(args, store)['stage'] == 'verified'
-    else:
-        with pytest.raises(ValueError):
-            gateway(args, store)
-        assert remote.writes == []
+    with pytest.raises(ValueError):
+        gateway(args, store)
+    assert remote.writes == []
 
 
 @pytest.mark.parametrize('fault', ['timeout', 'interrupt', 'duplicate', 'redirect', 'non204', 'post200',
