@@ -1,6 +1,8 @@
 """Superseded closure retires empty source, never qualifies a merge or task."""
 from copy import deepcopy
 import json
+import os
+import time
 import subprocess
 from types import SimpleNamespace
 
@@ -68,6 +70,9 @@ def prepared(local, monkeypatch):
     monkeypatch.setattr(superseded, 'GitHubClient', lambda: client)
 
     def run(argv, **kwargs):
+        with store._connect() as db:
+            lease = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', ('Owner/Repo', 1)).fetchone()
+            assert lease['worker_pid'] == os.getpid() and lease['lease_until'] > time.time()
         calls.append(argv)
         client.closed = True
         return subprocess.CompletedProcess(argv, 0, stdout='closed\n', stderr='')
@@ -192,3 +197,43 @@ def test_lagging_pr_base_sha_uses_the_live_default_branch_without_sync(prepared,
     assert receipt['base_sha'] == client.base
     assert f"/repos/Owner/Repo/compare/{client.base}...{client.head}" in client.paths
     assert all('a' * 40 not in path for path in client.paths)
+
+
+def test_registration_receipt_cannot_close_another_canonical_owners_pr(prepared):
+    store, root, _, _, calls, args = prepared
+    store.record_session('claimant', 'codex', str(root))
+    store.register('claimant', 'codex', 'Owner/Repo', 1, str(root))
+    assert store.prs('claimant')
+    args.session = 'claimant'
+    with pytest.raises(ValueError, match='canonical PR owner'):
+        cli.gateway(args, store)
+    assert calls == []
+    with store._connect() as db:
+        assert db.execute('SELECT owner_session FROM pr_watch').fetchone()[0] == 's'
+
+
+def test_canonical_owner_move_during_proof_refuses_before_mutation(prepared, monkeypatch):
+    store, root, _, client, calls, args = prepared
+    store.record_session('next', 'codex', str(root))
+    original = client.get
+
+    async def moved(path, **kwargs):
+        value = await original(path, **kwargs)
+        if path.endswith('/pulls/1') and client.reads == 2:
+            with store._connect() as db:
+                db.execute("UPDATE pr_watch SET owner_session='next'")
+        return value
+
+    monkeypatch.setattr(client, 'get', moved)
+    with pytest.raises(ValueError, match='canonical'):
+        cli.gateway(args, store)
+    assert calls == []
+
+
+def test_existing_owner_lease_is_never_overwritten(prepared):
+    store, _, _, _, calls, args = prepared
+    with store._connect() as db:
+        db.execute('UPDATE pr_watch SET lease_until=?', (time.time() + 60,))
+    with pytest.raises(ValueError, match='active owner work'):
+        cli.gateway(args, store)
+    assert calls == []

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -95,6 +97,41 @@ async def _closed(client, proof):
     return pull
 
 
+def _owner(store, sid, repository, number, client, cwd, db):
+    session = db.execute('SELECT * FROM sessions WHERE session_id=?', (sid,)).fetchone()
+    root = store._root(sid, store._parents(db))
+    row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repository, number)).fetchone()
+    if (not session or not row or row['owner_session'] != root or row['client'] != client
+            or Path(row['cwd']).resolve() != Path(cwd).resolve() or row['state'] != 'open'):
+        raise ValueError('Superseded closure requires the exact canonical PR owner/client/checkout')
+    return {key: row[key] for key in ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')}
+
+
+def _claim(store, sid, pin, receipt):
+    from .monitor import _worker_alive
+    now, pid = time.time(), os.getpid()
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if _owner(store, sid, pin['repository'], pin['number'], pin['client'], pin['cwd'], db) != pin:
+            raise ValueError('Canonical superseded owner changed during proof collection')
+        row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?',
+                         (pin['repository'], pin['number'])).fetchone()
+        if (row['lease_until'] > now or row['delivery_state'] in {'reserved', 'queued'}
+                or _worker_alive(row['worker_pid'])):
+            raise ValueError('Superseded PR has active owner work; wait for its existing lease')
+        # The existing per-PR lease also blocks explicit ownership transfer.
+        db.execute('UPDATE pr_watch SET lease_until=?,worker_pid=? WHERE repository=? AND number=?',
+                   (now + 180, pid, pin['repository'], pin['number']))
+        store._audit(db, 'pr_superseded_close_attempt', receipt)
+
+
+def _release(store, pin):
+    with store._connect() as db:
+        db.execute("""UPDATE pr_watch SET lease_until=0,worker_pid=NULL WHERE repository=? AND number=?
+            AND owner_session=? AND client=? AND cwd=? AND worker_pid=?""",
+            (pin['repository'], pin['number'], pin['owner_session'], pin['client'], pin['cwd'], os.getpid()))
+
+
 def close(args, store, sid, argv, run):
     from .cli import reference
     reason = getattr(args, 'superseded_reason', None)
@@ -114,25 +151,38 @@ def close(args, store, sid, argv, run):
     local = source(args.cwd, stable=True)
     if not exact_source(owner, local):
         raise ValueError('Superseded closure requires the clean, exact owned repository checkout')
+    with store._connect() as db:
+        pin = _owner(store, sid, repository, number, args.client, args.cwd, db)
     client = GitHubClient()
     proof = asyncio.run(asyncio.wait_for(_proof(client, repository, number, local['head']), 65))
     if source(args.cwd, stable=True) != local:
         raise ValueError('Superseded closure checkout changed during collection')
-    receipt = dict(session_id=sid, client=args.client, cwd=str(Path(args.cwd).resolve()),
-                   reason=reason.strip(), **proof, gates_waived=False, completion_verified=False)
-    store.audit('pr_superseded_close_attempt', receipt)
-    result = run(['gh', 'pr', 'close', target, '--comment', 'Closed as superseded: ' + reason.strip()],
-                 cwd=args.cwd, text=True, capture_output=True, timeout=90)
-    if result.returncode:
-        raise RuntimeError('Superseded close failed; inspect live PR state before retrying')
+    receipt = dict(session_id=sid, owner_session=pin['owner_session'], client=args.client,
+                   cwd=str(Path(args.cwd).resolve()), reason=reason.strip(), **proof,
+                   gates_waived=False, completion_verified=False)
+    _claim(store, sid, pin, receipt)
     try:
-        closed = asyncio.run(asyncio.wait_for(_closed(client, proof), 30))
-        if source(args.cwd, stable=True) != local:
-            raise ValueError('Superseded closure checkout changed before read-back')
-    except Exception:
-        store.audit('pr_superseded_close_unverified', receipt)
-        raise
-    from .monitor import retire
-    retire(store, repository, number, closed)
-    store.audit('pr_superseded_closed', receipt)
-    return dict(closed=True, superseded=True, **receipt)
+        result = run(['gh', 'pr', 'close', target, '--comment', 'Closed as superseded: ' + reason.strip()],
+                     cwd=args.cwd, text=True, capture_output=True, timeout=90)
+        if result.returncode:
+            raise RuntimeError('Superseded close failed; inspect live PR state before retrying')
+        try:
+            closed = asyncio.run(asyncio.wait_for(_closed(client, proof), 30))
+            with store._connect() as db:
+                current = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repository, number)).fetchone()
+                if (not current or any(current[key] != pin[key] for key in pin if key != 'state')
+                        or current['worker_pid'] != os.getpid()
+                        or current['state'] not in {'open', 'closed'}
+                        or current['state'] == 'open' and current['lease_until'] <= time.time()):
+                    raise ValueError('Superseded close lost its canonical owner lease')
+            if source(args.cwd, stable=True) != local:
+                raise ValueError('Superseded closure checkout changed before read-back')
+        except Exception:
+            store.audit('pr_superseded_close_unverified', receipt)
+            raise
+        from .monitor import retire
+        retire(store, repository, number, closed)
+        store.audit('pr_superseded_closed', receipt)
+        return dict(closed=True, superseded=True, **receipt)
+    finally:
+        _release(store, pin)
