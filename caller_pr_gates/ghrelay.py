@@ -25,7 +25,9 @@ def local(command):
     if child.returncode:raise RuntimeError('Local GitHub CLI credentials/settings are unavailable')
     return out.strip()
 
-def credentials():return local(['auth','token'])
+def credentials():
+    user = os.environ.get('GITHUB_INTERFACE_USER')
+    return local(['auth', 'token', *(['--user', user] if user else [])])
 def settings():return dict(line.split('=',1) for line in local(['config','list']).splitlines() if '=' in line)
 
 class UnixServer(socketserver.ThreadingMixIn,http.server.HTTPServer):
