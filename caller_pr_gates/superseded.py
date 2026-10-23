@@ -1,0 +1,130 @@
+"""Close an owned, content-empty PR without granting any merge or task credit."""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+import re
+from urllib.parse import quote
+
+from .publication import exact_source, source
+from .transport import GitHubClient
+
+
+_SHA = re.compile(r'[0-9a-f]{40}')
+
+
+def _sha(value):
+    if not isinstance(value, str) or not _SHA.fullmatch(value):
+        raise ValueError('Superseded closure requires complete commit/tree identities')
+    return value
+
+
+def _identity(pull, repository, number, repository_id, default_branch, *, closed=False):
+    if (not isinstance(pull, dict) or pull.get('number') != number
+            or type(pull.get('number')) is not int
+            or pull.get('state') != ('closed' if closed else 'open')
+            or pull.get('merged') is not False or pull.get('draft') is not False
+            or type(pull.get('changed_files')) is not int or pull['changed_files'] != 0):
+        raise ValueError('Superseded closure requires an open, unmerged, non-draft zero-file PR')
+    head, base = pull.get('head') or {}, pull.get('base') or {}
+    for endpoint in (head, base):
+        repo = endpoint.get('repo') or {}
+        if repo.get('full_name') != repository or repo.get('id') != repository_id:
+            raise ValueError('Superseded closure requires exact same-repository source and target')
+    if (base.get('ref') != default_branch or not isinstance(head.get('ref'), str)
+            or not head['ref'] or head['ref'] == default_branch):
+        raise ValueError('Superseded closure requires the live default target and a distinct source branch')
+    return dict(head_sha=_sha(head.get('sha')), head_ref=head['ref'],
+                base_sha=_sha(base.get('sha')), base_ref=default_branch)
+
+
+async def _proof(client, repository, number, expected_head):
+    prefix = f'/repos/{repository}'
+    path = f'{prefix}/pulls/{number}'
+    pull, repo = await asyncio.gather(client.get(path), client.get(prefix))
+    if (not isinstance(repo, dict) or repo.get('full_name') != repository
+            or type(repo.get('id')) is not int or repo['id'] <= 0
+            or not isinstance(repo.get('default_branch'), str) or not repo['default_branch']):
+        raise ValueError('Superseded closure requires the live repository/default-branch identity')
+    identity = _identity(pull, repository, number, repo['id'], repo['default_branch'])
+    if identity['head_sha'] != expected_head:
+        raise ValueError('Superseded PR head differs from the exact owned checkout')
+    base_path = f"{prefix}/git/ref/heads/{quote(identity['base_ref'], safe='')}"
+    head_path = f"{prefix}/git/ref/heads/{quote(identity['head_ref'], safe='')}"
+    files, comparison, commit, base_ref, head_ref = await asyncio.gather(
+        client.get(f'{path}/files', params={'per_page': 100}),
+        client.get(f"{prefix}/compare/{identity['base_sha']}...{identity['head_sha']}"),
+        client.get(f"{prefix}/git/commits/{identity['head_sha']}"),
+        client.get(base_path), client.get(head_path))
+    if files != [] or not isinstance(comparison, dict) or comparison.get('files') != []:
+        raise ValueError('Superseded closure refuses any remaining or unknown PR content')
+    merge_base = comparison.get('merge_base_commit') or {}
+    merge_tree = _sha(((merge_base.get('commit') or {}).get('tree') or {}).get('sha'))
+    head_tree = _sha((commit.get('tree') or {}).get('sha'))
+    if commit.get('sha') != identity['head_sha'] or head_tree != merge_tree:
+        raise ValueError('Superseded PR content is not already represented by its target merge base')
+    if ((base_ref.get('object') or {}).get('sha') != identity['base_sha']
+            or (head_ref.get('object') or {}).get('sha') != identity['head_sha']):
+        raise ValueError('Superseded closure branch identities changed during collection')
+    final, final_repo, final_base, final_head = await asyncio.gather(
+        client.get(path), client.get(prefix), client.get(base_path), client.get(head_path))
+    if (final_repo.get('id') != repo['id'] or final_repo.get('default_branch') != identity['base_ref']
+            or _identity(final, repository, number, repo['id'], identity['base_ref']) != identity
+            or (final_base.get('object') or {}).get('sha') != identity['base_sha']
+            or (final_head.get('object') or {}).get('sha') != identity['head_sha']):
+        raise ValueError('Superseded PR or target changed during collection')
+    return dict(repository=repository, number=number, repository_id=repo['id'], **identity,
+                merge_base_sha=_sha(merge_base.get('sha')), content_tree=head_tree,
+                collected_at=datetime.now(timezone.utc).isoformat())
+
+
+async def _closed(client, proof):
+    pull = await client.get(f"/repos/{proof['repository']}/pulls/{proof['number']}")
+    expected = {key: proof[key] for key in ('head_sha', 'head_ref', 'base_sha', 'base_ref')}
+    if _identity(pull, proof['repository'], proof['number'], proof['repository_id'], proof['base_ref'], closed=True) != expected:
+        raise ValueError('Superseded close did not retain the verified PR identities')
+    return pull
+
+
+def close(args, store, sid, argv, run):
+    from .cli import reference
+    reason = getattr(args, 'superseded_reason', None)
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+        raise ValueError('Superseded closure requires a nonempty reason of at most 2000 characters')
+    if len(argv) != 3 or argv[:2] != ['pr', 'close']:
+        raise ValueError('Superseded closure accepts only pr close with one explicit PR URL')
+    target = argv[2]
+    repository, number, issue = reference(target)
+    if issue or getattr(args, 'target', None) not in (None, target):
+        raise ValueError('Superseded closure requires one matching explicit PR target')
+    owner = next((row for row in store.prs(sid)
+                  if row['repository'] == repository and row['number'] == number), None)
+    if (owner is None or owner['client'] != args.client
+            or Path(owner['cwd']).resolve() != Path(args.cwd).resolve()):
+        raise ValueError('Superseded closure requires this exact recorded session/client/checkout owner')
+    local = source(args.cwd, stable=True)
+    if not exact_source(owner, local):
+        raise ValueError('Superseded closure requires the clean, exact owned repository checkout')
+    client = GitHubClient()
+    proof = asyncio.run(asyncio.wait_for(_proof(client, repository, number, local['head']), 65))
+    if source(args.cwd, stable=True) != local:
+        raise ValueError('Superseded closure checkout changed during collection')
+    receipt = dict(session_id=sid, client=args.client, cwd=str(Path(args.cwd).resolve()),
+                   reason=reason.strip(), **proof, gates_waived=False, completion_verified=False)
+    store.audit('pr_superseded_close_attempt', receipt)
+    result = run(['gh', 'pr', 'close', target, '--comment', 'Closed as superseded: ' + reason.strip()],
+                 cwd=args.cwd, text=True, capture_output=True, timeout=90)
+    if result.returncode:
+        raise RuntimeError('Superseded close failed; inspect live PR state before retrying')
+    try:
+        closed = asyncio.run(asyncio.wait_for(_closed(client, proof), 30))
+        if source(args.cwd, stable=True) != local:
+            raise ValueError('Superseded closure checkout changed before read-back')
+    except Exception:
+        store.audit('pr_superseded_close_unverified', receipt)
+        raise
+    from .monitor import retire
+    retire(store, repository, number, closed)
+    store.audit('pr_superseded_closed', receipt)
+    return dict(closed=True, superseded=True, **receipt)
