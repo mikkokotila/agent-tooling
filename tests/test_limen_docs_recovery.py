@@ -44,6 +44,7 @@ def test_frozen_body_one_attempt_and_actual_run_identity(repair,capsys):
     cli.gateway(c['args'],c['store'])
     result=json.loads(capsys.readouterr().out);assert result['accepted'] is True and result['completion_verified'] is False
     assert result['run_id']==100 and len(repair['writes'])==1
+    c['request'].write_text(json.dumps({'ref':'main','inputs':{'package_publish_run':str(recovery.PACKAGE_RUN)}}))
     with pytest.raises(ValueError,match='bounded recovery'):cli.gateway(c['args'],c['store'])
     assert len(repair['writes'])==1
 
