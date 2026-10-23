@@ -133,6 +133,10 @@ def graphql_body(query):
     '# leading comment\nquery { viewer { login } }',
     'query { search(query:"mutation:unrelated") { nodes { __typename } } }',
     'query { field(arg:"a # not a comment") }',
+    'query { mutation: viewer { login } }',
+    'query { mutation : viewer { login } }',
+    'query { subscription: x }',
+    'query { f(arg:"""mutation""") }',
 ])
 def test_graphql_reads_skip_owner_lookup(monkeypatch, query):
     def lookup(token):
@@ -147,6 +151,11 @@ def test_graphql_reads_skip_owner_lookup(monkeypatch, query):
     ('/graphql', graphql_body('query A { x } mutation B { y }')),
     ('/graphql', graphql_body('subscription { x }')),
     ('/graphql', graphql_body('# reviewer said "lgtm"\nmutation { updateIssue { id } }')),
+    ('/graphql', graphql_body('mutation#x\nM { updateIssue { id } }')),
+    ('/graphql', graphql_body('#x\rmutation { updateIssue { id } }')),
+    ('/graphql', graphql_body('#x\r\nmutation { y }')),
+    ('/graphql', graphql_body('""" " # """ mutation { updateIssue { id } }')),
+    ('/graphql', graphql_body('query { f(arg:"""abc) }')),
     ('/graphql', graphql_body('query { x(arg:"unterminated) }')),
     ('/graphql', graphql_body('')),
     ('/graphql', json.dumps({}).encode()),

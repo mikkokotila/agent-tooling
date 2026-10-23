@@ -83,13 +83,19 @@ def _graphql_code(document):
     while index<end:
         char=document[index]
         if char=='#':
-            stop=document.find('\n',index)
-            index=end if stop<0 else stop+1
+            stop=end
+            for term in ('\n','\r'):
+                found=document.find(term,index)
+                if found>=0:stop=min(stop,found)
+            index=end if stop>=end else stop+1
+            out.append('\n')
         elif char=='"':
-            index+=1;closed=False
+            triple=document.startswith('"""',index)
+            index+=3 if triple else 1;closed=False
             while index<end:
                 if document[index]=='\\':index+=2;continue
-                if document[index]=='"':index+=1;closed=True;break
+                if triple and document.startswith('"""',index):index+=3;closed=True;break
+                if not triple and document[index]=='"':index+=1;closed=True;break
                 index+=1
             if not closed:return None
             out.append('""')
@@ -103,7 +109,10 @@ def _graphql_read_only(body):
     except (ValueError,TypeError,AttributeError):return False
     if not isinstance(document,str) or not document:return False
     code=_graphql_code(document)
-    return code is not None and re.search(r'\b(mutation|subscription)\b',code) is None
+    if code is None:return False
+    for match in re.finditer(r'\b(mutation|subscription)\b',code):
+        if not re.match(r'[\s,]*:',code[match.end():]):return False
+    return True
 
 def authorize_request(token,method,path='',body=b''):
     if method in {'GET','HEAD'}:return
