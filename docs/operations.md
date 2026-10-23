@@ -408,11 +408,16 @@ caller-pr-gates github --session SESSION --client CLIENT --cwd OWNED_CHECKOUT \
   --method POST --input SAVED_JSON
 ```
 
-The admitted bytes are frozen before the write. Other inputs, refs, workflows,
+The request names the current branch as intent; the gateway creates or reuses
+`caller-pr-gates/ci-FULL_HEAD_SHA` as a lightweight tag and dispatches that exact
+tag. It never updates or deletes tags. An existing tag at another commit is a
+refusal. Ordinary branch pushes cannot change the workflow revision selected by
+the dispatch. This also requires permission to create repository Git refs.
+The admitted inputs are frozen before the write. Other inputs, refs, workflows,
 repositories, methods, headers, stdin bodies and foreign owners remain denied.
 The command fixes the internal GitHub API version to `2026-03-10` and requires the
 [dispatch response's exact workflow-run ID and URLs](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success requires that returned
-run's exact head, branch, repository, workflow and dispatch event, followed by
+run's exact head, dispatch tag, repository, workflow and dispatch event, followed by
 unchanged PR/checkout/owner readback. Missing or raced outcomes record incomplete
 evidence and refuse automatic retry; inspect the actual dispatch outcome before
 another invocation. A concurrent dispatch cannot substitute its run identity.
@@ -428,6 +433,6 @@ The gateway admits only the existing `Vaquum/Limen` manual release workflow for 
 caller-pr-gates github --session SESSION --client CLIENT --cwd CHECKOUT --target https://github.com/Vaquum/Limen/pull/N -- api repos/Vaquum/Limen/actions/workflows/pr_post_release.yml/dispatches --method POST --input PRIVATE_JSON
 ```
 
-The gate requires retained merged ownership, independent current-head approval, all current checks and review dispositions, a clean matching checkout at live main, coherent release versions and the pinned reviewed workflow/release script. An existing tag, prior dispatch or different predecessor blocks it. It freezes the saved payload and verifies the returned workflow run's source identity. No other version, workflow, ref, input or API-version override is admitted.
+The gate requires retained merged ownership, independent current-head approval, all current checks and review dispositions, a clean matching checkout at live main, coherent release versions and the pinned reviewed release/publisher scripts. The final release tag, prior dispatch or different predecessor blocks it. It verifies the existing v* tag ruleset forbids updates/deletions without bypass, creates or reuses `v5.46.2-dispatch-FULL_MERGE_SHA`, and dispatches that protected tag with no inputs. The publisher verifies that tag and the exact successful manual run. No mutable branch is sent to the dispatch API. No other version, workflow, input or API-version override is admitted.
 
 An ambiguous response records an incomplete attempt. Inspect the actual workflow runs, tags and releases before any retry; never infer that a failed response means no release started. This command does not prove PyPI or documentation publication. The existing release, package publisher and documentation activation guards still own those outcomes. No branch protection or credential is changed.

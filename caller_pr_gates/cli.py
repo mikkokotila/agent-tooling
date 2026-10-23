@@ -489,13 +489,16 @@ def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, me
     if (not same_pr(read(f'repos/{repo}/pulls/{number}'))
             or not current_owner() or source(args.cwd, stable=True) != local):
         raise ValueError('Origo CI owner, checkout, PR head or target changed before dispatch')
-    body = json.dumps(frozen)
+    tag = f'caller-pr-gates/ci-{head}'
+    body = json.dumps({'ref': tag, 'inputs': {'runner': 'github'}})
     receipt = {'session_id': sid, 'repository': repo, 'number': number,
-               'head_sha': head, 'head_ref': branch, 'workflow': workflow,
+               'head_sha': head, 'head_ref': branch, 'dispatch_tag': tag, 'workflow': workflow,
                'workflow_blob': trusted_blob, 'api_version': api_version,
                'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
     store.audit('github_origo_ci_dispatch_attempt', receipt)
     try:
+        from .dispatch_ref import tag_ref
+        tag_ref(repo, tag, head, read, github_run, args.cwd)
         result = github_run(['gh', 'api', expected, '--method', 'POST', '--input', '-',
                              '--header', f'X-GitHub-Api-Version: {api_version}'],
                             runner=subprocess.run, cwd=args.cwd, input=body,
@@ -514,7 +517,7 @@ def _owned_origo_ci_dispatch(args, store, sid, repo, number, issue, endpoint, me
         receipt.update(run_id=run_id, run_url=url)
         run = read(run_path)
         if (run.get('id') != run_id or run.get('head_sha') != head
-                or run.get('head_branch') != branch or run.get('path') != workflow
+                or run.get('head_branch') != tag or run.get('path') != workflow
                 or run.get('event') != 'workflow_dispatch' or run.get('html_url') != url
                 or (run.get('head_repository') or {}).get('full_name') != repo):
             raise RuntimeError('Dispatched CI run does not match the frozen owned head')

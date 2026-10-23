@@ -29,7 +29,8 @@ def dispatch_case(store, tmp_path, monkeypatch):
     pull = dict(state='open', merged=False, draft=False,
                 head=dict(ref=local['branch'], sha=local['head'], repo=dict(full_name=REPO, id=1)),
                 base=dict(ref='main', sha=snap['base_sha'], repo=dict(full_name=REPO, id=1)))
-    run = dict(id=100, path=WORKFLOW, head_sha=local['head'], head_branch=local['branch'],
+    tag = f'caller-pr-gates/ci-{local["head"]}'
+    run = dict(id=100, path=WORKFLOW, head_sha=local['head'], head_branch=tag,
                event='workflow_dispatch', html_url=f'https://github.com/{REPO}/actions/runs/100',
                head_repository=dict(full_name=REPO))
     case = dict(args=value, snapshot=snap, local=local, pull=pull, run=run, request=request,
@@ -64,6 +65,9 @@ def dispatch_case(store, tmp_path, monkeypatch):
             if not case['posted'] and case['before_write']:
                 case['before_write']()
             result = case['pull']
+        elif target == f'repos/{REPO}/git/matching-refs/tags/{tag}':
+            result = [dict(ref='refs/tags/' + tag, object=dict(sha=local['head'], type='commit',
+                url=f'https://api.github.com/repos/{REPO}/git/commits/{local["head"]}'))]
         else:
             raise AssertionError(f'Unexpected GitHub request: {argv}')
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(result))
@@ -85,7 +89,7 @@ def test_owned_origo_dispatch_freezes_payload_and_verifies_actual_run(store, dis
     gateway(case['args'], store)
     assert len(case['writes']) == 1
     assert json.loads(case['writes'][0][1]['input']) == {
-        'ref': 'codex/source-fix', 'inputs': {'runner': 'github'},
+        'ref': f'caller-pr-gates/ci-{case["local"]["head"]}', 'inputs': {'runner': 'github'},
     }
     receipt = json.loads(capsys.readouterr().out)
     assert receipt['head_sha'] == case['local']['head']
@@ -188,7 +192,7 @@ def test_relative_dispatch_input_is_bound_to_owned_checkout(store, dispatch_case
     monkeypatch.chdir(elsewhere)
     case['args'].arguments[-1] = 'dispatch.json'
     gateway(case['args'], store)
-    assert json.loads(case['writes'][0][1]['input'])['ref'] == case['local']['branch']
+    assert json.loads(case['writes'][0][1]['input'])['ref'] == f'caller-pr-gates/ci-{case["local"]["head"]}'
 
 
 def test_dispatch_reads_only_its_returned_id_even_with_a_concurrent_run(store, dispatch_case):

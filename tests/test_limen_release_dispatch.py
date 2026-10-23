@@ -41,12 +41,18 @@ def case(local, tmp_path, monkeypatch):
     request.write_text(json.dumps({'ref': 'main'}))
     value = args(['api', release.ENDPOINT, '--method', 'POST', '--input', str(request)])
     value.target, value.cwd = 'https://github.com/Vaquum/Limen/pull/1196', str(root)
+    tag = f'v5.46.2-dispatch-{merged}'
     data = dict(store=store, root=root, request=request, args=value, snapshot=snap, writes=[], reads=[],
                 blobs={}, main=merged, prior='v5.46.1', tags=[], runs=[], before_post=None,
+                dispatch_refs=[dict(ref='refs/tags/' + tag, object=dict(sha=merged, type='commit',
+                    url=f'https://api.github.com/repos/Vaquum/Limen/git/commits/{merged}'))],
+                protection=dict(enforcement='active', target='tag', bypass_actors=[],
+                    conditions=dict(ref_name=dict(exclude=[], include=['refs/tags/v*'])),
+                    rules=[dict(type='update'), dict(type='deletion')]),
                 collections=0, on_second_read=None,
                 response=dict(workflow_run_id=100, run_url='https://api.github.com/repos/Vaquum/Limen/actions/runs/100',
                               html_url='https://github.com/Vaquum/Limen/actions/runs/100'),
-                run=dict(id=100, head_sha=merged, head_branch='main', path=release.WORKFLOW,
+                run=dict(id=100, head_sha=merged, head_branch=tag, path=release.WORKFLOW,
                          event='workflow_dispatch', html_url='https://github.com/Vaquum/Limen/actions/runs/100',
                          head_repository=dict(full_name=release.REPOSITORY)))
 
@@ -69,7 +75,9 @@ def case(local, tmp_path, monkeypatch):
         data['reads'].append(target)
         if target.endswith('/git/ref/heads/main'): result = dict(object=dict(sha=data['main']))
         elif target.endswith('/releases/latest'): result = dict(tag_name=data['prior'])
+        elif '/git/matching-refs/tags/v5.46.2-dispatch-' in target: result = data['dispatch_refs']
         elif '/git/matching-refs/' in target: result = data['tags']
+        elif target.endswith('/rulesets/18934526'): result = data['protection']
         elif '/contents/' in target:
             name = target.split('/contents/', 1)[1].split('?')[0]
             result = dict(path=name, type='file', sha=data['blobs'].get(name, release.TRUSTED[name]))
@@ -89,7 +97,7 @@ def test_release_dispatch_freezes_request_and_proves_actual_run(case, capsys):
     case['before_post'] = lambda: case['request'].write_text('{"ref":"unreviewed"}')
     cli.gateway(case['args'], case['store'])
     assert len(case['writes']) == 1
-    assert json.loads(case['writes'][0][1]['input']) == {'ref': 'main'}
+    assert json.loads(case['writes'][0][1]['input']) == {'ref': f'v5.46.2-dispatch-{case["main"]}'}
     receipt = json.loads(capsys.readouterr().out)
     assert receipt['merge_commit'] == case['main'] and receipt['run_id'] == 100
     assert receipt['candidate_head'] == case['snapshot']['head_sha']
@@ -102,7 +110,7 @@ def test_release_dispatch_freezes_request_and_proves_actual_run(case, capsys):
 @pytest.mark.parametrize('fault', ['owner', 'cwd', 'client', 'unmerged', 'head', 'merge', 'fork',
     'repository_id', 'approval', 'self_approval', 'approval_head', 'missing_checks', 'failed_ci',
     'review_finding', 'main', 'prior', 'tag', 'run', 'workflow', 'script', 'dirty', 'origin',
-    'payload', 'extra_input', 'header', 'stdin', 'method', 'endpoint', 'issue'])
+    'payload', 'extra_input', 'header', 'stdin', 'method', 'endpoint', 'issue', 'protection'])
 def test_release_dispatch_refuses_wrong_authority_before_any_write(case, fault, tmp_path):
     value, snap = case['args'], case['snapshot']
     if fault == 'owner': value.session = 'another'
@@ -136,6 +144,7 @@ def test_release_dispatch_refuses_wrong_authority_before_any_write(case, fault, 
     elif fault == 'method': value.arguments[3] = 'PUT'
     elif fault == 'endpoint': value.arguments[1] = release.ENDPOINT.replace('pr_post_release.yml', 'other.yml')
     elif fault == 'issue': value.target = value.target.replace('/pull/', '/issues/')
+    elif fault == 'protection': case['protection']['bypass_actors'] = [dict(actor_id=1)]
     with pytest.raises(ValueError): cli.gateway(value, case['store'])
     assert case['writes'] == []
 
@@ -174,6 +183,21 @@ def test_unverified_release_attempt_blocks_an_immediate_second_post(case):
     with pytest.raises(RuntimeError, match='outcome is unverified'): cli.gateway(case['args'], case['store'])
     with pytest.raises(ValueError, match='earlier release dispatch attempt'): cli.gateway(case['args'], case['store'])
     assert len(case['writes']) == 1
+
+
+def test_a_main_push_during_dispatch_cannot_change_the_executed_source(case, monkeypatch):
+    original = cli.github_run
+    reviewed = case['main']
+
+    def run(argv, **kwargs):
+        if argv[2] == release.ENDPOINT and '--method' in argv:
+            case['main'] = 'b' * 40
+            assert json.loads(kwargs['input']) == {'ref': f'v5.46.2-dispatch-{reviewed}'}
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(cli, 'github_run', run)
+    cli.gateway(case['args'], case['store'])
+    assert case['run']['head_sha'] == reviewed != case['main']
 
 
 def test_concurrent_release_requests_make_only_one_post(case):

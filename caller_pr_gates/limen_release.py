@@ -13,7 +13,9 @@ VERSION = '5.46.2'
 WORKFLOW = '.github/workflows/pr_post_release.yml'
 ENDPOINT = 'repos/Vaquum/Limen/actions/workflows/pr_post_release.yml/dispatches'
 TRUSTED = {WORKFLOW: 'e48ac931e71ffd8c57f2f488caf0f12b46e1783d',
-           'scripts/create_release.py': '3a6f1fe04aad960ab914140eb18b160281652db6'}
+           'scripts/create_release.py': 'bfe312d181ddd9318a4a3fb8dee2f91aff91c6f5',
+           '.github/workflows/pr_publish_pypi.yml': 'aec00e4265f1b2a353045651dee0ad14625ab729',
+           'scripts/verify_release_trigger.py': '915a2c54689bf9bc07f0a734333b4e1517feda48'}
 API_VERSION = '2026-03-10'
 
 
@@ -43,7 +45,6 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
     payload = json.loads(request.read_text())
     if payload != {'ref': 'main'}:
         raise ValueError('Limen release dispatch permits only ref=main and no additional inputs')
-    body = json.dumps(payload)
     from .github import collect_pr
     from .policy import evaluate_pr
     from .publication import source, exact_source
@@ -108,6 +109,12 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
             raise ValueError('This release already has a dispatch; inspect its outcome before any retry')
 
     unstarted()
+    protection = read('repos/Vaquum/Limen/rulesets/18934526')
+    if (protection.get('enforcement') != 'active' or protection.get('target') != 'tag'
+            or protection.get('conditions') != {'ref_name': {'exclude': [], 'include': ['refs/tags/v*']}}
+            or protection.get('bypass_actors') != []
+            or {rule.get('type') for rule in protection.get('rules', [])} != {'update', 'deletion'}):
+        raise ValueError('Release dispatch requires the existing immutable v* tag protection')
     for path, digest in TRUSTED.items():
         blob = read(f'repos/Vaquum/Limen/contents/{path}?ref={local["head"]}')
         if blob.get('path') != path or blob.get('sha') != digest or blob.get('type') != 'file':
@@ -115,9 +122,11 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
     if verified_candidate() != head or owner() != retained or source(args.cwd, stable=True) != local:
         raise ValueError('Release source or ownership changed before dispatch')
     unstarted()
+    tag = f'v{VERSION}-dispatch-{local["head"]}'
+    body = json.dumps({'ref': tag})
     receipt = {'session_id': sid, 'repository': REPOSITORY, 'number': number, 'version': VERSION,
                'candidate_head': head, 'merge_commit': local['head'], 'workflow': WORKFLOW,
-               'trusted_blobs': TRUSTED, 'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
+               'dispatch_tag': tag, 'trusted_blobs': TRUSTED, 'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
         if db.execute("SELECT 1 FROM audit WHERE event='github_limen_release_dispatch_attempt' "
@@ -125,6 +134,8 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
             raise ValueError('An earlier release dispatch attempt is recorded; reconcile its outcome before any further action')
         store._audit(db, 'github_limen_release_dispatch_attempt', receipt)
     try:
+        from .dispatch_ref import tag_ref
+        tag_ref(REPOSITORY, tag, local['head'], read, run, args.cwd)
         result = run(['gh', 'api', ENDPOINT, '--method', 'POST', '--input', '-',
                       '--header', 'X-GitHub-Api-Version: ' + API_VERSION], runner=subprocess.run,
                      cwd=args.cwd, input=body, text=True, capture_output=True, timeout=30)
@@ -141,7 +152,7 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
         receipt.update(run_id=run_id, run_url=url)
         actual = read(f'repos/Vaquum/Limen/actions/runs/{run_id}')
         if (actual.get('id') != run_id or actual.get('head_sha') != local['head']
-                or actual.get('head_branch') != 'main' or actual.get('path') != WORKFLOW
+                or actual.get('head_branch') != tag or actual.get('path') != WORKFLOW
                 or actual.get('event') != 'workflow_dispatch' or actual.get('html_url') != url
                 or actual.get('head_repository', {}).get('full_name') != REPOSITORY
                 or owner() != retained or source(args.cwd, stable=True) != local):
