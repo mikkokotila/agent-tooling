@@ -5,7 +5,7 @@ backend-path = ["tools"]
 
 [project]
 name = "agent-tooling"
-version = "0.1.67"
+version = "0.1.68"
 description = "Captured local PR orchestration hooks for Codex and Claude"
 requires-python = ">=3.13,<3.14"
 readme = "README.md"

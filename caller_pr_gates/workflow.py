@@ -336,9 +336,33 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None,
     previous = store.validation_plan(sid, repository, number, cwd)
     _recover_runs(store, previous)
     source_epoch = None
-    if previous and 'source_epoch' in previous['plan']:
-        plan['source_epoch'] = previous['plan']['source_epoch']
+    native_worker_epoch = None
+    for name in ('source_epoch', 'native_worker_epoch'):
+        if previous and name in previous['plan']:
+            plan[name] = previous['plan'][name]
     digest = progress.fingerprint(cwd, plan)
+    if (merged_head is not None and from_head is None and previous
+            and digest != previous['input_digest']
+            and plan['env_names'] == previous['plan']['env_names'] + ['VITEST_MAX_WORKERS']
+            and 'native_worker_epoch' not in previous['plan']):
+        control = progress.native_worker_transition(repository, previous['plan'], plan)
+        if progress.fingerprint(cwd, previous['plan']) != previous['input_digest']:
+            raise ValueError('Native worker qualification cannot change original source, PATH or retained inputs')
+        published = (progress.source_tree(cwd, merged_head)[0], None)
+        if progress.fingerprint(cwd, plan, source_snapshot=published) != digest:
+            raise ValueError('Native worker qualification requires the exact published source and package scripts')
+        runs = [run for run in store.validation_runs(previous['plan_id'])
+                if run['check_id'] == control['check_id'] and run['input_digest'] == previous['input_digest']]
+        if not runs or runs[-1]['status'] not in {'fail', 'unknown'} or runs[-1]['finished_at'] is None:
+            raise ValueError('Native worker qualification requires an actual failed or unverifiable full-gate result')
+        validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
+        if (progress.fingerprint(cwd, previous['plan']) != previous['input_digest']
+                or progress.fingerprint(cwd, plan) != digest
+                or progress.native_worker_transition(repository, previous['plan'], plan) != control):
+            raise ValueError('Native worker qualification inputs changed during admission')
+        native_worker_epoch = dict(previous_plan_id=previous['plan_id'],
+            previous_input_digest=previous['input_digest'], head_sha=merged_head,
+            previous_run_id=runs[-1]['run_id'], **control)
     if from_head is not None:
         prior_epoch = (previous or {}).get('plan', {}).get('source_epoch')
         if prior_epoch:
@@ -385,7 +409,7 @@ def save_plan(store, sid, repository, number, cwd, payload, *, merged_head=None,
     row = store.save_validation_plan(sid, repository, number, cwd, plan,
         digest, evidence_digest(snapshot, store.dispositions(repository, number),
                                                        (previous or {}).get('evidence_digest')),
-        retained=merged_head is not None, source_epoch=source_epoch)
+        retained=merged_head is not None, source_epoch=source_epoch, native_worker_epoch=native_worker_epoch)
     store.audit('pr_validation_plan_bound', {'session_id': sid, 'plan_id': row['plan_id'],
                 'repository': repository, 'number': number, 'root': root})
     return {'plan': row, 'progress': current_phase(store, row)}
