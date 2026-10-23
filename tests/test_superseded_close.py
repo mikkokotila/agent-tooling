@@ -68,6 +68,11 @@ def prepared(local, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, stdout='closed\n', stderr='')
 
     monkeypatch.setattr(cli, 'github_run', run)
+
+    async def inspect(*a):
+        return [{'gates': [{'gate': 'REVIEW_HANDLED', 'status': 'FAIL'}]}]
+
+    monkeypatch.setattr(cli, 'inspect', inspect)
     args = SimpleNamespace(session='s', client='codex', cwd=str(root), kind=None, slice_id=None,
                            target=None, superseded_reason='The fix already reached main; this PR has no remaining content.',
                            arguments=['pr', 'close', URL])
