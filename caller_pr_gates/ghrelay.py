@@ -109,6 +109,10 @@ def _graphql_code(document):
         else:out.append(char);index+=1
     return ''.join(out)
 
+# Insignificant separators between GraphQL tokens: whitespace, commas, and
+# U+FEFF, which the specification allows anywhere but Python \s excludes.
+_SEP=r'[\s,\ufeff]'
+
 def _graphql_read_only(body):
     """Only documents without mutation/subscription operations; anything else is a write."""
     if len(body)>1024*1024:return False
@@ -124,9 +128,9 @@ def _graphql_read_only(body):
         # operations. A dollar prefix, even across separators, is a variable
         # definition or use. A colon after the keyword is a field alias.
         # Anything else is a real operation.
-        if re.search(r'(\.\.\.|\b(query|mutation|subscription|fragment|on))[\s,]*$',code[:match.start()]):continue
-        if re.search(r'\$[\s,]*$',code[:match.start()]):continue
-        if not re.match(r'[\s,]*:',code[match.end():]):return False
+        if re.search(r'(\.\.\.|\b(query|mutation|subscription|fragment|on))'+_SEP+r'*$',code[:match.start()]):continue
+        if re.search(r'\$'+_SEP+r'*$',code[:match.start()]):continue
+        if not re.match(_SEP+r'*:',code[match.end():]):return False
     return True
 
 def authorize_request(token,method,path='',body=b''):

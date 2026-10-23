@@ -145,6 +145,9 @@ def graphql_body(query):
     'query { x(y:$\nmutation) }',
     'query { viewer { ...mutation } } fragment mutation on User { login }',
     'query { ...subscription } fragment subscription on T { x }',
+    'query\ufeffmutation { viewer { login } }',
+    'query { x(y:$\ufeffmutation) }',
+    'query { mutation\ufeff: viewer { login } }',
     'query Q { f(arg:"""a\\\\""" # still string\nzzz""") }',
 ])
 def test_graphql_reads_skip_owner_lookup(monkeypatch, query):
