@@ -92,11 +92,22 @@ def verification_git(env, state):
     atomic(launcher, ('#!/bin/sh\nexec ' + shlex.quote(str(target)) + ' "$@"\n').encode(), 0o700)
     env['PATH'] = str(launcher.parent) + os.pathsep + env.get('PATH', '')
 
+def verification_budget():
+    value = os.environ.get('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS', '900')
+    if not re.fullmatch(r'[1-9][0-9]*', value) or not 900 <= int(value) <= 1800:
+        raise RuntimeError('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS must be an integer from 900 to 1800')
+    budget = int(value)
+    if (os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS')) and budget != 900:
+        raise RuntimeError('CI verification retains its 900-second full-suite budget')
+    return budget
+
 def verify():
+    budget = verification_budget()
     revision = fingerprint()
     report = BUILD / 'verified.json'
-    if report.exists() and json.loads(report.read_text()).get('source_fingerprint') == revision:
-        assert_capture(); return json.loads(report.read_text())
+    previous = json.loads(report.read_text()) if report.exists() else {}
+    if previous.get('source_fingerprint') == revision and previous.get('verification_timeout_seconds') == budget:
+        assert_capture(); return previous
     python = build()
     with tempfile.TemporaryDirectory(prefix='agent-tooling-verification-') as state:
         env = dict(os.environ, PYTHONPATH=str(ROOT), CALLER_PR_GATES_STATE_DIR=state,
@@ -104,13 +115,14 @@ def verify():
                    CODEX_CLI='codex',CLAUDE_CLI='claude')
         verification_git(env, state)
         # Bound the cumulative suite wait; individual test/native deadlines
-        # remain independent of this finite fifteen-minute parent budget.
-        run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=900)
+        # remain independent of this explicit finite parent resource budget.
+        run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=budget)
     xml = ET.parse(BUILD / 'verification.xml')
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
     if len(expected) != len(RELEASE['known_defects']): raise RuntimeError('Known defect inventory changed')
     if fingerprint() != revision: raise RuntimeError('Checkout changed during verification; publish and verify the new revision')
     value = {'source_fingerprint':revision, 'verified_at':time.time(), 'version':VERSION,
+             'verification_timeout_seconds':budget,
              'known_expected_failures':RELEASE['known_defects'], 'testcases':len(list(xml.iter('testcase')))}
     dump(report, value); return value
 
