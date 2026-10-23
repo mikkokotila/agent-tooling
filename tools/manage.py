@@ -93,11 +93,12 @@ def verification_git(env, state):
     env['PATH'] = str(launcher.parent) + os.pathsep + env.get('PATH', '')
 
 def verification_budget():
-    value = os.environ.get('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS', '900')
+    ci = bool(os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS'))
+    value = os.environ.get('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS', '900' if ci else '1200')
     if not re.fullmatch(r'[1-9][0-9]*', value) or not 900 <= int(value) <= 1800:
         raise RuntimeError('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS must be an integer from 900 to 1800')
     budget = int(value)
-    if (os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS')) and budget != 900:
+    if ci and budget != 900:
         raise RuntimeError('CI verification retains its 900-second full-suite budget')
     return budget
 

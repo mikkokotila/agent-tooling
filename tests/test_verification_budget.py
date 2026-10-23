@@ -33,7 +33,7 @@ def verification(tmp_path, monkeypatch):
 def test_full_suite_has_finite_headroom_without_changing_other_command_defaults(verification, monkeypatch, selected):
     if selected is not None:
         monkeypatch.setenv('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS', selected)
-    budget = int(selected or '900')
+    budget = int(selected or '1200')
     report, xml = verification
     calls = []
 
@@ -90,7 +90,7 @@ def test_unsuccessful_suite_cannot_reuse_prior_reports_or_reach_installation(ver
 
     def child(argv, **kwargs):
         calls.append((argv, kwargs))
-        assert kwargs['timeout'] == 900 and kwargs['check'] is True
+        assert kwargs['timeout'] == 1200 and kwargs['check'] is True
         if outcome == 'timeout':
             raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
         raise subprocess.CalledProcessError(1, argv)
