@@ -19,7 +19,7 @@ def repair(case, monkeypatch):
               qualified=dict(id=recovery.QUALIFIED_RUN,head_sha=recovery.QUALIFIED_HEAD,
                   path=recovery.RUNS[39955803473][0],event='pull_request',status='completed',conclusion='success',
                   head_repository=dict(full_name=recovery.REPOSITORY)),
-              blob=dict(sha=recovery.FIXED_TEST,type='file'),
+              blob=dict(sha=recovery.FIXED_TEST,type='file'),annotation=None,
               runs={key:dict(id=key,head_sha=case['main'],head_repository=dict(full_name=recovery.REPOSITORY),
                   path=value[0],event=value[1],status='completed',conclusion='failure',run_attempt=1)
                   for key,value in recovery.RUNS.items()},
@@ -33,6 +33,7 @@ def repair(case, monkeypatch):
         if target.endswith('/git/ref/tags/v5.46.2'):body=data['tag']
         elif target.endswith('/actions/runs/'+str(recovery.QUALIFIED_RUN)):body=data['qualified']
         elif '/contents/' in target:body=data['blob']
+        elif '/git/tags/' in target:body=data['annotation']
         elif '/jobs?' in target:body=dict(jobs=data['jobs'])
         else:body=data['runs'][int(target.split('/')[-1])]
         if data['before_write']:
@@ -66,7 +67,7 @@ def test_no_wrong_authority_source_or_unqualified_retry(repair,fault,tmp_path):
     elif fault=='failed_candidate':c['snapshot']['checks'][0]['conclusion']='failure'
     elif fault=='wrong_merge':c['snapshot']['merge_commit_sha']='b'*40
     elif fault=='wrong_tag':repair['tag']['object']['sha']='b'*40
-    elif fault=='tag_type':repair['tag']['object']['type']='tag'
+    elif fault=='tag_type':repair['tag']['object']['type']='blob'
     elif fault=='fix_pending':repair['qualified']['status']='in_progress'
     elif fault=='fix_failed':repair['qualified']['conclusion']='failure'
     elif fault=='fix_head':repair['qualified']['head_sha']='b'*40
@@ -107,4 +108,22 @@ def test_unknown_post_outcome_never_gets_an_automatic_second_attempt(repair):
 def test_owner_and_checkout_are_rechecked_before_request(repair):
     repair['before_write']=lambda:(repair['case']['root']/'src.txt').write_text('changed')
     with pytest.raises(ValueError,match='checkout changed'):cli.gateway(repair['case']['args'],repair['case']['store'])
+    assert repair['writes']==[]
+
+
+def test_annotated_release_tag_resolves_the_same_immutable_commit(repair):
+    repair['tag']['object']=dict(type='tag',sha='c'*40)
+    repair['annotation']=dict(sha='c'*40,tag='v5.46.2',object=dict(type='commit',sha=repair['case']['main']))
+    cli.gateway(repair['case']['args'],repair['case']['store']);assert len(repair['writes'])==1
+
+
+@pytest.mark.parametrize('fault',['identity','name','target','nested'])
+def test_annotated_tag_cannot_change_identity_or_release_target(repair,fault):
+    repair['tag']['object']=dict(type='tag',sha='c'*40)
+    repair['annotation']=dict(sha='c'*40,tag='v5.46.2',object=dict(type='commit',sha=repair['case']['main']))
+    if fault=='identity':repair['annotation']['sha']='d'*40
+    elif fault=='name':repair['annotation']['tag']='v5.46.3'
+    elif fault=='target':repair['annotation']['object']['sha']='d'*40
+    else:repair['annotation']['object']['type']='tag'
+    with pytest.raises(ValueError):cli.gateway(repair['case']['args'],repair['case']['store'])
     assert repair['writes']==[]
