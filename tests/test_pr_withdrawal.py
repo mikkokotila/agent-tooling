@@ -1,5 +1,6 @@
 """Withdrawal is an owner-bound lifecycle action, never a passing PR receipt."""
 from copy import deepcopy
+import asyncio
 import json
 import os
 import subprocess
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from caller_pr_gates import cli, ghrelay, monitor, progress, withdrawal
+from caller_pr_gates import cli, ghrelay, monitor, progress, supervisor, withdrawal, workflow
 from caller_pr_gates.policy import evaluate_pr
 from caller_pr_gates.store import Store
 from test_policy import check, comment
@@ -81,6 +82,32 @@ def evidence(store):
     with store._connect() as db:
         return {table: [tuple(row) for row in db.execute('SELECT * FROM ' + table)]
                 for table in ('validation_plans', 'validation_runs', 'dispositions', 'scopes', 'pr_scope_bindings')}
+
+
+def pending_plan(context, number=1):
+    store = context['store']
+    if number != 1:
+        store.register(SID, 'codex', REPO, number, str(context['root']))
+    plan = deepcopy(store.validation_plans(SID)[0]['plan'])
+    check = dict(plan['checks'][0], id='later', reason='Exercise a genuinely unexecuted admission control')
+    plan['checks'] = [*plan['checks'], check] if number == 1 else [check]
+    return store.save_validation_plan(SID, REPO, number, context['root'], plan,
+                                      progress.fingerprint(context['root'], plan), 'fresh-admission-control')
+
+
+def due_job(context, *, number=1, issue=False):
+    store = context['store']
+    return store.register_followup(SID, REPO, number, time.time() - 2000, store.get_scope(SID),
+                                   issue_number=number if issue else None)
+
+
+def reserve(context):
+    store = context['store']
+    with store._connect() as db:
+        pin = withdrawal._owner(store, db, SID, REPO, 1, 'codex', str(context['root']))
+    receipt = dict(pin, head_sha=context['snapshot']['head_sha'], reason=REASON, completion_verified=False)
+    deadline, attempt = withdrawal._claim(store, SID, pin, receipt)
+    return deadline, attempt, receipt
 
 
 def test_conflicted_failed_changes_requested_candidate_closes_without_completion(context, capsys):
@@ -324,3 +351,161 @@ def test_monitor_retirement_cannot_hide_changed_identity_rearm_or_lost_reservati
     assert evidence(store) == before
     assert not events(store, 'pr_withdrawn')
     assert events(store, 'pr_withdrawal_unverified')[0]['completion_verified'] is False
+
+
+@pytest.mark.parametrize('admission', ['validation', 'followup', 'recovery', 'background'])
+def test_new_same_pr_work_after_claim_is_atomically_refused(context, monkeypatch, admission):
+    store = context['store']
+    plan = pending_plan(context)
+    job = due_job(context) if admission == 'followup' else None
+    def write(argv):
+        assert len(events(store, 'pr_withdrawal_attempt')) == 1
+        if admission == 'followup':
+            assert store.claim_followup(job['id']) is None
+        else:
+            with pytest.raises(ValueError, match='explicit withdrawal'):
+                if admission == 'validation':
+                    store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)
+                elif admission == 'recovery':
+                    store.record_recovery(REPO, 1, SID, dict(state='dispatching', lease_until=time.time() + 600))
+                else:
+                    workflow.launch_check(store, SID, REPO, 1, context['root'], 'later')
+        return subprocess.CompletedProcess(argv, 0)
+    original_popen = subprocess.Popen
+    def guarded_popen(argv, *args, **kwargs):
+        if isinstance(argv, (list, tuple)) and 'caller_pr_gates.cli' in argv and 'validate' in argv:
+            pytest.fail('Blocked runner must not be spawned')
+        return original_popen(argv, *args, **kwargs)
+    monkeypatch.setattr(workflow.subprocess, 'Popen', guarded_popen)
+    context['write_hook'] = write
+    cli.gateway(arguments(context), store)
+    assert not store.validation_runs(plan['plan_id'])
+    assert store.recovery(REPO, 1, SID) is None
+    if job:
+        assert next(j for j in store.followups() if j['id'] == job['id'])['attempts'] == 0
+
+
+def test_supervisor_cannot_dispatch_from_stale_open_snapshot_after_claim(context):
+    store = context['store']
+    with store._connect() as db:
+        db.execute('UPDATE sessions SET updated_at=0 WHERE session_id=?', (SID,))
+    calls = []
+    async def collect(*args):
+        return deepcopy(context['snapshot'])
+    def write(argv):
+        result = asyncio.run(supervisor.tick(store, execute=True, collect_pr=collect, collect_issue=collect,
+            runner=lambda *a, **kw: calls.append(a) or {'returncode': 0}))
+        assert not result['actions'] and any('explicit withdrawal' in item['error'] for item in result['errors'])
+        return subprocess.CompletedProcess(argv, 0)
+    context['write_hook'] = write
+    cli.gateway(arguments(context), store)
+    assert not calls and store.recovery(REPO, 1, SID) is None
+
+
+@pytest.mark.parametrize('ordinary_lease', [False, True])
+def test_other_pr_and_ordinary_monitor_leases_keep_validation_followup_recovery_admission(context, ordinary_lease):
+    store = context['store']
+    number = 1 if ordinary_lease else 2
+    plan = pending_plan(context, number)
+    job = due_job(context, number=number)
+    if ordinary_lease:
+        with store._connect() as db:
+            db.execute('UPDATE pr_watch SET worker_pid=?,lease_until=? WHERE number=1', (os.getpid(), time.time() + 600))
+    else:
+        reserve(context)
+    run = store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)
+    actual = subprocess.run(plan['plan']['checks'][-1]['argv'], cwd=context['root'], capture_output=True)
+    assert actual.returncode == 1
+    store.finish_validation(run['run_id'], actual.returncode, progress.fingerprint(context['root'], plan['plan']), session_id=SID)
+    assert store.claim_followup(job['id'])['status'] == 'running'
+    assert store.record_recovery(REPO, number, SID, dict(state='dispatching', lease_until=time.time() + 600))['state'] == 'dispatching'
+
+
+def test_issue_scoped_job_is_not_adopted_by_same_number_pr_withdrawal(context):
+    job = due_job(context, issue=True)
+    reserve(context)
+    assert context['store'].claim_followup(job['id'])['status'] == 'running'
+
+
+def test_verified_withdrawal_blocks_stale_new_work_but_keeps_history_and_metadata(context):
+    store = context['store']
+    plan, job = pending_plan(context), due_job(context)
+    cli.gateway(arguments(context), store)
+    assert store.claim_followup(job['id']) is None
+    with pytest.raises(ValueError, match='completed withdrawal'):
+        store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)
+    assert store.validation_runs(plan['plan_id']) == []
+    assert store.followups()[0]['status'] == 'pending'
+
+
+def test_unverified_attempt_releases_admissions_without_changing_failed_result(context):
+    store = context['store']
+    plan = pending_plan(context)
+    _, attempt, receipt = reserve(context)
+    store.audit('pr_withdrawal_unverified', dict(receipt, attempt_audit_id=attempt))
+    run = store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)
+    assert run['status'] == 'running'
+
+
+@pytest.mark.parametrize('alive', [False, True])
+def test_expiry_does_not_admit_new_work_while_withdrawal_claimant_is_still_alive(context, monkeypatch, alive):
+    store = context['store']
+    plan = pending_plan(context)
+    deadline, _, _ = reserve(context)
+    monkeypatch.setattr(withdrawal.time, 'time', lambda: deadline + 1)
+    monkeypatch.setattr(monitor, '_worker_alive', lambda pid: alive)
+    if alive:
+        with pytest.raises(ValueError, match='explicit withdrawal'):
+            store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)
+    else:
+        assert store.begin_validation(plan['plan_id'], 'later', plan['input_digest'], session_id=SID)['status'] == 'running'
+
+
+def test_close_is_not_started_when_source_proof_consumes_its_remaining_budget(context, monkeypatch):
+    original = withdrawal.source
+    calls = []
+    def slow_proof(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(True)
+        if len(calls) == 3:
+            with context['store']._connect() as db:
+                deadline = db.execute('SELECT lease_until FROM pr_watch').fetchone()[0]
+            monkeypatch.setattr(withdrawal.time, 'time', lambda: deadline - 200)
+        return result
+    monkeypatch.setattr(withdrawal, 'source', slow_proof)
+    with pytest.raises(ValueError, match='reserved owner lease'):
+        cli.gateway(arguments(context), context['store'])
+    assert not context['calls']
+
+
+@pytest.mark.parametrize('operation', ['consume', 'deliver', 'reserve'])
+def test_monitor_stale_admissions_cannot_replace_or_clear_explicit_withdrawal_reservation(context, monkeypatch, operation):
+    store = context['store']
+    with store._connect() as db:
+        db.execute("UPDATE pr_watch SET delivery_state='pending',event_id='prior-event',payload='{}',retry_at=0")
+    deadline, _, _ = reserve(context)
+    with store._connect() as db:
+        before = dict(db.execute('SELECT * FROM pr_watch').fetchone())
+    async def revalidate(store, rows, *args, **kwargs):
+        return rows
+    monkeypatch.setattr(monitor, 'revalidate', revalidate)
+    if operation == 'consume':
+        assert monitor.consume(store, SID) is None
+    elif operation == 'deliver':
+        monkeypatch.setattr(monitor, 'pending', lambda *a, **kw: [dict(before, delivery_state='reserved')])
+        monkeypatch.setattr(monitor, 'message', lambda *a, **kw: 'Previously captured actionable work')
+        assert asyncio.run(monitor.deliver(store, SID,
+            runner=lambda *a, **kw: pytest.fail('Withdrawal must prevent stale delivery'))) is False
+    else:
+        async def reader(*args):
+            return deepcopy(context['pull'])
+        async def collector(*args):
+            return deepcopy(context['snapshot'])
+        result = asyncio.run(monitor.tick(store, execute=True, now=deadline + 1,
+            reader=reader, collector=collector, checklist=True,
+            spawn=lambda *a: pytest.fail('Withdrawal marker must prevent monitor reservation')))
+        assert result['workers'] == 0
+    with store._connect() as db:
+        after = dict(db.execute('SELECT * FROM pr_watch').fetchone())
+    assert after['lease_until'] == deadline and after['worker_pid'] == before['worker_pid']
+    assert after['delivery_state'] == 'pending'

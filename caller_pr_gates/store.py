@@ -206,6 +206,33 @@ class Store:
     def _audit(db, event, fields):
         db.execute("INSERT INTO audit(event, fields, recorded_at) VALUES (?, ?, ?)", (event, _json(fields), time.time()))
 
+    def _withdrawal_blocks_work(self, db, repository, number):
+        """Called under the caller's admission transaction, never for a generic watch lease."""
+        row = db.execute('''SELECT id,fields FROM audit WHERE event='pr_withdrawal_attempt'
+            AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
+            ORDER BY id DESC LIMIT 1''', (repository, number)).fetchone()
+        if not row:
+            return False
+        reservation = json.loads(row['fields']).get('reservation') or {}
+        pid, deadline = reservation.get('worker_pid'), reservation.get('lease_until')
+        if (reservation.get('kind') != 'owned_pr_withdrawal' or type(pid) is not int or pid <= 0
+                or isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)):
+            return False
+        terminal = db.execute('''SELECT event FROM audit WHERE id>? AND event IN ('pr_withdrawn','pr_withdrawal_unverified')
+            AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
+            AND json_extract(fields,'$.attempt_audit_id')=? ORDER BY id DESC LIMIT 1''',
+            (row['id'], repository, number, row['id'])).fetchone()
+        if terminal:
+            return terminal['event'] == 'pr_withdrawn'
+        if deadline > time.time():
+            return True
+        from .monitor import _worker_alive
+        return _worker_alive(pid)  # A live close/readback cannot lose its fence on a clock expiry.
+
+    def _admit_pr_work(self, db, repository, number):
+        if self._withdrawal_blocks_work(db, repository, number):
+            raise ValueError('PR work is blocked by its explicit withdrawal reservation or completed withdrawal')
+
     def _record_session(self, db, session_id, client, cwd, parent_session):
         if not session_id or not client:
             raise ValueError("session_id and client are required")
@@ -821,6 +848,7 @@ class Store:
             plan = self._validation_plan_row(row)
             if not plan:
                 raise ValueError("validation plan is missing or no longer active")
+            self._admit_pr_work(db, plan['repository'], plan['number'])
             if session_id is not None and self._root(session_id, self._parents(db)) != plan["session_id"]:
                 raise ValueError("validation plan is owned by another task")
             if retained:
@@ -1068,6 +1096,9 @@ class Store:
             raise ValueError("recovery fields cannot change ownership or timestamps")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            lease = fields.get('lease_until')
+            if fields.get('state') == 'dispatching' or (isinstance(lease, (int, float)) and lease > time.time()):
+                self._admit_pr_work(db, repository, number)
             owned = self._task_sessions(db, session_id)
             if not any(row[0] in owned for row in db.execute("SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repository, number))):
                 raise ValueError("PR is not registered to this task")
@@ -1295,6 +1326,9 @@ class Store:
             raise ValueError("lease_seconds must be positive and finite")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            job = db.execute('SELECT repository,number,issue_number FROM followups WHERE id=?', (id,)).fetchone()
+            if job and job['issue_number'] is None and self._withdrawal_blocks_work(db, job['repository'], job['number']):
+                return None
             now = time.time()
             token = str(uuid.uuid4())
             changed = db.execute("""UPDATE followups SET status='running', attempts=attempts+1,

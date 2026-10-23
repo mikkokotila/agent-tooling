@@ -92,21 +92,22 @@ def _claim(store, sid, pin, receipt):
                 AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?
                 AND json_extract(fields,'$.head_sha')=?''', (pin['repository'], pin['number'], receipt['head_sha'])).fetchone():
             raise ValueError('Withdrawal already attempted for this head; investigate its outcome without replay')
-        deadline = now + 180
+        deadline = now + 360
+        receipt['reservation'] = dict(kind='owned_pr_withdrawal', worker_pid=os.getpid(), lease_until=deadline)
         db.execute('UPDATE pr_watch SET lease_until=?,worker_pid=? WHERE repository=? AND number=?',
                    (deadline, os.getpid(), pin['repository'], pin['number']))
         store._audit(db, 'pr_withdrawal_attempt', receipt)
         return deadline, db.execute('SELECT last_insert_rowid()').fetchone()[0]
 
 
-def _held(store, db, sid, pin, deadline, *, attempt=None, head=None):
+def _held(store, db, sid, pin, deadline, *, attempt=None, head=None, remaining=0):
     row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?',
                      (pin['repository'], pin['number'])).fetchone()
     retired = attempt is not None and row is not None and row['state'] == 'closed'
     expected = dict(pin, state='closed') if retired else pin
     if _owner(store, db, sid, pin['repository'], pin['number'], pin['client'], pin['cwd'], retired=retired) != expected:
         raise ValueError('Withdrawal lost its exact canonical owner')
-    if row['worker_pid'] != os.getpid() or row['lease_until'] != (0 if retired else deadline) or deadline <= time.time():
+    if row['worker_pid'] != os.getpid() or row['lease_until'] != (0 if retired else deadline) or deadline - time.time() <= remaining:
         raise ValueError('Withdrawal lost its reserved owner lease')
     if not retired:
         return []
@@ -163,6 +164,9 @@ def close(args, store, sid, argv, run):
             _held(store, db, sid, pin, deadline)
             if source(directory, stable=True) != local:
                 raise ValueError('Withdrawal checkout changed before close')
+            # Covers credential lookup, the 90s close, 30s readback, final
+            # source verification and transaction margin after this proof.
+            _held(store, db, sid, pin, deadline, remaining=240)
         result = run(['gh', 'pr', 'close', target, '--comment', 'Withdrawn without merging: ' + reason.strip()],
                      cwd=directory, text=True, capture_output=True, timeout=90)
         if result.returncode:

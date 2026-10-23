@@ -361,6 +361,8 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
                                      (repository, number)).fetchone()
                 if current['owner_session'] != row['owner_session'] or current['state'] != 'open':
                     return
+                if store._withdrawal_blocks_work(db, repository, number):
+                    return
                 event = current['event_id']
                 payload = current['payload']
                 delivery = current['delivery_state']
@@ -407,12 +409,17 @@ async def tick(store, *, execute=False, now=None, reader=probe, collector=None, 
             owners = [r[0] for r in db.execute("SELECT DISTINCT owner_session FROM pr_watch WHERE state='open' AND delivery_state='pending'")]
         for sid in owners:
             with store._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
                 if db.execute("SELECT 1 FROM pr_watch WHERE owner_session=? AND (delivery_state IN ('reserved','queued') OR lease_until>?)", (sid, now)).fetchone() or db.execute('SELECT 1 FROM issue_closeouts WHERE owner_session=? AND lease_until>?', (sid, now)).fetchone():
                     continue
                 busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (sid,)).fetchone()
                 if busy and busy['busy']:
                     continue  # Its next native tool callback consumes the inbox.
-                claimed = db.execute("UPDATE pr_watch SET delivery_state='reserved',lease_until=? WHERE owner_session=? AND state='open' AND delivery_state='pending' AND retry_at<=?", (now + 3000, sid, now)).rowcount
+                claimed = 0
+                for target in db.execute("SELECT repository,number FROM pr_watch WHERE owner_session=? AND state='open' AND delivery_state='pending' AND retry_at<=?", (sid, now)).fetchall():
+                    if not store._withdrawal_blocks_work(db, target['repository'], target['number']):
+                        claimed += db.execute("UPDATE pr_watch SET delivery_state='reserved',lease_until=? WHERE repository=? AND number=?",
+                                              (now + 3000, target['repository'], target['number'])).rowcount
             if not claimed:
                 continue
             try:
@@ -555,6 +562,8 @@ def consume(store, sid, *, event_id=None, reader=probe, collector=None, full=Tru
     with store._connect() as db:
         db.execute('BEGIN IMMEDIATE')
         for row in rows:
+            if store._withdrawal_blocks_work(db, row['repository'], row['number']):
+                continue
             changed = db.execute("UPDATE pr_watch SET delivery_state='consumed',delivered_fingerprint=fingerprint,error=CASE WHEN client='codex' AND error LIKE 'Unconsumed Codex delivery:%' THEN NULL ELSE error END,lease_until=CASE WHEN client='codex' THEN 0 ELSE lease_until END WHERE repository=? AND number=? AND owner_session=? AND event_id=? AND state='open' AND delivery_state IN ('pending','reserved','queued')",
                        (row['repository'], row['number'], sid, row['event_id'])).rowcount
             if changed:
@@ -610,6 +619,8 @@ def _idle_handoff(store, sid, event, result, *, retry_at=None):
         rows = db.execute("SELECT * FROM pr_watch WHERE owner_session=? AND state='open' AND armed=1 AND delivery_state='consumed' AND lease_until<=?", (sid, time.time())).fetchall()
         stalled = False
         for row in rows:
+            if store._withdrawal_blocks_work(db, row['repository'], row['number']):
+                continue
             cached = db.execute('SELECT snapshot,gates FROM snapshots WHERE repository=? AND number=?', (row['repository'], row['number'])).fetchone()
             if not cached or not row['payload']:
                 continue
@@ -767,6 +778,9 @@ async def deliver(store, sid, *, reader=probe, collector=None, runner=None, avai
             return False
     body = message(rows, checklist=checklist)
     with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if any(store._withdrawal_blocks_work(db, row['repository'], row['number']) for row in rows):
+            return False
         busy = db.execute('SELECT busy FROM watch_sessions WHERE session_id=?', (sid,)).fetchone()
         if busy and busy['busy']:
             db.execute("UPDATE pr_watch SET delivery_state='pending',lease_until=0 WHERE owner_session=? AND delivery_state='reserved'", (sid,))

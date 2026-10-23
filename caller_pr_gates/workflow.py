@@ -520,10 +520,13 @@ def launch_check(store, sid, repository, number, cwd, check_id, *, merged_head=N
     if merged_head is not None:
         validation_owner(store, sid, repository, number, cwd, merged_head, preflight=True)
         args.extend(['--merged-head', merged_head])
-    with log.open('w') as output:
-        log.chmod(0o600)
-        child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                 stdout=output, stderr=output, start_new_session=True)
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        store._admit_pr_work(db, repository, number)
+        with log.open('w') as output:
+            log.chmod(0o600)
+            child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=output, stderr=output, start_new_session=True)
     store.audit('validation_background_started', {'session_id': sid, 'repository': repository,
                 'number': number, 'check': check_id, 'pid': child.pid, 'log': str(log)})
     return {'started': True, 'pid': child.pid, 'log': str(log), 'completion_verified': False,
