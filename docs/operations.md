@@ -418,3 +418,16 @@ evidence and refuse automatic retry; inspect the actual dispatch outcome before
 another invocation. A concurrent dispatch cannot substitute its run identity.
 A verified dispatch receipt establishes the run identity, never CI success,
 review completion or merge readiness. All existing PR gates remain required.
+
+
+## Limen 5.46.2 release dispatch
+
+The gateway admits only the existing `Vaquum/Limen` manual release workflow for version 5.46.2. From the original candidate checkout, after its reviewed PR merges, check out its exact merge commit and save `{"ref":"main"}` in a private JSON file. Use the retained candidate PR as `--target`:
+
+```sh
+caller-pr-gates github --session SESSION --client CLIENT --cwd CHECKOUT --target https://github.com/Vaquum/Limen/pull/N -- api repos/Vaquum/Limen/actions/workflows/pr_post_release.yml/dispatches --method POST --input PRIVATE_JSON
+```
+
+The gate requires retained merged ownership, independent current-head approval, all current checks and review dispositions, a clean matching checkout at live main, coherent release versions and the pinned reviewed workflow/release script. An existing tag, prior dispatch or different predecessor blocks it. It freezes the saved payload and verifies the returned workflow run's source identity. No other version, workflow, ref, input or API-version override is admitted.
+
+An ambiguous response records an incomplete attempt. Inspect the actual workflow runs, tags and releases before any retry; never infer that a failed response means no release started. This command does not prove PyPI or documentation publication. The existing release, package publisher and documentation activation guards still own those outcomes. No branch protection or credential is changed.

@@ -775,6 +775,12 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            from .limen_release import dispatch as dispatch_limen_release
+            dispatched_release = dispatch_limen_release(args, store, sid, repo, num, issue,
+                                                        endpoint, method, argv, github_run)
+            if dispatched_release is not None:
+                print(json.dumps(dispatched_release))
+                return None
             if endpoint == 'repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY':
                 from .origo_secret_retirement import retire
                 return retire(args, store, sid, argv, github_run)
