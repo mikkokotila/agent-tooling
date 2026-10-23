@@ -11,6 +11,7 @@ import pytest
 
 from caller_pr_gates import monitor, progress, workflow
 from caller_pr_gates.policy import evaluate_pr
+from caller_pr_gates.store import Store
 from test_policy import fresh_branch, closing_link
 from test_workflow import git, local
 
@@ -20,7 +21,9 @@ REPO = 'autonomio/poise'
 
 @pytest.fixture
 def native(local, tmp_path, monkeypatch):
-    store, root, snap, plan = local
+    _, root, snap, plan = local
+    store = Store(tmp_path / 'native-state')
+    store.record_session('s', 'codex', str(root))
     git(root, 'remote', 'set-url', 'origin', f'https://github.com/{REPO}.git')
     store.register('s', 'codex', REPO, 1, str(root))
     with (root / '.gitignore').open('a') as stream:
