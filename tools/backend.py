@@ -15,6 +15,9 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
                 wheel.write(path, str(path.relative_to(ROOT)))
         for path in [ROOT / 'prompts.toml', ROOT / 'VERSION', *sorted((ROOT / 'config').glob('*'))]:
             wheel.write(path, 'agent_tooling_assets/' + str(path.relative_to(ROOT)))
+        for path in sorted((ROOT / 'manager').glob('*')) + sorted((ROOT / 'switchboard').glob('*')):
+            if path.is_file() and path.suffix in {'.md', '.json', '.txt', '.py'}:
+                wheel.write(path, 'agent_tooling_assets/' + str(path.relative_to(ROOT)))
         dist = f'agent_tooling-{version}.dist-info/'
         wheel.writestr(dist + 'WHEEL', 'Wheel-Version: 1.0\nGenerator: agent-tooling\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
         wheel.writestr(dist + 'METADATA', f'Metadata-Version: 2.1\nName: agent-tooling\nVersion: {version}\nRequires-Python: >=3.13,<3.14\nSummary: Captured operational PR hooks\n')

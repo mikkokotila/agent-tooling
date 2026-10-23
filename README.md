@@ -1,6 +1,21 @@
 # Agent tooling
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.60 installs runtime 1.7.60.
+## Local work manager
+
+Start a chat in this repository and say **“you are manager”**. [The manager mandate](manager/MANAGER.md) defines activation, authority, Codex-wide versus Muse-only coverage, the session-owned ledger/heartbeat lifecycle, archive permission, retirement and verified per-turn token reporting. `make install` installs its documents, request protocol and read-only usage helper alongside the existing hooks; operational state, sessions, access profiles and credentials stay private in `~/.codex/work-manager/`. A new manager chat starts fresh; ending it stops its polling and removes its working ledger. Private machine configuration survives separately. Updating or installing instructions does not appoint a manager or end its active session.
+
+Say **“you are switchboard”** to take the [Switchboard role](switchboard/SWITCHBOARD.md). The same normal installer deploys its mandate to `~/.codex/switchboard/SWITCHBOARD.md` and appointment pointers to both Codex and Claude personal instructions, so the phrase works from any workspace. All host variants observe every accessible local Claude/Codex/Muse session; Claude/Codex additionally check GPT browser chats in a verified dedicated new window, Muse need not, and Claude browser chats are never inspected. Source work/recovery remains with owners/Manager. Fresh sessions do not inherit historical questions or restart stopped polling.
+
+
+## PR hooks
+
+The original Origo608 retirement owner may request only deployment run39931006450 at reviewed descendant9629e4e after recording `origo-608-latest-deployment-continuation` with the exact `origo_608_deployment_continuation` grant. Its seven keys are repository, authorizing_pr, source_merge, deployment_sha, run_id, version and approval_evidence; all identities are fixed in the gateway. Current main, original-merge ancestry, unchanged trusted deployment boundaries, native-only3.34.57 and the original preflight-only failure are mandatory. Complete deployment inventory rejects newer or active work in both retry and secret qualification, including manual older-ref deployments; only the retry’s own post-request target may remain active. A durable reservation admits one bodyless retry; unverified outcomes require read-only investigation, never replay. This neither adopts PR612 nor admits the superseded608 deployment.
+
+The existing exact provider-secret retirement retains its separate original grant and every deletion guard. It additionally requires this same continuation grant and successful run39931006450 with the actual image-deployment step complete, plus original/current immutable source absence. Other runs must also have validated UTC update times strictly before the actual fixed deployment job completed; a lower run ID does not prove an earlier rerun. A retry receipt does not prove deployment success. Operators request neither operation until the retirement owner has verified purge/preflight zero.
+
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.69 installs runtime 1.7.69.
+
+Limen, Poise and Origo now use fresh live protection to decide target ancestry; merge queues validate integration without manual base updates. Their document-review workflow requires explicit opt-in. The owned Poise/Origo gateway admits only approved strictness removal and Origo slice/version check retirement, preserving every other protection field.
 
 PRs above250 commits use explicitly paginated comparisons pinned to their full PR base/head SHAs. Complete counts, commit dates, unique identities, head inclusion and stable final PR identity remain required. Ordinary PR batching and all review/CI gates remain unchanged.
 
@@ -14,7 +29,7 @@ A failed private Python checker can be corrected through an explicit `correction
 
 Narrow validation preflights pin actual lifecycle, head and target ancestry while allowing unrelated comment timestamps to change. Full review and completion freshness remain unchanged.
 
-Dependency-directory validation fingerprints exclude Vitest's regenerated timing records. Dependency code, tracked files and explicitly declared cache files remain inputs.
+Dependency-directory validation fingerprints exclude Vitest's regenerated timing records and Poise's generated `node_modules/.cache/behavior-ledger-<six alphanumeric characters>/worker.mjs` bundles. Dependency code, source, tracked files, symlinks and explicitly declared cache files remain inputs.
 
 The GitHub gateway can create the exact private personal repository authorized in the recorded scope (`repository_creation`: `full_name`, `visibility=private`, `approval_evidence`). It admits only `repo create OWNER/NAME --private [--description TEXT]`, verifies the authenticated owner and reads back identity and visibility. Clone, push, public creation and other repository mutations remain outside this operation. The immutable v0.1.0 tag preserves the original operational 1.7.0 capture.
 

@@ -40,7 +40,7 @@ Release 0.1.29 adds `caller-pr-gates link-issues PARENT_URL CHILD_URL --session 
 
 ## Whole-suite verification wait
 
-`tools/manage.py verify`, including the verification required before `install`, gives its entire pytest subprocess a finite **900-second** parent wait. This is cumulative suite execution time, not an individual test or product performance allowance. Every test/assertion and its own deadline remains unchanged; the generic command default remains 180 seconds. The CI job retains its separate 10-minute deadline.
+`tools/manage.py verify`, including the verification required before `install`, defaults to a finite **900-second** parent wait for its entire pytest subprocess. Under local host contention, explicitly declare and pin `AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS` in the managed validation plan for both verification and installation, then set it to an integer from 900 to 1800. Any nonempty `CI` or `GITHUB_ACTIONS` indicator retains 900 seconds and refuses an extension. The actual selected budget appears in the verification report; a cached report from a different budget cannot supply execution credit. This is cumulative suite execution time, not an individual test or product performance allowance. Every test/assertion, full suite argv and its own deadline remains unchanged; the generic command default remains 180 seconds. The CI job retains its separate 20-minute deadline.
 
 The increase from 600 seconds addresses a retained local installation attempt that reached the parent limit while still making late-suite progress. It does not establish which test was slow, attribute a host cause, or credit that interrupted suite as a pass. A timeout or nonzero pytest exit still propagates before worker admission or deployment and cannot produce a new successful verification receipt. The separate `install --wait-for-workers` option (default 600 seconds) applies only after successful verification and never bypasses an active worker lease.
 
@@ -247,6 +247,14 @@ Git-tree absence is not evidence that a declared private directory was absent. C
 
 Admission appends a new plan generation and records its old/new source and input relationship. Previous plans, failures, passes and pending declarations remain in history. The new generation imports **no old execution credit**, including an older pass with matching final-source bytes; every necessary check needs a fresh actual execution. Its before/after pins and actual process exit remain mandatory. A failure in the new generation stays a failure and cannot be reset by repeating the binding command. Repeating the identical command after successful binding is idempotent. Active runs block a transition; let them finish naturally. A commit with unchanged source content cannot create a new epoch. This option does not authorize post-merge tracked edits, a different head, another owner/checkout or new controls in the transition. Subsequent independently pinned controls retain their existing separate admission rules. Retired reminders stay retired, and passing local checks still do not establish task completion.
 
+### Native worker pin for a retained Poise full check
+
+For a merged `autonomio/poise` PR whose sole necessary check is the full root `npm run check`, an actual failed or UNKNOWN result may justify declaring the native `VITEST_MAX_WORKERS` control. Keep the original plan file byte-for-byte equivalent except for appending `VITEST_MAX_WORKERS` to its existing `env_names: ["PATH"]`; set its value to a positive integer in the invocation environment. Use the same `validation-plan ... --merged-head ORIGINAL_PR_HEAD` command, then execute the same full check with `validate ... --merged-head ORIGINAL_PR_HEAD --background` under that identical PATH and worker value.
+
+Admission must reproduce the complete original fingerprint using the original declarations, including PATH and private/dependency inputs, and independently match the exact published source and package scripts. It preserves the command, check identity, reason, cwd and every existing input declaration. Other environment additions, filtered commands, changed source/scripts, another repository, absent/active/successful original results and caller-supplied provenance are refused. The native worker value is an explicit execution control; no historical value for this previously undeclared variable is inferred.
+
+The new generation records `native_worker_epoch` with the original plan, digest, actual result ID, same merged head and positive worker value. Historical statuses remain unchanged, including UNKNOWN after an interrupted process. It imports no execution credit and requires a fresh actual full gate. The new control is frozen: changing it again cannot erase another failed result or enable an unchanged-input retry. Repeating the identical binding is idempotent. Retired ownership/reminders stay retired; this local result does not assert task acceptance.
+
 ### Additional private qualification controls
 
 If remaining acceptance needs a new local driver for the unchanged merged producer, append a new check to the existing plan file with its own `input_paths` (and, when needed, `env_names`). Keep every existing check and the top-level input/environment declarations unchanged. For example, append this check to the existing `checks` list:
@@ -346,3 +354,99 @@ Each correction names exactly one original check. Distinct required IDs keep dis
 No registration, monitor restart, database repair or placeholder PR is needed. Closed plans remain visible as incomplete task progress, including when their checkout is missing. Once all retained local checks pass, progress reports `local_checks_passed: true` with `completion_verified: false`; acceptance still requires the original task's evidence. Closed PRs report `MERGE_READY: WAIT` with `applicable: false`, never a synthetic passing readiness receipt. Existing open-PR CI/review/ancestry gates and reminder retirement are unchanged.
 
 
+
+### Existing Poise Google deployment keys
+
+Record the human-approved configuration as a separate immutable work-item with the ordinary `scope --file SAVED_SCOPE --work-item CONFIGURATION_ID` command. Include `google_actions_configuration` with exactly `repository` (the operator fork), `authorizing_pr` (the exact owned source PR URL) and nonempty `approval_evidence` quoting the human authorization. No deployment identity or credential value is installed as a source constant. The grant allows only the integration's client-ID variable and sealed client-secret, in that one repository, for that recorded PR's exact client/session/checkout. Its retained merged owner may finish deployment preparation without reopening or rearming the PR; closed unmerged work stays denied. Other work-items and PR scope baselines remain immutable.
+
+Use `github --session SESSION --client CLIENT --cwd CHECKOUT --target AUTHORIZING_PR -- api ENDPOINT --method METHOD --input SAVED_JSON`. For `POISE_GOOGLE_CLIENT_ID`, POST `repos/APPROVED_REPOSITORY/actions/variables` to create, or PATCH the same path plus `/POISE_GOOGLE_CLIENT_ID` to update, with exactly `name` and `value`. For `POISE_GOOGLE_CLIENT_SECRET`, PUT `repos/APPROVED_REPOSITORY/actions/secrets/POISE_GOOGLE_CLIENT_SECRET` with exactly GitHub's `key_id` and base64 `encrypted_value`. Seal with that fork's current public key first; never put plaintext secrets in the JSON, arguments or logs. Only a saved JSON file is accepted and the admitted bytes are forwarded through stdin. Other repositories, keys, settings, fields and method overrides stay denied. The write receipt contains only identity and a payload hash. Read back variable/secret metadata before releasing the existing deployment hold; a merge or successful API exit alone is not persistence proof. This capability authorizes no new grant, workflow dispatch or deployment.
+
+### Retire Origo's deployed CryptoHFTData Actions secret
+
+Release0.1.63/runtime1.7.63 adds only the bodyless DELETE of
+`repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY`. Record the existing human
+provider-removal authorization in immutable work-item
+`origo-608-retire-cryptohftdata-actions-secret`, with member
+`origo_cryptohftdata_secret_retirement` containing exactly `repository: Vaquum/Origo`,
+`authorizing_pr: https://github.com/Vaquum/Origo/pull/608` and nonempty
+`approval_evidence`. The original root owner/client/checkout must be retained with
+PR608 merged. This route never merges, adopts or rearms that PR.
+
+Use the existing gateway with `--target https://github.com/Vaquum/Origo/pull/608`
+and exactly `-- api repos/Vaquum/Origo/actions/secrets/CRYPTOHFTDATA_API_KEY --method DELETE`.
+No body, headers, other key or configuration operation is admitted. Admission
+requires the exact merge SHA's successful `Deploy On Merge` run, successful image
+deployment job/step, current main retaining that merge, and credential absence in
+bounded immutable Git blobs for both revisions. Exact commits must already exist
+locally; admission does not fetch or change checkout files. Source/deployment
+identity is rechecked before and after the operation.
+
+An atomic fixed-operation receipt permits only one attempted DELETE, including
+concurrent callers. The relay admits only that one exact HTTP write, without
+redirects or retries. Verification requires metadata200, DELETE204 and metadata404.
+Preflight404 is a refusal because it is not authorization proof. Receipts contain
+only whitelisted metadata, identities and source digests. Failed, interrupted,
+drifted or unknown outcomes remain incomplete and prevent another DELETE; use
+existing read-only metadata requests for investigation. No automatic retry,
+override, account revocation or other credential operation is provided.
+
+Retained live collectors/workers are never restarted by this route. Their old
+environment copies can remain inactive for the retired integration until normal
+rollout; deleting an Actions secret does not erase existing container or host
+configuration. Successful deployment evidence records the exact merged release's
+deployment and does not claim inspection of every retained runtime environment.
+
+### Owned Origo hosted source-suite fallback
+
+Release0.1.62 permits the current owner of an open `Vaquum/Origo` PR to dispatch only
+`.github/workflows/pr_checks_tests.yml` with `runner=github`. This uses the existing
+full source-native suite when its self-hosted runner is unavailable; no check,
+workflow, runner resource or repository setting is changed. The exact recorded
+client and checkout must be clean at the same-repository PR head and current main
+ancestry. The workflow file at both immutable base and head must match reviewed
+Git blob `6bf211fb8bbc65040bd5848040e36f2c2d463134`.
+
+Save JSON containing exactly `{"ref":"CURRENT_PR_HEAD_BRANCH","inputs":{"runner":"github"}}`.
+Then use the ordinary owned target and exact API form:
+
+```sh
+caller-pr-gates github --session SESSION --client CLIENT --cwd OWNED_CHECKOUT \
+  --target https://github.com/Vaquum/Origo/pull/NUMBER -- \
+  api repos/Vaquum/Origo/actions/workflows/pr_checks_tests.yml/dispatches \
+  --method POST --input SAVED_JSON
+```
+
+The request names the current branch as intent; the gateway creates or reuses
+`caller-pr-gates/ci-FULL_HEAD_SHA` as a lightweight tag and dispatches that exact
+tag. It never updates or deletes tags. An existing tag at another commit is a
+refusal. Ordinary branch pushes cannot change the workflow revision selected by
+the dispatch. This also requires permission to create repository Git refs.
+The admitted inputs are frozen before the write. Other inputs, refs, workflows,
+repositories, methods, headers, stdin bodies and foreign owners remain denied.
+The command fixes the internal GitHub API version to `2026-03-10` and requires the
+[dispatch response's exact workflow-run ID and URLs](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success requires that returned
+run's exact head, dispatch tag, repository, workflow and dispatch event, followed by
+unchanged PR/checkout/owner readback. Missing or raced outcomes record incomplete
+evidence and refuse automatic retry; inspect the actual dispatch outcome before
+another invocation. A concurrent dispatch cannot substitute its run identity.
+A verified dispatch receipt establishes the run identity, never CI success,
+review completion or merge readiness. All existing PR gates remain required.
+
+
+## Limen 5.46.2 release dispatch
+
+The gateway admits only the existing `Vaquum/Limen` manual release workflow for version 5.46.2. From the original candidate checkout, after its reviewed PR merges, check out its exact merge commit and save `{"ref":"main"}` in a private JSON file. Use the retained candidate PR as `--target`:
+
+```sh
+caller-pr-gates github --session SESSION --client CLIENT --cwd CHECKOUT --target https://github.com/Vaquum/Limen/pull/N -- api repos/Vaquum/Limen/actions/workflows/pr_post_release.yml/dispatches --method POST --input PRIVATE_JSON
+```
+
+The gate requires retained merged ownership, independent current-head approval, all current checks and review dispositions, a clean matching checkout at live main, coherent release versions and the pinned reviewed release/publisher scripts. The final release tag, prior dispatch or different predecessor blocks it. It verifies the existing v* tag ruleset forbids updates/deletions without bypass, creates or reuses `v5.46.2-dispatch-FULL_MERGE_SHA`, and dispatches that protected tag with no inputs. The publisher verifies that tag and the exact successful manual run. No mutable branch is sent to the dispatch API. No other version, workflow, input or API-version override is admitted.
+
+An ambiguous response records an incomplete attempt. Inspect the actual workflow runs, tags and releases before any retry; never infer that a failed response means no release started. This command does not prove PyPI or documentation publication. The existing release, package publisher and documentation activation guards still own those outcomes. No branch protection or credential is changed.
+
+## Repository integration policy
+
+For `Vaquum/Limen`, `autonomio/poise` and `Vaquum/Origo`, each full collection and validation preflight reads classic protection strictness and active branch rules. Required queues supply integration validation; otherwise strict checks require current ancestry. Missing policy remains UNKNOWN. Conflicts, required CI, review, issue closure and all other repositories retain their gates. Automatic title matching does not register document/slice reviews for these repositories; explicit `--kind` and `post-review` remain available.
+
+Recorded Poise/Origo PR owners may finish explicitly authorized settings even after their source merges; retired source identity and checkout remain pinned and monitoring is never reopened. Owned Poise/Origo PRs may use `github --target PR_URL -- api ENDPOINT --method METHOD --input FILE` to remove strict freshness. PUT repository main rulesets or PATCH `branches/main/protection/required_status_checks`. Origo may additionally replace `pr_checks_slice` with `pr_checks_prd` and retire `pr_checks_version`. The gateway derives that exact delta from live settings, requires recorded human scope, freezes the body, preserves all other protections, checks for races and verifies readback. It does not change bypass actors, reviewers, merge queues, security checks or other settings.

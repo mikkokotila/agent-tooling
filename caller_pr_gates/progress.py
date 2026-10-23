@@ -267,7 +267,7 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
     pipeline or background shell operator. Optional input_paths add ignored
     files/directories that the declared check depends on.
     """
-    allowed = {"checks", "input_paths", "env_names"} | ({"source_epoch"} if stored else set())
+    allowed = {"checks", "input_paths", "env_names"} | ({"source_epoch", "native_worker_epoch"} if stored else set())
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("validation plan must contain checks and optional input_paths")
     root = Path(cwd).expanduser().resolve()
@@ -334,14 +334,15 @@ def normalize_plan(payload: dict, cwd: str | Path, *, stored=False) -> dict:
                 raise ValueError("stored qualification input pin is malformed")
             normalized[-1]["input_digest"] = check["input_digest"]
     result = {"checks": normalized, **shared}
-    if stored and "source_epoch" in payload:
-        result["source_epoch"] = payload["source_epoch"]
+    for name in ("source_epoch", "native_worker_epoch"):
+        if stored and name in payload:
+            result[name] = payload[name]
     return result
 
 
 def plan_declaration(plan):
     """Compare caller declarations without runner-owned pins or source provenance."""
-    return {**{key: value for key, value in plan.items() if key not in {"checks", "source_epoch"}},
+    return {**{key: value for key, value in plan.items() if key not in {"checks", "source_epoch", "native_worker_epoch"}},
             "checks": [{key: value for key, value in check.items() if key != "input_digest"}
                        for check in plan["checks"]]}
 
@@ -381,6 +382,23 @@ def _full_npm_gate(check):
             else:
                 raise ValueError('Final coverage cannot replace, filter or add arguments to a full gate')
     return prefix, assignments, script, config, workers
+
+
+def native_worker_transition(repository, previous, current):
+    """One explicit native pin, preserving the entire original full gate."""
+    old, new = plan_declaration(previous), plan_declaration(current)
+    if (repository.lower() != 'autonomio/poise' or len(old['checks']) != 1
+            or old.get('env_names') != ['PATH']
+            or new.get('env_names') != ['PATH', 'VITEST_MAX_WORKERS']
+            or {**new, 'env_names': old['env_names']} != old):
+        raise ValueError('Native worker qualification preserves the Poise full check and all existing declarations')
+    _, assignments, script, _, _ = _full_npm_gate(old['checks'][0])
+    if script != 'check' or any(name != 'PATH' for name, _ in assignments):
+        raise ValueError('Native worker qualification requires the unchanged full npm run check')
+    value = os.environ.get('VITEST_MAX_WORKERS', '')
+    if not re.fullmatch(r'[1-9][0-9]*', value):
+        raise ValueError('VITEST_MAX_WORKERS must be an explicit positive integer')
+    return {'check_id': old['checks'][0]['id'], 'env_name': 'VITEST_MAX_WORKERS', 'value': value}
 
 
 def final_coverage(original, final, scope, payload):
@@ -763,6 +781,12 @@ def fingerprint(cwd: str | Path, plan: dict, *, source_snapshot=None, canonical_
                     # Tracked files and individually declared inputs still take precedence.
                     if (len(child.parts) >= 5 and child.parts[-5:-2] == ("node_modules", ".vite", "vitest")
                             and re.fullmatch(r"[0-9a-f]{40}", child.parts[-2]) and name == "results.json"):
+                        continue
+                    # Poise bundles its development ledger worker from source into
+                    # a fresh mkdtemp directory; this is generated output, not a dependency.
+                    if (len(child.parts) >= 4 and child.parts[-4:-2] == ("node_modules", ".cache")
+                            and re.fullmatch(r"behavior-ledger-[A-Za-z0-9]{6}", child.parts[-2])
+                            and name == "worker.mjs" and not (repository / child).is_symlink()):
                         continue
                     input_files.add(child.as_posix())
         # Never omit current private contents while reconstructing a historical

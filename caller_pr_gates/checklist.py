@@ -28,6 +28,7 @@ def instructions(texts):
         'The PR monitor checks one owned open PR every five minutes, or several every ten minutes. '
         'Unresolved actionable work returns to the idle owner at that cadence, even when unchanged; receiving a message is not completion. Pending CI and API outages alone do not restart chats. Merged/closed PRs cancel delivery without passing unresolved gates. '
         'Legacy issue/document reminder loops remain retired. '
+        'For Vaquum/Limen, autonomio/poise and Vaquum/Origo, document publication is explicit opt-in; ordinary work needs no slices. '
         'Publish PRDs through the GitHub gateway with --kind prd; publish agreed slices with --kind slice --slice-id ID. '
         'Create their native parent links with caller-pr-gates link-issues PARENT_URL CHILD_URL --session SESSION; the child must be this chat\'s recorded PRD/slice. '
         'Record the agreed scope first with scope --file FILE. Confirmed PRD creation delivers one automated review checklist to this chat; '

@@ -684,7 +684,7 @@ class Store:
                 "corrected_input_digest": check["input_digest"], **correction, **pins})
         return receipts
 
-    def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest, *, retained=False, source_epoch=None):
+    def save_validation_plan(self, sid, repo, num, cwd, plan, input_digest, evidence_digest, *, retained=False, source_epoch=None, native_worker_epoch=None):
         if not isinstance(input_digest, str) or not input_digest.strip():
             raise ValueError("validation input_digest is required")
         if not isinstance(evidence_digest, str):
@@ -692,6 +692,8 @@ class Store:
         normalized, checks = self._validation_checks(plan)
         if source_epoch is not None and not retained:
             raise ValueError('A final-head epoch requires retained qualification')
+        if native_worker_epoch is not None and (not retained or source_epoch is not None):
+            raise ValueError('A native worker epoch requires same-source retained qualification')
         if not retained and any("input_digest" in check or "correction" in check for check in checks.values()):
             raise ValueError("Pinned qualification controls require explicit merged-source validation")
         directory = str(Path(cwd).expanduser().resolve())
@@ -702,7 +704,7 @@ class Store:
             owned = self._task_sessions(db, sid)
             if retained:
                 previous = self._retained_validation_plan(db, sid, repo, num, directory)
-                if input_digest != previous['input_digest'] and source_epoch is None:
+                if input_digest != previous['input_digest'] and source_epoch is None and native_worker_epoch is None:
                     raise ValueError('Post-merge validation inputs changed; source repairs need their own scoped PR')
             elif not any(row[0] in owned for row in db.execute(
                 "SELECT session_id FROM prs WHERE repository=? AND number=? AND status='active'", (repo, num))):
@@ -714,6 +716,27 @@ class Store:
             now = time.time()
             if normalized.get('source_epoch') != (existing or {}).get('plan', {}).get('source_epoch'):
                 raise ValueError('Stored source epoch provenance is immutable and cannot be caller supplied')
+            if normalized.get('native_worker_epoch') != (existing or {}).get('plan', {}).get('native_worker_epoch'):
+                raise ValueError('Stored native worker provenance is immutable and cannot be caller supplied')
+            if native_worker_epoch is not None:
+                from .progress import native_worker_transition
+                if not existing or 'native_worker_epoch' in existing['plan']:
+                    raise ValueError('Native worker qualification cannot replace an existing transition')
+                control = native_worker_transition(repo, existing['plan'], normalized)
+                run = db.execute('SELECT * FROM validation_runs WHERE run_id=? AND plan_id=?',
+                                 (native_worker_epoch.get('previous_run_id'), existing['plan_id'])).fetchone()
+                latest = db.execute('SELECT run_id FROM validation_runs WHERE plan_id=? AND check_id=? '
+                                    'ORDER BY started_at DESC, run_id DESC LIMIT 1',
+                                    (existing['plan_id'], control['check_id'])).fetchone()
+                expected = dict(previous_plan_id=existing['plan_id'], previous_input_digest=existing['input_digest'],
+                    head_sha=native_worker_epoch.get('head_sha'), previous_run_id=run['run_id'] if run else None, **control)
+                if (native_worker_epoch != expected or input_digest == existing['input_digest']
+                        or not isinstance(expected['head_sha'], str) or not re.fullmatch(r'[0-9a-f]{40}', expected['head_sha'])
+                        or not run or not latest or latest['run_id'] != run['run_id']
+                        or run['check_id'] != control['check_id'] or run['status'] not in {'fail', 'unknown'}
+                        or run['finished_at'] is None or run['input_digest'] != existing['input_digest']):
+                    raise ValueError('Retained plan or result changed before native worker admission')
+                normalized['native_worker_epoch'] = native_worker_epoch
             if source_epoch is not None:
                 from .progress import plan_declaration
                 if (not existing or 'source_epoch' in existing['plan']
@@ -781,6 +804,9 @@ class Store:
                 self._audit(db, 'validation_final_head_epoch', {**source_epoch, 'plan_id': plan_id,
                     'input_digest': input_digest,
                     'check_digests': {key: check.get('input_digest', input_digest) for key, check in checks.items()}})
+            if native_worker_epoch is not None:
+                self._audit(db, 'validation_native_worker_epoch', {**native_worker_epoch, 'plan_id': plan_id,
+                    'input_digest': input_digest, 'historical_results_changed': False})
             return self._validation_plan_row(db.execute("SELECT * FROM validation_plans WHERE plan_id=?", (plan_id,)).fetchone())
 
     def begin_validation(self, plan_id, check_id, input_digest, owner_pid=None, owner_group=None, *, session_id=None, retained=False):

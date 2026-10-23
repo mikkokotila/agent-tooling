@@ -2,6 +2,8 @@
 from pathlib import Path
 import argparse, contextlib, ctypes, fcntl, hashlib, json, os, platform, re, shutil, shlex
 import sqlite3, subprocess, sys, tempfile, time, tomllib, uuid, xml.etree.ElementTree as ET
+import work_manager
+import work_switchboard
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.build'
@@ -79,24 +81,48 @@ def build():
     run([python, '-c', "import sys; sys.path.insert(0,'tools'); import backend; print(backend.build_wheel('.build/dist'))"], cwd=ROOT)
     return python
 
+def verification_git(env, state):
+    """Resolve Apple's developer-tool shim once, only inside this verification."""
+    if shutil.which('git', path=env.get('PATH')) != '/usr/bin/git': return
+    target = Path(run(['/usr/bin/xcrun', '--find', 'git'], capture_output=True, text=True).stdout.strip())
+    if not target.is_absolute() or not target.is_file() or not os.access(target, os.X_OK) or target == Path('/usr/bin/git'):
+        raise RuntimeError('Developer Git resolution did not identify an executable binary')
+    launcher = Path(state) / 'git-bin/git'
+    # A symlink changes Git's prefix/template lookup. exec preserves argv[0].
+    atomic(launcher, ('#!/bin/sh\nexec ' + shlex.quote(str(target)) + ' "$@"\n').encode(), 0o700)
+    env['PATH'] = str(launcher.parent) + os.pathsep + env.get('PATH', '')
+
+def verification_budget():
+    value = os.environ.get('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS', '900')
+    if not re.fullmatch(r'[1-9][0-9]*', value) or not 900 <= int(value) <= 1800:
+        raise RuntimeError('AGENT_TOOLING_VERIFY_TIMEOUT_SECONDS must be an integer from 900 to 1800')
+    budget = int(value)
+    if (os.environ.get('CI') or os.environ.get('GITHUB_ACTIONS')) and budget != 900:
+        raise RuntimeError('CI verification retains its 900-second full-suite budget')
+    return budget
+
 def verify():
+    budget = verification_budget()
     revision = fingerprint()
     report = BUILD / 'verified.json'
-    if report.exists() and json.loads(report.read_text()).get('source_fingerprint') == revision:
-        assert_capture(); return json.loads(report.read_text())
+    previous = json.loads(report.read_text()) if report.exists() else {}
+    if previous.get('source_fingerprint') == revision and previous.get('verification_timeout_seconds') == budget:
+        assert_capture(); return previous
     python = build()
     with tempfile.TemporaryDirectory(prefix='agent-tooling-verification-') as state:
         env = dict(os.environ, PYTHONPATH=str(ROOT), CALLER_PR_GATES_STATE_DIR=state,
                    CALLER_PR_GATES_PROMPTS_STATE_DIR=state, CALLER_PR_GATES_PROMPTS_FILE=str(ROOT / 'prompts.toml'),
                    CODEX_CLI='codex',CLAUDE_CLI='claude')
+        verification_git(env, state)
         # Bound the cumulative suite wait; individual test/native deadlines
-        # remain independent of this finite fifteen-minute parent budget.
-        run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=900)
+        # remain independent of this explicit finite parent resource budget.
+        run([python, '-m', 'pytest', '-q', '--durations=10', '--junitxml=.build/verification.xml'], cwd=ROOT, env=env, timeout=budget)
     xml = ET.parse(BUILD / 'verification.xml')
     expected = [case for case in xml.iter('testcase') if any(s.get('type') == 'pytest.xfail' for s in case.findall('skipped'))]
     if len(expected) != len(RELEASE['known_defects']): raise RuntimeError('Known defect inventory changed')
     if fingerprint() != revision: raise RuntimeError('Checkout changed during verification; publish and verify the new revision')
     value = {'source_fingerprint':revision, 'verified_at':time.time(), 'version':VERSION,
+             'verification_timeout_seconds':budget,
              'known_expected_failures':RELEASE['known_defects'], 'testcases':len(list(xml.iter('testcase')))}
     dump(report, value); return value
 
@@ -242,13 +268,22 @@ class Service:
         return p.returncode == 0 and bool(re.search(r'\bpid = \d+',p.stdout))
     def stop(self): run(['launchctl','bootout',self.target],capture_output=True,timeout=10)
     def start(self):
+        bootstrapped=False
         for attempt in range(3):
-            p=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',self.plist],capture_output=True,text=True,timeout=10)
-            if not p.returncode or self.running(): break
-            if attempt==2: raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
+            if not bootstrapped:
+                p=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',self.plist],capture_output=True,text=True,timeout=10)
+                bootstrapped=not p.returncode or self.running()
+                if not bootstrapped and attempt==2: raise RuntimeError('Monitor activation failed: '+p.stderr.strip())
+            if bootstrapped:
+                try:
+                    run(['launchctl','kickstart','-p',self.target],capture_output=True,timeout=10)
+                except subprocess.CalledProcessError as error:
+                    # A successful bootstrap can precede visibility of the new job.
+                    if error.returncode!=113 or attempt==2: raise
+                else:
+                    if not self.running(): raise RuntimeError('Monitor did not start')
+                    return
             time.sleep(.25*(attempt+1))  # A just-removed launchd job can reject immediate bootstrap.
-        run(['launchctl','kickstart','-p',self.target],capture_output=True,timeout=10)
-        if not self.running(): raise RuntimeError('Monitor did not start')
 
 def runtime_matches(python):
     if not python.exists(): return False
@@ -319,7 +354,8 @@ def desired_assets(home, current):
             str(home/'Library/LaunchAgents/local.caller-pr-monitor.plist'):render('monitor.plist',home)}
     for client,name in [('codex','AGENTS.md'),('claude','CLAUDE.md')]:
         target=home/('.'+client)/name
-        assets[str(target)]=merge_instructions(target.read_bytes() if target.exists() else b'',texts)
+        assets[str(target)]=work_switchboard.guidance(work_manager.guidance(
+            merge_instructions(target.read_bytes() if target.exists() else b'',texts), ROOT, home), ROOT, home)
         config=home/('.'+client)/('hooks.json' if client=='codex' else 'settings.json')
         assets[str(config)]=merge_hooks(config.read_bytes() if config.exists() else b'',json.loads(render(client+'-hooks.json',home)))
     target=home/'.codex/config.toml';original=target.read_bytes() if target.exists() else b''
@@ -336,6 +372,8 @@ def desired_assets(home, current):
             if key in current_trust and current_trust[key] != row: raise RuntimeError('Codex hook trust changed locally: '+key)
             if key not in current_trust: value+='\n[hooks.state.'+json.dumps(key)+']\ntrusted_hash = '+json.dumps(row['trusted_hash'])+'\n'
     assets[str(target)]=value.encode()
+    assets.update(work_manager.assets(ROOT, home))
+    assets.update(work_switchboard.assets(ROOT, home))
     return assets
 
 def restore(journal):

@@ -689,6 +689,9 @@ def _register_urls(event, store):
 
 
 def _register_document(store, sid, repository, number, issue, kind=None):
+    from .policy import uses_repository_policy
+    if kind is None and uses_repository_policy(repository):
+        return  # Explicit gateway --kind/post-review is the only opt-in.
     from .github import collect_issue, collect_pr
     scope = store.get_scope(sid)
     if hasattr(store, 'followup_scope'):
