@@ -17,11 +17,11 @@ THIRD = '33333333-3333-4333-8333-333333333333'
 
 def declare(context, sid, cwd):
     plan = progress.normalize_plan(dict(checks=[
-        dict(id='passing', argv=[sys.executable, '-c', "assert __import__('pathlib').Path('source.txt').read_text() == 'original\\n'"],
+        dict(id='passing', argv=[sys.executable, 'check_source.py', 'original'],
              reason='Verify the retained published source'),
-        dict(id='failing', argv=[sys.executable, '-c', "assert __import__('pathlib').Path('source.txt').read_text() == 'fixed\\n'"],
+        dict(id='failing', argv=[sys.executable, 'check_source.py', 'fixed'],
              reason='Keep the original failed behavior visible'),
-        dict(id='pending', argv=[sys.executable, '-c', "assert __import__('pathlib').Path('source.txt').is_file()"],
+        dict(id='pending', argv=[sys.executable, 'check_source.py', 'exists'],
              reason='Complete the still unexecuted declaration')]), cwd)
     return context['store'].save_validation_plan(sid, REPO, 1, cwd, plan,
                                                 progress.fingerprint(cwd, plan), 'original-evidence')

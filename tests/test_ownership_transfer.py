@@ -30,7 +30,14 @@ def context(tmp_path, monkeypatch):
         return subprocess.run(['git', '-C', str(old), *args], check=True, text=True, capture_output=True).stdout.strip()
     git('init', '-b', 'main'); git('config', 'user.email', 'fixture@example.test'); git('config', 'user.name', 'Fixture')
     (old / 'source.txt').write_text('original\n')
-    git('add', 'source.txt'); git('commit', '-m', 'fix: retain regression')
+    (old / 'check_source.py').write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "source = Path('source.txt')\n"
+        "assert source.is_file()\n"
+        "if sys.argv[1] != 'exists':\n"
+        "    assert source.read_text() == sys.argv[1] + '\\n'\n")
+    git('add', 'source.txt', 'check_source.py'); git('commit', '-m', 'fix: retain regression')
     git('remote', 'add', 'origin', 'https://github.com/owner/repo.git')
     git('worktree', 'add', '--detach', str(new))
     head = git('rev-parse', 'HEAD')
