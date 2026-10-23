@@ -13,7 +13,9 @@ The original Origo608 retirement owner may request only deployment run3993100645
 
 The existing exact provider-secret retirement retains its separate original grant and every deletion guard. It additionally requires this same continuation grant and successful run39931006450 with the actual image-deployment step complete, plus original/current immutable source absence. Other runs must also have validated UTC update times strictly before the actual fixed deployment job completed; a lower run ID does not prove an earlier rerun. A retry receipt does not prove deployment success. Operators request neither operation until the retirement owner has verified purge/preflight zero.
 
-Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.60 installs runtime 1.7.60.
+Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.67 installs runtime 1.7.67.
+
+Limen, Poise and Origo now use fresh live protection to decide target ancestry; merge queues validate integration without manual base updates. Their document-review workflow requires explicit opt-in. The owned Poise/Origo gateway admits only approved strictness removal and Origo slice/version check retirement, preserving every other protection field.
 
 PRs above250 commits use explicitly paginated comparisons pinned to their full PR base/head SHAs. Complete counts, commit dates, unique identities, head inclusion and stable final PR identity remain required. Ordinary PR batching and all review/CI gates remain unchanged.
 
