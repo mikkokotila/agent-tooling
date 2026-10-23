@@ -17,6 +17,8 @@ from caller_pr_gates.store import Store
 
 REPO = 'Vaquum/Origo'
 STAMP = '2026-10-23T00:00:00Z'
+OLDER = '2026-10-22T23:59:59Z'
+LATER = '2026-10-23T00:00:01Z'
 
 
 def git(path, *args):
@@ -157,7 +159,8 @@ def test_merged_owner_deletes_only_exact_secret_after_deployment_and_preserves_r
     store, args, remote, _revision, _scope = case
     before = store.closed_review_owner('s', REPO, 608, args.cwd)
     # Explicit protocol metadata controls prove complete second-page admission.
-    remote.deployments = [{'id': 231 - i, 'status': 'completed'} for i in range(1, 198)]
+    remote.deployments = [{'id': 231 - i, 'status': 'completed', 'updated_at': OLDER} for i in range(1, 198)]
+    remote.deployments[0]['run_attempt'] = 2
     receipt = gateway(args, store)
     assert receipt['stage'] == 'verified' and receipt['delete_http_status'] == 204
     assert receipt['after_secret_http_status'] == 404 and receipt['write_requests'] == 1
@@ -201,7 +204,9 @@ def test_unrelated_or_unowned_secret_operation_never_reaches_http(case, fault, t
                                  'run-id', 'truncated', 'job-skipped', 'step-skipped', 'pre404',
                                  'merge-time', 'job-time', 'step-time', 'superseded-run', 'continuation-grant', 'boundary',
                                  'manual-queued', 'manual-active', 'manual-page2', 'newer-completed',
-                                 'inventory-truncated', 'inventory-oversize', 'inventory-duplicate', 'inventory-page-drift'])
+                                 'inventory-truncated', 'inventory-oversize', 'inventory-duplicate', 'inventory-page-drift',
+                                 'completed-old-rerun', 'old-rerun-page2', 'completion-equal',
+                                 'completion-missing', 'completion-invalid', 'completion-not-utc'])
 def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fault, monkeypatch):
     store, args, remote, revision, _scope = case
     pr, run = remote.values['repos/Vaquum/Origo/pulls/608'], remote.values['repos/Vaquum/Origo/actions/runs/231']
@@ -229,7 +234,7 @@ def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fau
         remote.deployments = [{'id': 230, 'status': 'queued' if fault == 'manual-queued' else 'in_progress',
             'event': 'workflow_dispatch', 'head_sha': 'a' * 40, 'head_branch': 'old-ref'}]
         if fault == 'manual-page2':
-            remote.deployments = [{'id': 231 - i, 'status': 'completed'} for i in range(1, 198)]
+            remote.deployments = [{'id': 231 - i, 'status': 'completed', 'updated_at': OLDER} for i in range(1, 198)]
             remote.deployments[-1].update(status='queued', event='workflow_dispatch',
                                          head_sha='a' * 40, head_branch='old-ref')
     elif fault == 'newer-completed':
@@ -239,8 +244,23 @@ def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fau
     elif fault == 'inventory-oversize': remote.inventory_delta = 200
     elif fault == 'inventory-duplicate': remote.deployments = [deepcopy(run)]
     elif fault == 'inventory-page-drift':
-        remote.deployments = [{'id': 231 - i, 'status': 'completed'} for i in range(1, 198)]
+        remote.deployments = [{'id': 231 - i, 'status': 'completed', 'updated_at': OLDER} for i in range(1, 198)]
         remote.inventory_page_drift = True
+    elif fault in {'completed-old-rerun', 'old-rerun-page2', 'completion-equal',
+                   'completion-missing', 'completion-invalid', 'completion-not-utc'}:
+        # Deliberate older-ID rerun: starts before, completes after the fixed deployment.
+        remote.deployments = [{'id': 230, 'status': 'completed', 'run_attempt': 2,
+            'run_started_at': OLDER, 'updated_at': LATER, 'event': 'workflow_dispatch',
+            'head_sha': 'a' * 40, 'head_branch': 'old-ref'}]
+        if fault == 'old-rerun-page2':
+            late = remote.deployments[0]
+            remote.deployments = [{'id': 231 - i, 'status': 'completed', 'updated_at': OLDER}
+                                  for i in range(1, 198)]
+            remote.deployments[-1].update(late, id=33)
+        elif fault == 'completion-equal': remote.deployments[0]['updated_at'] = STAMP
+        elif fault == 'completion-missing': remote.deployments[0].pop('updated_at')
+        elif fault == 'completion-invalid': remote.deployments[0]['updated_at'] = 'deliberate invalid timestamp'
+        elif fault == 'completion-not-utc': remote.deployments[0]['updated_at'] = '2026-10-23T00:00:01+02:00'
     elif fault == 'merge-time': pr['merged_at'] = 123
     elif fault == 'job-time': job['completed_at'] = 'deliberate invalid timestamp'
     elif fault == 'step-time': job['steps'][0]['completed_at'] = '2026-10-23T00:00:00+02:00'
@@ -248,7 +268,7 @@ def test_missing_exact_merge_or_actual_deployment_blocks_secret_delete(case, fau
     with pytest.raises(ValueError):
         gateway(args, store)
     assert remote.writes == [] and receipts(store, 'attempt') == []
-    if fault in {'manual-page2', 'inventory-page-drift'}:
+    if fault in {'manual-page2', 'inventory-page-drift', 'old-rerun-page2'}:
         assert any('page=2' in call[2] for call in remote.calls)
 
 
@@ -290,7 +310,7 @@ def test_current_main_must_retain_merge_and_credential_absence(case, state):
 
 
 @pytest.mark.parametrize('fault', ['timeout', 'interrupt', 'duplicate', 'redirect', 'non204', 'post200',
-                                 'identity-drift', 'malformed-response', 'queued-deployment'])
+                                 'identity-drift', 'malformed-response', 'queued-deployment', 'completed-rerun'])
 def test_uncertain_or_changed_delete_outcome_is_incomplete_and_never_replayed(case, fault, capsys):
     store, args, remote, _revision, _scope = case
     if fault == 'non204': remote.status = 500
@@ -298,6 +318,10 @@ def test_uncertain_or_changed_delete_outcome_is_incomplete_and_never_replayed(ca
     elif fault == 'queued-deployment':
         remote.after_http = lambda: remote.deployments.append({
             'id': 230, 'status': 'queued', 'event': 'workflow_dispatch', 'head_branch': 'old-ref'})
+    elif fault == 'completed-rerun':
+        remote.after_http = lambda: remote.deployments.append({
+            'id': 230, 'status': 'completed', 'run_attempt': 2, 'updated_at': LATER,
+            'event': 'workflow_dispatch', 'head_branch': 'old-ref'})
     elif fault == 'identity-drift':
         remote.after_http = lambda: remote.values['repos/Vaquum/Origo/pulls/608']['head'].update(sha='b' * 40)
     else:

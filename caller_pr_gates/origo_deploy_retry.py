@@ -91,6 +91,7 @@ def deployment_inventory(read, *, allow_target_active=False):
             or any(item['id'] > RUN or (item['id'] != RUN or not allow_target_active)
                    and item.get('status') != 'completed' for item in values)):
         raise ValueError('A newer, active, missing or ambiguous deployment prevents retirement continuation')
+    return values
 
 
 def retry(args, store, sid, argv, run):

@@ -169,7 +169,7 @@ def retire(args, store, sid, argv, github_run):
             raise ValueError('Only the exact reviewed latest retirement descendant may qualify')
         continuation_sha256 = continuation(store, sid)
         release_proof(args.cwd, read)
-        deployment_inventory(read)
+        all_deployments = deployment_inventory(read)
         workflow = read('repos/Vaquum/Origo/actions/workflows/deploy_on_merge.yml')
         if (type(workflow.get('id')) is not int or workflow['id'] != WORKFLOW_ID or workflow.get('path') != WORKFLOW
                 or workflow.get('name') != 'Deploy On Merge' or workflow.get('state') != 'active'):
@@ -210,11 +210,17 @@ def retire(args, store, sid, argv, github_run):
                 or steps[0].get('status') != 'completed' or steps[0].get('conclusion') != 'success'
                 or not steps[0].get('completed_at')):
             raise ValueError('The actual image deployment step did not complete successfully')
+        completed_at = _timestamp(job['completed_at'])
+        completed_time = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+        if any(item['id'] != run_id and datetime.fromisoformat(
+                _timestamp(item.get('updated_at')).replace('Z', '+00:00')) >= completed_time
+                for item in all_deployments):
+            raise ValueError('Another deployment has later or ambiguous completion evidence')
         return {'head': head['sha'], 'base': _sha(base.get('sha')), 'merge': merge, 'main': main,
                 'repository_id': base_repo['id'], 'merged_at': _timestamp(pr['merged_at']),
                 'workflow_id': workflow['id'], 'run_id': run['id'], 'run_attempt': run['run_attempt'],
                 'continuation_scope_sha256': continuation_sha256,
-                'job_id': job['id'], 'job_completed_at': _timestamp(job['completed_at']),
+                'job_id': job['id'], 'job_completed_at': completed_at,
                 'step_number': steps[0]['number'], 'step_completed_at': _timestamp(steps[0]['completed_at'])}
 
     def metadata():
