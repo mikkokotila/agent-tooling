@@ -121,10 +121,11 @@ def _graphql_read_only(body):
         # An operation keyword is never preceded by another operation keyword;
         # that position holds the operation's name instead. Fragment spreads,
         # fragment definitions, and type conditions name fragments, never
-        # operations. A dollar prefix is a variable definition or use. A colon
-        # after the keyword is a field alias. Anything else is a real operation.
+        # operations. A dollar prefix, even across separators, is a variable
+        # definition or use. A colon after the keyword is a field alias.
+        # Anything else is a real operation.
         if re.search(r'(\.\.\.|\b(query|mutation|subscription|fragment|on))[\s,]*$',code[:match.start()]):continue
-        if match.start()>0 and code[match.start()-1]=='$':continue
+        if re.search(r'\$[\s,]*$',code[:match.start()]):continue
         if not re.match(r'[\s,]*:',code[match.end():]):return False
     return True
 

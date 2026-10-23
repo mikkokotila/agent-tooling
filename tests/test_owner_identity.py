@@ -141,6 +141,8 @@ def graphql_body(query):
     'query subscription { x }',
     'query($mutation:Boolean!){viewer @include(if:$mutation){login}}',
     'query($subscription:Int){x(y:$subscription)}',
+    'query($mutation:Boolean!){viewer @include(if:$ mutation){login}}',
+    'query { x(y:$\nmutation) }',
     'query { viewer { ...mutation } } fragment mutation on User { login }',
     'query { ...subscription } fragment subscription on T { x }',
     'query Q { f(arg:"""a\\\\""" # still string\nzzz""") }',
