@@ -119,9 +119,11 @@ def _graphql_read_only(body):
     if code is None:return False
     for match in re.finditer(r'\b(mutation|subscription)\b',code):
         # An operation keyword is never preceded by another operation keyword;
-        # that position holds the operation's name instead. A colon after the
-        # keyword is a field alias. Anything else is a real operation.
+        # that position holds the operation's name instead. A dollar prefix is
+        # a variable definition or use. A colon after the keyword is a field
+        # alias. Anything else is a real operation.
         if re.search(r'\b(query|mutation|subscription)[\s,]*$',code[:match.start()]):continue
+        if match.start()>0 and code[match.start()-1]=='$':continue
         if not re.match(r'[\s,]*:',code[match.end():]):return False
     return True
 

@@ -139,6 +139,8 @@ def graphql_body(query):
     'query { f(arg:"""mutation""") }',
     'query mutation { viewer { login } }',
     'query subscription { x }',
+    'query($mutation:Boolean!){viewer @include(if:$mutation){login}}',
+    'query($subscription:Int){x(y:$subscription)}',
     'query Q { f(arg:"""a\\\\""" # still string\nzzz""") }',
 ])
 def test_graphql_reads_skip_owner_lookup(monkeypatch, query):
