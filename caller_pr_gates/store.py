@@ -280,6 +280,75 @@ class Store:
                     result.setdefault(key, dict(row))
             return list(result.values())
 
+    def _transferred_retained_owner(self, db, sid, repo, num, first, watch):
+        """An immutable transfer chain changes authority, never historical credit."""
+        transfers = [{**json.loads(row['fields']), 'id': row['id']} for row in db.execute('''
+            SELECT id,fields FROM audit WHERE event='pr_owner_transferred'
+            AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=? ORDER BY id''',
+            (repo, num))]
+        if not transfers:
+            return None
+        error = 'Retained evidence requires the exact audited transfer recipient and checkout'
+        parents = self._parents(db)
+        clients = {row['session_id']: row['client'] for row in db.execute('SELECT session_id,client FROM sessions')}
+        registrations = [{**json.loads(row['fields']), 'id': row['id']} for row in db.execute('''
+            SELECT id,fields FROM audit WHERE event='pr_registered'
+            AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=? ORDER BY id''',
+            (repo, num))]
+        retired = db.execute('''SELECT MIN(id) FROM audit WHERE event='pr_monitor_retired'
+            AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?''', (repo, num)).fetchone()[0]
+        if not first or not watch or not registrations or self._root(sid, parents) != sid:
+            raise ValueError(error)
+        previous, roots, original_scope = None, {self._root(first['session_id'], parents)}, None
+        for receipt in transfers:
+            grant, prior = receipt.get('grant'), receipt.get('previous_watch')
+            if not isinstance(grant, dict) or not isinstance(prior, dict):
+                raise ValueError(error)
+            before, after = grant.get('from'), grant.get('to')
+            if (any(not isinstance(identity, dict) or set(identity) != {'session_id', 'client', 'cwd'}
+                    for identity in (before, after))
+                    or any(self._root(identity['session_id'], parents) != identity['session_id']
+                           or identity['client'] != 'codex'
+                           or clients.get(identity['session_id']) != identity['client'] for identity in (before, after))
+                    or not isinstance(receipt.get('native_requester'), str)
+                    or clients.get(receipt['native_requester']) != 'codex'
+                    or self._root(receipt.get('native_requester'), parents) != after['session_id']
+                    or before['session_id'] == after['session_id']
+                    or (previous is None and before['session_id'] not in roots)
+                    or (previous is not None and before != previous)
+                    or any(prior.get(key) != before[field] for key, field in
+                           (('owner_session', 'session_id'), ('client', 'client'), ('cwd', 'cwd')))
+                    or prior.get('repository') != repo or prior.get('number') != num or prior.get('state') != 'open'
+                    or grant.get('repository') != repo or grant.get('number') != num
+                    or receipt.get('head_sha') != grant.get('head_sha')
+                    or receipt.get('completion_verified') is not False
+                    or (retired is not None and receipt['id'] >= retired)):
+                raise ValueError(error)
+            scope = self._scope_row(db, after['session_id'], receipt.get('work_item'))
+            approved = json.loads(scope['scope']) if scope else {}
+            candidates = [r for r in registrations if r['id'] < receipt['id']
+                          and all(r.get(key) == after[key] for key in ('session_id', 'client', 'cwd'))]
+            if (approved.get('pr_ownership_transfer') != grant
+                    or approved.get('approval_evidence') != receipt.get('approval_evidence') or not candidates
+                    or not isinstance(receipt.get('original_scope'), dict)
+                    or (original_scope is not None and receipt['original_scope'] != original_scope)):
+                raise ValueError(error)
+            previous, original_scope = after, receipt['original_scope']
+            roots.add(after['session_id'])
+        registered = db.execute('SELECT * FROM prs WHERE repository=? AND number=? AND session_id=?',
+                                (repo, num, sid)).fetchone()
+        binding = db.execute('SELECT scope FROM pr_scope_bindings WHERE session_id=? AND repository=? AND number=?',
+                             (sid, repo, num)).fetchone()
+        if (previous != {'session_id': sid, 'client': watch['client'], 'cwd': watch['cwd']}
+                or watch['owner_session'] != sid or clients.get(sid) != watch['client']
+                or not registered or registered['client'] != previous['client'] or registered['cwd'] != previous['cwd']
+                or registered['status'] != ('active' if watch['state'] == 'open' else 'retired_' + watch['state'])
+                or not binding or json.loads(binding['scope']) != original_scope
+                or any(not r.get('session_id') or self._root(r['session_id'], parents) not in roots for r in registrations)):
+            raise ValueError(error)
+        return {'registration': dict(registered), 'history': transfers, 'roots': roots,
+                'checkout_anchor': {'kind': 'ownership_transfer', 'id': transfers[-1]['id'], 'cwd': previous['cwd']}}
+
     def _closed_review_owner(self, db, sid, repo, num):
         """Retirement preserves one canonical receipt owner, not active PR authority."""
         parents = self._parents(db)
@@ -287,6 +356,7 @@ class Store:
         first = db.execute('''SELECT * FROM prs WHERE repository=? AND number=?
                               ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
         watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
+        transferred = self._transferred_retained_owner(db, sid, repo, num, first, watch)
         def history(event):
             return [{**json.loads(row['fields']), 'id': row['id'], 'recorded_at': row['recorded_at']}
                     for row in db.execute('''SELECT id, fields, recorded_at FROM audit WHERE event=?
@@ -296,10 +366,11 @@ class Store:
         if (not first or not watch or watch['state'] not in {'closed', 'merged'}
                 or not retirements or not registrations or registrations[-1]['id'] > retirements[-1]['id']
                 or watch['owner_session'] != sid or self._root(sid, parents) != sid
-                or self._root(first['session_id'], parents) != sid
+                or (not transferred and self._root(first['session_id'], parents) != sid)
                 or watch['client'] != clients.get(sid) or first['client'] != clients.get(first['session_id'])
                 or first['status'] != 'retired_' + watch['state']
-                or any(not r.get('session_id') or self._root(r['session_id'], parents) != sid for r in registrations)
+                or any(not r.get('session_id') or self._root(r['session_id'], parents)
+                       not in (transferred['roots'] if transferred else {sid}) for r in registrations)
                 or any(r.get('state') != watch['state'] or r.get('head_sha') != retirements[0].get('head_sha')
                        or r.get('gates_waived') is not False for r in retirements)):
             raise ValueError('Closed review receipts require the exact retained owner and retired PR')
@@ -307,6 +378,8 @@ class Store:
         acknowledgements = []
         anchor = ({'kind': 'registration', 'id': registrations[0]['id'], 'cwd': registrations[0]['cwd']}
                   if registrations[0].get('cwd') else None)
+        if transferred:
+            anchor = transferred['checkout_anchor']
         if repeated:
             # Successful gateway comments/edits register their existing owner.
             # The legacy audit records the verb, not the edit's fields or cwd.
@@ -337,12 +410,15 @@ class Store:
                 raise ValueError('Repeated closed registration lacks a pre-retirement checkout anchor')
         if any(r.get('client', clients.get(r['session_id'])) != clients.get(r['session_id']) for r in registrations):
             raise ValueError('Closed review receipts require the original recorded client')
-        return {'registration': dict(first), 'retirement': retirements[-1],
+        result = {'registration': transferred['registration'] if transferred else dict(first), 'retirement': retirements[-1],
                 'registration_history': registrations, 'retirement_history': retirements,
                 'acknowledgements': acknowledgements,
                 'checkout_anchor': anchor or {'kind': 'retained_registration', 'id': registrations[0]['id'], 'cwd': first['cwd']},
                 'watch': {key: watch[key] for key in
                 ('repository', 'number', 'owner_session', 'client', 'cwd', 'state')}}
+        if transferred:
+            result.update(original_registration=dict(first), transfer_history=transferred['history'])
+        return result
 
     def closed_review_owner(self, sid, repo, num, cwd):
         from .monitor import checkout
@@ -537,19 +613,25 @@ class Store:
         """A retired watch retains authority only for its exact original plan owner."""
         from .monitor import checkout
         watch = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?', (repo, num)).fetchone()
-        first_owner = db.execute('''SELECT session_id FROM prs WHERE repository=? AND number=?
+        first_owner = db.execute('''SELECT * FROM prs WHERE repository=? AND number=?
                                     ORDER BY created_at, session_id LIMIT 1''', (repo, num)).fetchone()
-        first_plan = db.execute('''SELECT cwd FROM validation_plans WHERE session_id=? AND repository=?
+        transferred = self._transferred_retained_owner(db, sid, repo, num, first_owner, watch)
+        first_plan = db.execute('''SELECT cwd,created_at FROM validation_plans WHERE session_id=? AND repository=?
                                    AND number=? ORDER BY created_at, plan_id LIMIT 1''', (sid, repo, num)).fetchone()
         row = db.execute('''SELECT * FROM validation_plans WHERE session_id=? AND repository=?
                             AND number=? AND cwd=? AND active=1''', (sid, repo, num, directory)).fetchone()
         # Re-registering a closed PR can rearm its watch. It cannot manufacture
         # a new qualification owner/checkout from a legacy foreign receipt.
         if (not watch or watch['owner_session'] != sid or watch['state'] not in {'open', 'merged'}
-                or not first_owner or self._root(first_owner['session_id'], self._parents(db)) != sid
+                or not first_owner or (not transferred and self._root(first_owner['session_id'], self._parents(db)) != sid)
                 or not first_plan or first_plan['cwd'] != directory
                 or checkout(watch['cwd']) != directory or not row):
             raise ValueError('Post-merge validation requires the exact recorded owner, checkout and retained plan')
+        if transferred:
+            retirement = db.execute('''SELECT MIN(recorded_at) FROM audit WHERE event='pr_monitor_retired'
+                AND json_extract(fields,'$.repository')=? AND json_extract(fields,'$.number')=?''', (repo, num)).fetchone()[0]
+            if retirement is not None and first_plan['created_at'] > retirement:
+                raise ValueError('Post-merge validation requires the recipient own pre-retirement plan')
         return self._validation_plan_row(row)
 
     def retained_validation_plan(self, sid, repo, num, cwd):

@@ -736,6 +736,10 @@ def gateway(args, store):
     argv = args.arguments
     admitted_api_body = None
     if argv and argv[0] == '--': argv = argv[1:]
+    if getattr(args, 'superseded_reason', None) is not None:
+        from .superseded import close
+        print(json.dumps(close(args, store, sid, argv, github_run)))
+        return None
     if argv[:2] == ['repo', 'create']:
         return create_scoped_repository(args, store, argv)
     if len(argv) < 2 or argv[0] not in {'pr', 'issue', 'api'}:
@@ -1067,6 +1071,7 @@ def main():
         p.add_argument('--session')
         return p
     p = owned('register'); p.add_argument('url'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd())
+    p = owned('transfer-owner'); p.add_argument('url'); p.add_argument('--client', choices=['codex'], required=True); p.add_argument('--cwd', required=True); p.add_argument('--work-item', required=True)
     p = owned('link-issues'); p.add_argument('parent', help='Same-repository parent issue URL'); p.add_argument('child', help='Owned PRD/slice issue URL; existing parents are never replaced')
     p = owned('scope'); p.add_argument('--file', required=True); p.add_argument('--work-item', help='Stable ID for a separately authorized work item; existing baselines remain immutable')
     p = owned('resolve'); p.add_argument('--pr', required=True); p.add_argument('--thread', required=True)
@@ -1080,7 +1085,7 @@ def main():
     p = owned('qualify-successor'); p.add_argument('--pr', required=True); p.add_argument('--successor', required=True)
     p.add_argument('--cwd', required=True, help='Exact recorded final qualification checkout')
     p.add_argument('--file', required=True, help='Explicit coverage of the original scope and declaration differences')
-    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = owned('github'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd()); p.add_argument('--kind', choices=['prd','slice']); p.add_argument('--slice-id'); p.add_argument('--target'); p.add_argument('--nonrequired-quota-approval',help='Actual explicit human authorization for normal merge with a verified non-required account failure'); p.add_argument('--superseded-reason', help='Close only an owned zero-diff PR as superseded, with fresh default-base proof and this recorded public reason'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = owned('retry'); p.add_argument('--followup'); p.add_argument('--pr')
     p = owned('blocked'); p.add_argument('--pr', required=True); p.add_argument('--evidence-url', required=True); p.add_argument('--reason', required=True)
     p = owned('validation-plan'); p.add_argument('--pr', required=True); p.add_argument('--file', required=True); p.add_argument('--cwd', default=os.getcwd())
@@ -1105,6 +1110,11 @@ def main():
             repo, num, issue = reference(args.url)
             if issue: raise ValueError('Register PR URLs; use post-review for PRD issues')
             output = store.register(session_id(args), args.client, repo, num, args.cwd)
+        elif args.command == 'transfer-owner':
+            from .ownership import transfer
+            repo, num, issue = reference(args.url)
+            if issue: raise ValueError('Ownership transfer applies only to an existing open PR')
+            output = asyncio.run(transfer(store, session_id(args), repo, num, args.client, args.cwd, args.work_item))
         elif args.command == 'scope':
             scope = json.loads(Path(args.file).read_text())
             if not scope.get('approval_evidence'): raise ValueError('scope needs approval_evidence quoting the user-agreed proposal')
