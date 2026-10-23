@@ -1067,6 +1067,7 @@ def main():
         p.add_argument('--session')
         return p
     p = owned('register'); p.add_argument('url'); p.add_argument('--client', choices=['codex','claude'], default='codex'); p.add_argument('--cwd', default=os.getcwd())
+    p = owned('transfer-owner'); p.add_argument('url'); p.add_argument('--client', choices=['codex'], required=True); p.add_argument('--cwd', required=True); p.add_argument('--work-item', required=True)
     p = owned('link-issues'); p.add_argument('parent', help='Same-repository parent issue URL'); p.add_argument('child', help='Owned PRD/slice issue URL; existing parents are never replaced')
     p = owned('scope'); p.add_argument('--file', required=True); p.add_argument('--work-item', help='Stable ID for a separately authorized work item; existing baselines remain immutable')
     p = owned('resolve'); p.add_argument('--pr', required=True); p.add_argument('--thread', required=True)
@@ -1105,6 +1106,11 @@ def main():
             repo, num, issue = reference(args.url)
             if issue: raise ValueError('Register PR URLs; use post-review for PRD issues')
             output = store.register(session_id(args), args.client, repo, num, args.cwd)
+        elif args.command == 'transfer-owner':
+            from .ownership import transfer
+            repo, num, issue = reference(args.url)
+            if issue: raise ValueError('Ownership transfer applies only to an existing open PR')
+            output = asyncio.run(transfer(store, session_id(args), repo, num, args.client, args.cwd, args.work_item))
         elif args.command == 'scope':
             scope = json.loads(Path(args.file).read_text())
             if not scope.get('approval_evidence'): raise ValueError('scope needs approval_evidence quoting the user-agreed proposal')
