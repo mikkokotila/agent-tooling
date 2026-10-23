@@ -26,11 +26,15 @@ class Client:
         self.comparison = dict(files=[], merge_base_commit=dict(sha='c' * 40, commit=dict(tree=dict(sha=self.tree))))
         self.commit = dict(sha=head, tree=dict(sha=self.tree))
         self.reads = 0
+        self.paths = []
+        self.base_reads = 0
+        self.base_race = False
         self.race = False
         self.closed = False
         self.close_change = {}
 
     async def get(self, path, **kwargs):
+        self.paths.append(path)
         prefix = '/repos/Owner/Repo'
         if path == prefix:
             return deepcopy(self.repository)
@@ -49,7 +53,8 @@ class Client:
         if '/git/commits/' in path:
             return deepcopy(self.commit)
         if path.endswith('/heads/main'):
-            return {'object': {'sha': self.base}}
+            self.base_reads += 1
+            return {'object': {'sha': 'e' * 40 if self.base_race and self.base_reads > 1 else self.base}}
         if path.endswith('/heads/feature'):
             return {'object': {'sha': self.head}}
         raise AssertionError(path)
@@ -105,7 +110,7 @@ def test_zero_diff_close_retains_actual_failure_and_pending_obligations(prepared
     'session', 'client', 'cwd', 'dirty', 'head', 'unknown_files', 'nonempty_count',
     'nonempty_files', 'compare_files', 'different_tree', 'foreign_repo', 'foreign_repo_id',
     'wrong_default', 'default_head', 'draft', 'already_closed', 'already_merged', 'head_race',
-    'missing_merge_base', 'missing_tree', 'wrong_live_base',
+    'missing_merge_base', 'missing_tree', 'live_base_race',
 ])
 def test_superseded_close_refuses_unproven_or_foreign_source(prepared, tmp_path, change):
     store, root, _, client, calls, args = prepared
@@ -136,7 +141,7 @@ def test_superseded_close_refuses_unproven_or_foreign_source(prepared, tmp_path,
     elif change == 'head_race': client.race = True
     elif change == 'missing_merge_base': client.comparison['merge_base_commit'].pop('sha')
     elif change == 'missing_tree': client.commit.pop('tree')
-    elif change == 'wrong_live_base': client.base = 'e' * 40
+    elif change == 'live_base_race': client.base_race = True
     with pytest.raises((ValueError, RuntimeError)):
         cli.gateway(args, store)
     assert calls == []
@@ -177,3 +182,13 @@ def test_normal_merge_and_close_gates_are_unchanged(prepared, monkeypatch, opera
     with pytest.raises(ValueError, match='every separate PR gate'):
         cli.gateway(args, store)
     assert calls == []
+
+
+def test_lagging_pr_base_sha_uses_the_live_default_branch_without_sync(prepared, capsys):
+    store, _, _, client, _, args = prepared
+    client.raw['base']['sha'] = 'a' * 40
+    cli.gateway(args, store)
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt['base_sha'] == client.base
+    assert f"/repos/Owner/Repo/compare/{client.base}...{client.head}" in client.paths
+    assert all('a' * 40 not in path for path in client.paths)

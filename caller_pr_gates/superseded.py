@@ -35,8 +35,7 @@ def _identity(pull, repository, number, repository_id, default_branch, *, closed
     if (base.get('ref') != default_branch or not isinstance(head.get('ref'), str)
             or not head['ref'] or head['ref'] == default_branch):
         raise ValueError('Superseded closure requires the live default target and a distinct source branch')
-    return dict(head_sha=_sha(head.get('sha')), head_ref=head['ref'],
-                base_sha=_sha(base.get('sha')), base_ref=default_branch)
+    return dict(head_sha=_sha(head.get('sha')), head_ref=head['ref'], base_ref=default_branch)
 
 
 async def _proof(client, repository, number, expected_head):
@@ -52,11 +51,16 @@ async def _proof(client, repository, number, expected_head):
         raise ValueError('Superseded PR head differs from the exact owned checkout')
     base_path = f"{prefix}/git/ref/heads/{quote(identity['base_ref'], safe='')}"
     head_path = f"{prefix}/git/ref/heads/{quote(identity['head_ref'], safe='')}"
-    files, comparison, commit, base_ref, head_ref = await asyncio.gather(
+    base_ref, head_ref = await asyncio.gather(client.get(base_path), client.get(head_path))
+    # PR.base.sha can retain an older analyzed base after main advances. The
+    # target ref, read independently, names the live content to compare.
+    live_base = _sha((base_ref.get('object') or {}).get('sha'))
+    if (head_ref.get('object') or {}).get('sha') != identity['head_sha']:
+        raise ValueError('Superseded source branch changed before collection')
+    files, comparison, commit = await asyncio.gather(
         client.get(f'{path}/files', params={'per_page': 100}),
-        client.get(f"{prefix}/compare/{identity['base_sha']}...{identity['head_sha']}"),
-        client.get(f"{prefix}/git/commits/{identity['head_sha']}"),
-        client.get(base_path), client.get(head_path))
+        client.get(f"{prefix}/compare/{live_base}...{identity['head_sha']}"),
+        client.get(f"{prefix}/git/commits/{identity['head_sha']}"))
     if files != [] or not isinstance(comparison, dict) or comparison.get('files') != []:
         raise ValueError('Superseded closure refuses any remaining or unknown PR content')
     merge_base = comparison.get('merge_base_commit') or {}
@@ -64,26 +68,30 @@ async def _proof(client, repository, number, expected_head):
     head_tree = _sha((commit.get('tree') or {}).get('sha'))
     if commit.get('sha') != identity['head_sha'] or head_tree != merge_tree:
         raise ValueError('Superseded PR content is not already represented by its target merge base')
-    if ((base_ref.get('object') or {}).get('sha') != identity['base_sha']
-            or (head_ref.get('object') or {}).get('sha') != identity['head_sha']):
-        raise ValueError('Superseded closure branch identities changed during collection')
     final, final_repo, final_base, final_head = await asyncio.gather(
         client.get(path), client.get(prefix), client.get(base_path), client.get(head_path))
     if (final_repo.get('id') != repo['id'] or final_repo.get('default_branch') != identity['base_ref']
             or _identity(final, repository, number, repo['id'], identity['base_ref']) != identity
-            or (final_base.get('object') or {}).get('sha') != identity['base_sha']
+            or (final_base.get('object') or {}).get('sha') != live_base
             or (final_head.get('object') or {}).get('sha') != identity['head_sha']):
         raise ValueError('Superseded PR or target changed during collection')
-    return dict(repository=repository, number=number, repository_id=repo['id'], **identity,
+    return dict(repository=repository, number=number, repository_id=repo['id'], base_sha=live_base, **identity,
                 merge_base_sha=_sha(merge_base.get('sha')), content_tree=head_tree,
                 collected_at=datetime.now(timezone.utc).isoformat())
 
 
 async def _closed(client, proof):
-    pull = await client.get(f"/repos/{proof['repository']}/pulls/{proof['number']}")
-    expected = {key: proof[key] for key in ('head_sha', 'head_ref', 'base_sha', 'base_ref')}
-    if _identity(pull, proof['repository'], proof['number'], proof['repository_id'], proof['base_ref'], closed=True) != expected:
-        raise ValueError('Superseded close did not retain the verified PR identities')
+    prefix = f"/repos/{proof['repository']}"
+    pull, repo, base, head = await asyncio.gather(
+        client.get(f"{prefix}/pulls/{proof['number']}"), client.get(prefix),
+        client.get(f"{prefix}/git/ref/heads/{quote(proof['base_ref'], safe='')}"),
+        client.get(f"{prefix}/git/ref/heads/{quote(proof['head_ref'], safe='')}"))
+    expected = {key: proof[key] for key in ('head_sha', 'head_ref', 'base_ref')}
+    if (_identity(pull, proof['repository'], proof['number'], proof['repository_id'], proof['base_ref'], closed=True) != expected
+            or repo.get('id') != proof['repository_id'] or repo.get('default_branch') != proof['base_ref']
+            or (base.get('object') or {}).get('sha') != proof['base_sha']
+            or (head.get('object') or {}).get('sha') != proof['head_sha']):
+        raise ValueError('Superseded close did not retain the verified PR/default-branch identities')
     return pull
 
 
