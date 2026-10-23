@@ -20,6 +20,10 @@ def isolated_gh_child_credentials(monkeypatch):
     monkeypatch.setattr('caller_pr_gates.ghrelay.credentials',lambda:'isolated-test-credential')
     monkeypatch.setattr('caller_pr_gates.ghrelay.settings',lambda:{})
 
+@pytest.fixture(autouse=True)
+def isolated_owner_lookup(monkeypatch):
+    monkeypatch.setattr('caller_pr_gates.ghrelay.query_login',lambda token=None:'mikkokotila')
+
 
 @pytest.fixture(autouse=True)
 def prohibit_live_http(monkeypatch):
