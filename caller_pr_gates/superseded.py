@@ -117,7 +117,7 @@ def _claim(store, sid, pin, receipt):
         row = db.execute('SELECT * FROM pr_watch WHERE repository=? AND number=?',
                          (pin['repository'], pin['number'])).fetchone()
         if (row['lease_until'] > now or row['delivery_state'] in {'reserved', 'queued'}
-                or _worker_alive(row['worker_pid'])):
+                or row['worker_pid'] is not None and _worker_alive(row['worker_pid'])):
             raise ValueError('Superseded PR has active owner work; wait for its existing lease')
         # The existing per-PR lease also blocks explicit ownership transfer.
         db.execute('UPDATE pr_watch SET lease_until=?,worker_pid=? WHERE repository=? AND number=?',
