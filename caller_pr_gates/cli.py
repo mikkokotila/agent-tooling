@@ -948,6 +948,8 @@ def gateway(args, store):
     # These repositories retired inferred document/slice contracts. Explicit
     # --kind still opts into the requested publication/review workflow.
     if creation and not kind and DOC.search(title):
+        if any(part.startswith('--repo=') or part.startswith('-R') and part != '-R' for part in argv):
+            raise ValueError('Use separated --repo OWNER/REPO for document-title publication; attached repository flags are not admitted')
         creation_repository = options.get('--repo', options.get('-R', ''))
         if not creation_repository:
             context = subprocess.run(['git', 'remote', 'get-url', 'origin'], cwd=args.cwd, capture_output=True, text=True, timeout=5)

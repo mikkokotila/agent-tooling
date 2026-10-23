@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from caller_pr_gates import cli, github, governance, hook
+from caller_pr_gates.monitor import actionable
 from caller_pr_gates.policy import branch_freshness_gate, evaluate_pr
 from test_branch_freshness import behind
 from test_cli import args
@@ -72,6 +73,23 @@ def test_missing_or_stale_policy_never_bypasses_freshness(repository):
     assert branch_freshness_gate(data)['status'] == 'FAIL'
 
 
+@pytest.mark.parametrize('mode,readiness', [('queue', 'WAIT'), ('strict', 'FAIL'), ('wrong_head', 'FAIL'), ('unrelated', 'FAIL')])
+def test_combined_gate_waits_for_queue_without_demanding_manual_sync(mode, readiness):
+    data = dict(behind(snapshot()), repository='autonomio/poise', merge_state_status='BEHIND')
+    data['freshness_policy'] = dict(repository='autonomio/poise', head_sha=data['head_sha'], base_ref='main',
+                                    required=mode == 'strict', merge_queue=True)
+    if mode == 'wrong_head': data['freshness_policy']['head_sha'] = 'b' * 40
+    if mode == 'unrelated': data['repository'] = 'other/repo'
+    gates = {g['gate']: g for g in evaluate_pr(data, [])}
+    assert gates['MERGE_READY']['status'] == readiness
+    assert gates['MERGE_CONFLICT']['status'] == 'PASS'
+    if mode == 'queue':
+        assert gates['BRANCH_UP_TO_DATE']['status'] == 'PASS'
+        assert gates['MERGE_READY']['evidence']['action_owner'] == 'poise'
+        assert all(g['status'] == 'PASS' for name, g in gates.items() if name != 'MERGE_READY')
+        assert actionable(data, list(gates.values()), checklist=True) == []
+
+
 @pytest.mark.parametrize('repository', REPOSITORIES)
 def test_ordinary_titles_do_not_publish_document_contracts(local, repository):
     store, root, _, _ = local
@@ -87,6 +105,27 @@ def test_ordinary_titles_do_not_publish_document_contracts(local, repository):
     value.kind = 'prd'
     with pytest.raises(ValueError, match='record the user-agreed scope'):
         cli.gateway(value, store)
+
+
+@pytest.mark.parametrize('flag', ['--repo=other/repo', '-Rother/repo', '--repo=autonomio/poise', '-Rautonomio/poise'])
+def test_ambiguous_repository_flag_forms_never_publish_cross_repository_documents(local, flag):
+    store, root, _, _ = local
+    git(root, 'remote', 'set-url', 'origin', 'https://github.com/autonomio/poise.git')
+    value = args(['issue', 'create', flag, '--title', 'Slice work', '--body', 'Authorized engineering'])
+    value.cwd = str(root)
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not publish')):
+        with pytest.raises(ValueError, match='separated --repo'):
+            cli.gateway(value, store)
+
+
+def test_explicit_unrelated_repository_keeps_legacy_policy_from_poise_checkout(local):
+    store, root, _, _ = local
+    git(root, 'remote', 'set-url', 'origin', 'https://github.com/autonomio/poise.git')
+    value = args(['issue', 'create', '--repo', 'other/repo', '--title', 'Slice work', '--body', 'Authorized engineering'])
+    value.cwd = str(root)
+    with patch('caller_pr_gates.cli.github_run', side_effect=AssertionError('must not publish')):
+        with pytest.raises(ValueError, match='record the user-agreed scope'):
+            cli.gateway(value, store)
 
 
 @pytest.fixture

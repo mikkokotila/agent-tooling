@@ -336,6 +336,13 @@ def merge_readiness_gate(snapshot: dict, ci: list[dict]) -> dict:
             or 'review_decision' not in snapshot or decision not in {None, 'APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED'}
             or state not in {'BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE'}):
         return _gate('MERGE_READY', 'UNKNOWN', ['Current-head GitHub merge readiness is unavailable; do not claim completion'], evidence)
+    policy = snapshot.get('freshness_policy') or {}
+    if (state == 'BEHIND' and uses_repository_policy(snapshot.get('repository'))
+            and isinstance(policy, dict) and policy.get('merge_queue') is True
+            and branch_freshness_gate(snapshot)['status'] == 'PASS'
+            and policy.get('required') is False):
+        evidence['action_owner'] = 'poise'
+        return _gate('MERGE_READY', 'WAIT', ['Await the required merge queue; manual target synchronization is not required'], evidence)
     if state in {'BEHIND', 'DIRTY', 'DRAFT'}:
         evidence['action_owner'] = 'chat'
         return _gate('MERGE_READY', 'FAIL', [f'GitHub merge state is {state}; repair the branch or draft state'], evidence)
