@@ -24,6 +24,8 @@ def dispatch_case(store, tmp_path, monkeypatch):
     value.cwd, value.target = str(tmp_path), f'https://github.com/{REPO}/pull/608'
     snap = dict(snapshot(), repository=REPO, number=608,
                 head_repository=REPO, base_repository=REPO)
+    snap['freshness_policy'] = dict(repository=REPO, head_sha=snap['head_sha'], base_ref='main',
+                                    required=True, merge_queue=False, source='live_branch_protection_and_rules')
     local = dict(root=str(tmp_path), common=str(tmp_path / '.git'), clean=True,
                  head=snap['head_sha'], branch='codex/source-fix', origin=f'https://github.com/{REPO}.git')
     pull = dict(state='open', merged=False, draft=False,
