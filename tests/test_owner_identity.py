@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from caller_pr_gates import ghrelay
 from caller_pr_gates.cli import gateway
+from caller_pr_gates.quota import Coordinator, CoolingDown, account_key
 from test_cli import args, store
 
 
@@ -20,7 +21,7 @@ def write_argv(kind):
 
 @pytest.mark.parametrize('kind', ['comment', 'pr-create', 'api-reply'])
 def test_mutating_call_refuses_non_owner_login(store, monkeypatch, kind):
-    monkeypatch.setattr(ghrelay, 'query_login', lambda: 'bit-mis')
+    monkeypatch.setattr(ghrelay, 'query_login', lambda token: 'bit-mis')
     with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match="owner identity 'mikkokotila'"):
             gateway(write_argv(kind), store)
@@ -28,7 +29,7 @@ def test_mutating_call_refuses_non_owner_login(store, monkeypatch, kind):
 
 
 def test_mutating_call_refuses_any_login_other_than_owner(store, monkeypatch):
-    monkeypatch.setattr(ghrelay, 'query_login', lambda: 'someone-else')
+    monkeypatch.setattr(ghrelay, 'query_login', lambda token: 'someone-else')
     with patch('caller_pr_gates.cli.subprocess.run', side_effect=AssertionError('must not write')):
         with pytest.raises(ValueError, match='someone-else'):
             gateway(write_argv('comment'), store)
@@ -44,30 +45,37 @@ def test_mutating_call_passes_for_owner_login(store):
 def test_owner_lookup_is_cached_across_mutating_calls(store, monkeypatch):
     calls = []
 
-    def lookup():
-        calls.append(1)
+    def lookup(token):
+        calls.append(token)
         return 'mikkokotila'
 
     monkeypatch.setattr(ghrelay, 'query_login', lookup)
     with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)):
         gateway(args(['pr', 'comment', 'https://github.com/o/r/pull/77', '--body', 'One']), store)
         gateway(args(['pr', 'comment', 'https://github.com/o/r/pull/78', '--body', 'Two']), store)
-    assert calls == [1]
+    assert calls == ['isolated-test-credential']
 
 
 def test_cached_login_is_keyed_by_token(monkeypatch):
     logins = iter(['mikkokotila', 'bit-mis'])
     calls = []
 
-    def lookup():
-        calls.append(1)
+    def lookup(token):
+        calls.append(token)
         return next(logins)
 
     monkeypatch.setattr(ghrelay, 'query_login', lookup)
     assert ghrelay.token_login('token-a') == 'mikkokotila'
     assert ghrelay.token_login('token-b') == 'bit-mis'
     assert ghrelay.token_login('token-a') == 'mikkokotila'
-    assert len(calls) == 2
+    assert calls == ['token-a', 'token-b']
+
+
+def test_lookup_queries_the_exact_admitted_token(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ghrelay, 'query_login', lambda token: seen.append(token) or 'mikkokotila')
+    ghrelay.require_owner('token-exact')
+    assert seen == ['token-exact']
 
 
 def test_corrupt_identity_cache_falls_back_to_lookup(monkeypatch, tmp_path):
@@ -83,10 +91,74 @@ def test_corrupt_identity_cache_falls_back_to_lookup(monkeypatch, tmp_path):
     ['api', 'repos/o/r/pulls/77'],
 ])
 def test_reads_need_no_owner_lookup(store, monkeypatch, argv):
-    def lookup():
+    def lookup(token):
         raise AssertionError('reads must not look up the owner identity')
 
     monkeypatch.setattr(ghrelay, 'query_login', lookup)
     with patch('caller_pr_gates.cli.subprocess.run', return_value=subprocess.CompletedProcess([], 0)):
         gateway(args(argv), store)
     assert store.prs('s') == []
+
+
+@pytest.mark.parametrize('method', ['POST', 'PATCH', 'PUT', 'DELETE'])
+def test_relay_authorization_refuses_mutating_methods_for_non_owner(monkeypatch, method):
+    monkeypatch.setattr(ghrelay, 'query_login', lambda token: 'bit-mis')
+    with pytest.raises(ValueError, match="owner identity 'mikkokotila'"):
+        ghrelay.authorize_request('token-foreign', method)
+
+
+@pytest.mark.parametrize('method', ['GET', 'HEAD'])
+def test_relay_authorization_skips_reads_without_lookup(monkeypatch, method):
+    def lookup(token):
+        raise AssertionError('reads must not look up the owner identity')
+
+    monkeypatch.setattr(ghrelay, 'query_login', lookup)
+    assert ghrelay.authorize_request('token-foreign', method) is None
+
+
+def test_relay_authorization_passes_mutations_for_owner(monkeypatch):
+    assert ghrelay.authorize_request('token-owner', 'POST') is None
+
+
+def test_lookup_yields_to_an_existing_shared_cooldown(monkeypatch):
+    coordinator = Coordinator()
+    account = account_key('https://api.github.com', 'token-cooling')
+    coordinator.throttle(coordinator.admit(account, 'core'),
+                         RuntimeError('GitHub 403: API rate limit exceeded for user ID 1'))
+
+    def lookup(token):
+        raise AssertionError('no request may be sent during a shared cooldown')
+
+    monkeypatch.setattr(ghrelay, 'query_login', lookup)
+    with pytest.raises(CoolingDown):
+        ghrelay.token_login('token-cooling')
+
+
+def test_rate_limited_lookup_records_shared_backoff(monkeypatch):
+    calls = []
+
+    def lookup(token):
+        calls.append(token)
+        raise RuntimeError('HTTP 403: API rate limit exceeded for user ID 1')
+
+    monkeypatch.setattr(ghrelay, 'query_login', lookup)
+    with pytest.raises(RuntimeError, match='refusing the GitHub write'):
+        ghrelay.token_login('token-limited')
+    with pytest.raises(CoolingDown):
+        ghrelay.token_login('token-limited')
+    assert calls == ['token-limited']
+
+
+def test_unrelated_lookup_failure_records_no_throttle(monkeypatch):
+    calls = []
+
+    def lookup(token):
+        calls.append(token)
+        raise RuntimeError('network unreachable')
+
+    monkeypatch.setattr(ghrelay, 'query_login', lookup)
+    with pytest.raises(RuntimeError, match='refusing the GitHub write'):
+        ghrelay.token_login('token-flaky')
+    with pytest.raises(RuntimeError, match='refusing the GitHub write'):
+        ghrelay.token_login('token-flaky')
+    assert calls == ['token-flaky', 'token-flaky']

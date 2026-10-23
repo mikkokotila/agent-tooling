@@ -22,7 +22,7 @@ def isolated_gh_child_credentials(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_owner_lookup(monkeypatch):
-    monkeypatch.setattr('caller_pr_gates.ghrelay.query_login',lambda:'mikkokotila')
+    monkeypatch.setattr('caller_pr_gates.ghrelay.query_login',lambda token=None:'mikkokotila')
 
 
 @pytest.fixture(autouse=True)

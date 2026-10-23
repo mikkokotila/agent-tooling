@@ -33,7 +33,13 @@ def settings():return dict(line.split('=',1) for line in local(['config','list']
 
 OWNER_LOGIN='mikkokotila'
 
-def query_login():return local(['api','user','--jq','.login'])
+def query_login(token):
+    """Login behind exactly this token; gh resolves GH_TOKEN, never the ambient account."""
+    child=subprocess.Popen(['gh','api','user','--jq','.login'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                           env={**os.environ,'GH_TOKEN':token})
+    out,error=child.communicate(timeout=10)
+    if child.returncode:raise RuntimeError(f'GitHub account lookup failed: {error.strip()}')
+    return out.strip()
 
 def token_login(token=None):
     """Login behind the admitted token, cached per token so writes add no lookup per request."""
@@ -47,17 +53,28 @@ def token_login(token=None):
     if not isinstance(cached,dict):cached={}
     login=cached.get(key)
     if isinstance(login,str) and login:return login
-    try:login=query_login()
-    except Exception as error:raise RuntimeError('Authenticated account lookup failed; refusing the GitHub write without a verified owner identity') from error
-    if not isinstance(login,str) or not login:raise RuntimeError('Authenticated account lookup failed; refusing the GitHub write without a verified owner identity')
+    coordinator=Coordinator()
+    permit=coordinator.admit(account_key('https://api.github.com',token),resource_for('/user'))
+    try:
+        login=query_login(token)
+        if not isinstance(login,str) or not login:raise RuntimeError('GitHub account lookup returned no login')
+    except Exception as error:
+        if diagnostic(error)['kind']=='rate_limited':coordinator.throttle(permit,error)
+        else:coordinator.finish(permit,success=False)
+        raise RuntimeError('Authenticated account lookup failed; refusing the GitHub write without a verified owner identity') from error
+    # The verified login stands even when concurrent coordination moved on.
+    coordinator.finish(permit,success=True)
     cached[key]=login
     path.write_text(json.dumps(cached,sort_keys=True));path.chmod(0o600)
     return login
 
-def require_owner():
-    login=token_login()
+def require_owner(token=None):
+    login=token_login(token)
     if login.lower()!=OWNER_LOGIN.lower():
         raise ValueError(f"GitHub writes require the owner identity '{OWNER_LOGIN}'; the active token belongs to '{login}'. Switch gh to the owner account (gh auth switch --user {OWNER_LOGIN}) and retry.")
+
+def authorize_request(token,method):
+    if method not in {'GET','HEAD'}:require_owner(token)
 
 class UnixServer(socketserver.ThreadingMixIn,http.server.HTTPServer):
     address_family=socket.AF_UNIX;daemon_threads=True
@@ -100,6 +117,10 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 if host!='api.github.com':raise ValueError('Gate relay only accepts the configured GitHub API host')
                 auth=self.headers.get('Authorization','');actual=auth.split(' ',1)[-1]
                 if actual!=token:raise ValueError('Child request credential differs from the admitted credential')
+                try:authorize_request(token,self.command)
+                except ValueError as error:
+                    self.respond(403,json.dumps({'message':str(error)}).encode(),{'Content-Type':'application/json'})
+                    return
                 resource=resource_for(self.path);account=account_key('https://'+host,actual)
                 metadata=dict(operation=operation,session=session,process=os.getpid(),target=self.path.split('?')[0],account=account,resource=resource)
                 body=self.body();permit=coordinator.admit(account,resource)
