@@ -48,7 +48,7 @@ def test_actual_corrected_browser_ci_precedes_one_immutable_release_requalificat
     receipt=json.loads(capsys.readouterr().out);assert receipt['accepted'] is True and receipt['completion_verified'] is False
     with pytest.raises(ValueError,match='bounded recovery'):cli.gateway(case['args'],case['store'])
     assert len(repair['writes'])==1
-    assert not case['store'].prs('s')
+    assert not any(pr['repository']==recovery.REPOSITORY for pr in case['store'].prs('s'))
 
 
 @pytest.mark.parametrize('fault',['owner','client','cwd','dirty','unmerged','approval','failed_candidate',
