@@ -84,6 +84,8 @@ def case(local, tmp_path, monkeypatch):
 
 
 def test_release_dispatch_freezes_request_and_proves_actual_run(case, capsys):
+    from caller_pr_gates.policy import evaluate_pr
+    assert next(g['status'] for g in evaluate_pr(case['snapshot'], []) if g['gate'] == 'MERGE_READY') == 'WAIT'
     case['before_post'] = lambda: case['request'].write_text('{"ref":"unreviewed"}')
     cli.gateway(case['args'], case['store'])
     assert len(case['writes']) == 1

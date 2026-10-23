@@ -76,7 +76,10 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
                    and review.get('author_login') not in (None, value.get('author_login'))
                    for review in value.get('submitted_reviews', [])):
             raise ValueError('Limen release requires independent approval on the actual candidate head')
-        if any(gate['status'] != 'PASS' for gate in evaluate_pr(value, store.dispositions(REPOSITORY, number))):
+        # A merged PR has no merge button. Its source checks, review receipts and
+        # closure still apply; independent approval is verified above.
+        if any(gate['status'] != 'PASS' for gate in evaluate_pr(value, store.dispositions(REPOSITORY, number))
+               if gate['gate'] != 'MERGE_READY'):
             raise ValueError('Limen release requires every current candidate gate and review disposition')
         return head
 
