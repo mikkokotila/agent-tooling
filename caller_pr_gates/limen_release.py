@@ -13,8 +13,8 @@ VERSION = '5.46.2'
 WORKFLOW = '.github/workflows/pr_post_release.yml'
 ENDPOINT = 'repos/Vaquum/Limen/actions/workflows/pr_post_release.yml/dispatches'
 TRUSTED = {WORKFLOW: 'e48ac931e71ffd8c57f2f488caf0f12b46e1783d',
-           'scripts/create_release.py': '95b2ed19d4a1a09a9c77c8b3d9f949dc236f8391',
-           '.github/workflows/pr_publish_pypi.yml': '1ebc31e9207b7177a0b32d88c01740e561faf5bd'}
+           'scripts/create_release.py': '7d43a4008313cd3a1b64b21dac6ae3ead27a6fbe',
+           '.github/workflows/pr_publish_pypi.yml': 'e3bde908af6d286f30c56626b39417fd3ce4cb2c'}
 API_VERSION = '2026-03-10'
 
 
