@@ -8,6 +8,9 @@ from caller_pr_gates.quota import Coordinator, CoolingDown, account_key
 from test_cli import args, store
 
 
+_real_query_login = ghrelay.query_login
+
+
 def write_argv(kind):
     if kind == 'comment':
         return args(['pr', 'comment', 'https://github.com/o/r/pull/77', '--body', 'Reply'])
@@ -147,6 +150,29 @@ def test_rate_limited_lookup_records_shared_backoff(monkeypatch):
     with pytest.raises(CoolingDown):
         ghrelay.token_login('token-limited')
     assert calls == ['token-limited']
+
+
+def test_lookup_timeout_reaps_the_child(monkeypatch):
+    import subprocess as real_subprocess
+    calls = []
+
+    class Child:
+        returncode = None
+
+        def communicate(self, timeout=None):
+            raise real_subprocess.TimeoutExpired('gh', timeout)
+
+        def kill(self):
+            calls.append('kill')
+
+        def wait(self):
+            calls.append('wait')
+
+    monkeypatch.setattr(ghrelay, 'query_login', _real_query_login)
+    monkeypatch.setattr(ghrelay.subprocess, 'Popen', lambda *args, **kwargs: Child())
+    with pytest.raises(RuntimeError, match='refusing the GitHub write'):
+        ghrelay.token_login('token-slow')
+    assert calls == ['kill', 'wait']
 
 
 def test_unrelated_lookup_failure_records_no_throttle(monkeypatch):

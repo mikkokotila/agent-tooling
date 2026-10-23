@@ -37,7 +37,10 @@ def query_login(token):
     """Login behind exactly this token; gh resolves GH_TOKEN, never the ambient account."""
     child=subprocess.Popen(['gh','api','user','--jq','.login'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
                            env={**os.environ,'GH_TOKEN':token})
-    out,error=child.communicate(timeout=10)
+    try:out,error=child.communicate(timeout=10)
+    except BaseException:
+        child.kill();child.wait()
+        raise
     if child.returncode:raise RuntimeError(f'GitHub account lookup failed: {error.strip()}')
     return out.strip()
 
