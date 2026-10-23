@@ -10,6 +10,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import socketserver
@@ -76,8 +77,38 @@ def require_owner(token=None):
     if login.lower()!=OWNER_LOGIN.lower():
         raise ValueError(f"GitHub writes require the owner identity '{OWNER_LOGIN}'; the active token belongs to '{login}'. Switch gh to the owner account (gh auth switch --user {OWNER_LOGIN}) and retry.")
 
-def authorize_request(token,method):
-    if method not in {'GET','HEAD'}:require_owner(token)
+def _graphql_code(document):
+    """GraphQL source without strings/comments; None when a string never closes."""
+    out=[];index=0;end=len(document)
+    while index<end:
+        char=document[index]
+        if char=='#':
+            stop=document.find('\n',index)
+            index=end if stop<0 else stop+1
+        elif char=='"':
+            index+=1;closed=False
+            while index<end:
+                if document[index]=='\\':index+=2;continue
+                if document[index]=='"':index+=1;closed=True;break
+                index+=1
+            if not closed:return None
+            out.append('""')
+        else:out.append(char);index+=1
+    return ''.join(out)
+
+def _graphql_read_only(body):
+    """Only documents without mutation/subscription operations; anything else is a write."""
+    if len(body)>1024*1024:return False
+    try:document=json.loads(body).get('query','')
+    except (ValueError,TypeError,AttributeError):return False
+    if not isinstance(document,str) or not document:return False
+    code=_graphql_code(document)
+    return code is not None and re.search(r'\b(mutation|subscription)\b',code) is None
+
+def authorize_request(token,method,path='',body=b''):
+    if method in {'GET','HEAD'}:return
+    if method=='POST' and path.split('?')[0].rstrip('/')=='/graphql' and _graphql_read_only(body):return
+    require_owner(token)
 
 class UnixServer(socketserver.ThreadingMixIn,http.server.HTTPServer):
     address_family=socket.AF_UNIX;daemon_threads=True
@@ -120,13 +151,14 @@ def run(argv,*,runner=None,coordinator=None,upstream=None,**kwargs):
                 if host!='api.github.com':raise ValueError('Gate relay only accepts the configured GitHub API host')
                 auth=self.headers.get('Authorization','');actual=auth.split(' ',1)[-1]
                 if actual!=token:raise ValueError('Child request credential differs from the admitted credential')
-                try:authorize_request(token,self.command)
+                resource=resource_for(self.path);account=account_key('https://'+host,actual)
+                metadata=dict(operation=operation,session=session,process=os.getpid(),target=self.path.split('?')[0],account=account,resource=resource)
+                body=self.body()
+                try:authorize_request(token,self.command,self.path,body)
                 except ValueError as error:
                     self.respond(403,json.dumps({'message':str(error)}).encode(),{'Content-Type':'application/json'})
                     return
-                resource=resource_for(self.path);account=account_key('https://'+host,actual)
-                metadata=dict(operation=operation,session=session,process=os.getpid(),target=self.path.split('?')[0],account=account,resource=resource)
-                body=self.body();permit=coordinator.admit(account,resource)
+                permit=coordinator.admit(account,resource)
                 headers={k:v for k,v in self.headers.items() if k.lower() not in {'host','content-length','transfer-encoding','connection'}}
                 response=(upstream or httpx.request)(self.command,'https://'+host+self.path,headers=headers,content=body,timeout=15,follow_redirects=False)
                 error=diagnostic({'http_status':response.status_code,'message':response.text,'response_body':response.text,'rate_limit_headers':dict(response.headers)},self.path)

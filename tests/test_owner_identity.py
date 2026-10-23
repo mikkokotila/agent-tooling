@@ -123,6 +123,43 @@ def test_relay_authorization_passes_mutations_for_owner(monkeypatch):
     assert ghrelay.authorize_request('token-owner', 'POST') is None
 
 
+def graphql_body(query):
+    return json.dumps({'query': query}).encode()
+
+
+@pytest.mark.parametrize('query', [
+    'query($o:String!){repository(owner:$o){id}}',
+    '{ viewer { login } }',
+    '# leading comment\nquery { viewer { login } }',
+    'query { search(query:"mutation:unrelated") { nodes { __typename } } }',
+    'query { field(arg:"a # not a comment") }',
+])
+def test_graphql_reads_skip_owner_lookup(monkeypatch, query):
+    def lookup(token):
+        raise AssertionError('GraphQL reads must not look up the owner identity')
+
+    monkeypatch.setattr(ghrelay, 'query_login', lookup)
+    assert ghrelay.authorize_request('token-foreign', 'POST', '/graphql', graphql_body(query)) is None
+
+
+@pytest.mark.parametrize('path,body', [
+    ('/graphql', graphql_body('mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}')),
+    ('/graphql', graphql_body('query A { x } mutation B { y }')),
+    ('/graphql', graphql_body('subscription { x }')),
+    ('/graphql', graphql_body('# reviewer said "lgtm"\nmutation { updateIssue { id } }')),
+    ('/graphql', graphql_body('query { x(arg:"unterminated) }')),
+    ('/graphql', graphql_body('')),
+    ('/graphql', json.dumps({}).encode()),
+    ('/graphql', b'not json'),
+    ('/graphql', b'x' * (1024 * 1024 + 1)),
+    ('/repos/o/r/issues/1/comments', graphql_body('query { x }')),
+])
+def test_graphql_writes_and_unknown_documents_require_owner(monkeypatch, path, body):
+    monkeypatch.setattr(ghrelay, 'query_login', lambda token: 'bit-mis')
+    with pytest.raises(ValueError, match="owner identity 'mikkokotila'"):
+        ghrelay.authorize_request('token-foreign', 'POST', path, body)
+
+
 def test_lookup_yields_to_an_existing_shared_cooldown(monkeypatch):
     coordinator = Coordinator()
     account = account_key('https://api.github.com', 'token-cooling')
