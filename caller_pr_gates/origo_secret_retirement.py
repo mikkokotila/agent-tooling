@@ -164,11 +164,12 @@ def retire(args, store, sid, argv, github_run):
         merge = _sha(pr.get('merge_commit_sha'))
         main = _sha(_object(read('repos/Vaquum/Origo/git/ref/heads/main').get('object')).get('sha'))
         from .origo_deploy_retry import (MERGE, ORIGIN_MERGE, RUN, WORKFLOW_ID,
-                                         continuation, release_proof)
+                                         continuation, deployment_inventory, release_proof)
         if merge != ORIGIN_MERGE or main != MERGE:
             raise ValueError('Only the exact reviewed latest retirement descendant may qualify')
         continuation_sha256 = continuation(store, sid)
         release_proof(args.cwd, read)
+        deployment_inventory(read)
         workflow = read('repos/Vaquum/Origo/actions/workflows/deploy_on_merge.yml')
         if (type(workflow.get('id')) is not int or workflow['id'] != WORKFLOW_ID or workflow.get('path') != WORKFLOW
                 or workflow.get('name') != 'Deploy On Merge' or workflow.get('state') != 'active'):
