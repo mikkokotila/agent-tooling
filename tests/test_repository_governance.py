@@ -133,10 +133,10 @@ def configuration(local, tmp_path):
     store, root, _, _ = local
     repo = 'Vaquum/Origo'
     git(root, 'remote', 'set-url', 'origin', f'https://github.com/{repo}.git')
-    store.register('s', 'codex', repo, 614, str(root))
     store.record_scope('s', dict(agreed_scope='Remove Origo slice/version checks and strict freshness',
         acceptance_criteria=['Preserve other protection'], slice_count=0, slice_ids=[],
         approval_evidence='Do it all now.', approved_at=1))
+    store.register('s', 'codex', repo, 614, str(root))
     protection = dict(strict=True, checks=[dict(context=name, app_id=15368)
         for name in ['CodeQL', 'pr_checks_slice', 'pr_checks_version', 'pr_checks_tests']])
     rules = dict(name='Protect-Main', target='branch', enforcement='active',
@@ -179,6 +179,20 @@ def test_governance_write_freezes_only_approved_delta_and_reads_it_back(configur
     if ruleset:
         assert values[endpoint]['rules'][0] == before['rules'][0]
         assert values[endpoint]['bypass_actors'] == before['bypass_actors']
+
+
+def test_governance_authority_remains_pinned_when_active_work_item_changes(configuration):
+    store, root, values, writes, remote, path = configuration
+    store.record_scope('s', dict(agreed_scope='Unrelated later work', acceptance_criteria=['Other work'],
+        slice_count=0, slice_ids=[], approval_evidence='User authorizes unrelated later work.', approved_at=2),
+        work_item='later-work')
+    endpoint = 'repos/Vaquum/Origo/rulesets/5406599'
+    path.write_text(json.dumps(governance.desired(values[endpoint], 'Vaquum/Origo', True)))
+    value = args(['api', endpoint, '--method', 'PUT', '--input', str(path)])
+    value.target, value.cwd = 'https://github.com/Vaquum/Origo/pull/614', str(root)
+    with patch('caller_pr_gates.cli.github_run', remote):
+        assert cli.gateway(value, store)['repository'] == 'Vaquum/Origo'
+    assert len(writes) == 1
 
 
 @pytest.mark.parametrize('mutation', ['security', 'approval', 'bypass', 'owner', 'race', 'readback'])

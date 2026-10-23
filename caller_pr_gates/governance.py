@@ -60,7 +60,7 @@ def configure(args, store, sid, repo, number, issue, endpoint, method, argv, run
     if not path.is_absolute():
         path = Path(args.cwd) / path
     payload = json.loads(path.read_text())
-    scope = store.get_scope(sid) or {}
+    scope = store.pr_scope(sid, repo, number) or {}
     if (not scope.get('approval_evidence') or repo.split('/')[1].casefold() not in str(scope.get('agreed_scope', '')).casefold()):
         raise ValueError('Governance configuration requires recorded human authorization for this repository')
 
