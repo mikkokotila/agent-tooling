@@ -118,7 +118,12 @@ def dispatch(args, store, sid, repository, number, issue, endpoint, method, argv
     receipt = {'session_id': sid, 'repository': REPOSITORY, 'number': number, 'version': VERSION,
                'candidate_head': head, 'merge_commit': local['head'], 'workflow': WORKFLOW,
                'trusted_blobs': TRUSTED, 'payload_sha256': hashlib.sha256(body.encode()).hexdigest()}
-    store.audit('github_limen_release_dispatch_attempt', receipt)
+    with store._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute("SELECT 1 FROM audit WHERE event='github_limen_release_dispatch_attempt' "
+                      "AND json_extract(fields,'$.merge_commit')=?", (local['head'],)).fetchone():
+            raise ValueError('An earlier release dispatch attempt is recorded; reconcile its outcome before any further action')
+        store._audit(db, 'github_limen_release_dispatch_attempt', receipt)
     try:
         result = run(['gh', 'api', ENDPOINT, '--method', 'POST', '--input', '-',
                       '--header', 'X-GitHub-Api-Version: ' + API_VERSION], runner=subprocess.run,

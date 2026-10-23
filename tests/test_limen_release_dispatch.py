@@ -169,6 +169,26 @@ def test_release_dispatch_rechecks_authority_immediately_before_post(case, race)
     assert case['writes'] == []
 
 
+def test_unverified_release_attempt_blocks_an_immediate_second_post(case):
+    case['response'] = {}
+    with pytest.raises(RuntimeError, match='outcome is unverified'): cli.gateway(case['args'], case['store'])
+    with pytest.raises(ValueError, match='earlier release dispatch attempt'): cli.gateway(case['args'], case['store'])
+    assert len(case['writes']) == 1
+
+
+def test_concurrent_release_requests_make_only_one_post(case):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [pool.submit(cli.gateway, case['args'], case['store']) for _ in range(2)]
+        successes, refusals = 0, 0
+        for result in results:
+            try: result.result(); successes += 1
+            except ValueError as error:
+                assert 'earlier release dispatch attempt' in str(error)
+                refusals += 1
+    assert successes == refusals == len(case['writes']) == 1
+
+
 @pytest.mark.parametrize('file,match', [('pyproject.toml', '5.46.2 release'), ('CITATION.cff', 'citation'),
     ('docs/examples/logreg_return.yaml', 'version differs'), ('limen/yaml/templates/base.yaml', 'version differs'),
     ('CHANGELOG.md', 'changelog')])
