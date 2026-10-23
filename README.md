@@ -11,6 +11,8 @@ Say **“you are switchboard”** to take the [Switchboard role](switchboard/SWI
 
 Caller PR orchestration for Codex and Claude on macOS arm64 / Python 3.13. Release 0.1.60 installs runtime 1.7.60.
 
+Limen, Poise and Origo now use fresh live protection to decide target ancestry; merge queues validate integration without manual base updates. Their document-review workflow requires explicit opt-in. The owned Poise/Origo gateway admits only approved strictness removal and Origo slice/version check retirement, preserving every other protection field.
+
 PRs above250 commits use explicitly paginated comparisons pinned to their full PR base/head SHAs. Complete counts, commit dates, unique identities, head inclusion and stable final PR identity remain required. Ordinary PR batching and all review/CI gates remain unchanged.
 
 Retained documentation checks can explicitly select a committed sibling checker/provenance pair from fresh live-target history. Script/module arguments and the existing composite reader remain frozen; its exact generated launcher changes `LIMEN_PYTHON` only for that corrected execution. Original failures remain recorded until actual corrected checks pass.

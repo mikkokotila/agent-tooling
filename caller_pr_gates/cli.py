@@ -778,6 +778,11 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            from .governance import configure as configure_governance
+            governance = configure_governance(args, store, sid, repo, num, issue, endpoint, method, argv, github_run)
+            if governance is not None:
+                print(json.dumps(governance))
+                return governance
             from .limen_release import dispatch as dispatch_limen_release
             dispatched_release = dispatch_limen_release(args, store, sid, repo, num, issue,
                                                         endpoint, method, argv, github_run)
@@ -939,7 +944,17 @@ def gateway(args, store):
             raise ValueError('ISSUE_CLOSURE FAIL: add a closing reference to the genuine issue for this authorized work, for example Closes #123. Find and reuse a matching issue; if none exists, create an issue recording the authorized task through the GitHub gateway. Do not create placeholders, duplicates or unrelated issues.')
     scope = store.get_scope(sid)
     kind = args.kind
-    if not kind and DOC.search(title): kind = 'slice' if re.search(r'\bslice\b', title, re.I) else 'prd'
+    from .policy import uses_repository_policy
+    # These repositories retired inferred document/slice contracts. Explicit
+    # --kind still opts into the requested publication/review workflow.
+    if creation and not kind and DOC.search(title):
+        creation_repository = options.get('--repo', options.get('-R', ''))
+        if not creation_repository:
+            context = subprocess.run(['git', 'remote', 'get-url', 'origin'], cwd=args.cwd, capture_output=True, text=True, timeout=5)
+            origin_match = re.search(r'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$', context.stdout.strip())
+            creation_repository = origin_match[1] if context.returncode == 0 and origin_match else ''
+        if not uses_repository_policy(creation_repository):
+            kind = 'slice' if re.search(r'\bslice\b', title, re.I) else 'prd'
     if creation and kind:
         if not scope: raise ValueError('SLICE_SCOPE UNKNOWN: record the user-agreed scope before publishing')
         if kind == 'slice':

@@ -279,9 +279,24 @@ def evaluate_review(snapshot: dict, dispositions: list[dict]) -> list[dict]:
             _gate("REVIEW_CONCLUDED", "FAIL" if failed_concluded else ("UNKNOWN" if unknown else "PASS"), failed_concluded + unknown, evidence)]
 
 
+def uses_repository_policy(repository: str) -> bool:
+    """Repositories whose approved workflow defers integration to live protection."""
+    return str(repository).casefold() in {'vaquum/limen', 'autonomio/poise', 'vaquum/origo'}
+
+
 def branch_freshness_gate(snapshot: dict) -> dict:
     if snapshot.get('state') == 'closed':
         return _gate('BRANCH_UP_TO_DATE', 'PASS', [], {'source_closed': True, 'applicable': False})
+    if uses_repository_policy(snapshot.get('repository')):
+        policy = snapshot.get('freshness_policy') or {}
+        if (not isinstance(policy, dict) or policy.get('repository') != snapshot.get('repository')
+                or policy.get('head_sha') != snapshot.get('head_sha')
+                or policy.get('base_ref') != snapshot.get('base_ref')
+                or type(policy.get('required')) is not bool):
+            return _gate('BRANCH_UP_TO_DATE', 'UNKNOWN',
+                         ['Current repository integration policy is unavailable; reread live protection'], {'policy': policy})
+        if not policy['required']:
+            return _gate('BRANCH_UP_TO_DATE', 'PASS', [], {'applicable': False, 'policy': policy})
     base, after, ref = snapshot.get('base_sha'), snapshot.get('base_sha_after'), snapshot.get('base_ref')
     comparison = snapshot.get('branch_comparison') or {}
     evidence = {'base_ref': ref, 'base_sha': base, 'base_sha_after': after,

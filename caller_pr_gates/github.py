@@ -26,7 +26,7 @@ ISSUE_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {
 
 SUMMARY_QUERY = """query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
-    headRefOid mergeStateStatus reviewDecision baseRefName baseRef { branchProtectionRule { requiredStatusCheckContexts } }
+    headRefOid mergeStateStatus reviewDecision baseRefName baseRef { branchProtectionRule { requiredStatusCheckContexts requiresStrictStatusChecks } }
   } }
 }"""
 THREAD_QUERY = """query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
@@ -128,7 +128,7 @@ async def _rest_pages(client: Any, path: str, params: dict | None = None,
             raise EvidenceError(f"Unbounded pagination for {path}")
 
 
-async def _rules_evidence(client: Any, path: str) -> tuple[list[str] | None, dict | None]:
+async def _rules_evidence(client: Any, path: str, freshness: dict | None = None) -> tuple[list[str] | None, dict | None]:
     """A rules API gap must not discard independent PR/CI/review evidence."""
     try:
         expected: list[str] = []
@@ -138,17 +138,36 @@ async def _rules_evidence(client: Any, path: str) -> tuple[list[str] | None, dic
                 contexts = parameters.get("required_status_checks")
                 if not isinstance(contexts, list):
                     raise EvidenceError("Missing ruleset required check contexts")
+                if freshness is not None:
+                    strict = parameters.get('strict_required_status_checks_policy')
+                    if type(strict) is not bool:
+                        freshness['error'] = 'Missing ruleset strict-status policy'
+                    elif contexts:
+                        freshness['strict'] = freshness.get('strict', False) or strict
                 for context in contexts:
                     context = _mapping(context, "required ruleset check").get("context")
                     if not isinstance(context, str) or not context:
                         raise EvidenceError("Malformed ruleset check context")
                     expected.append(context)
+            elif rule.get('type') == 'merge_queue' and freshness is not None:
+                freshness['merge_queue'] = True
             elif rule.get("type") == "workflows":
                 # A name alone cannot prove required workflows in other repositories.
                 raise EvidenceError("Required-workflow rules need explicit workflow identity support")
         return expected, None
     except Exception as error:
         return None, _component_error(error, path)
+
+
+def _repository_freshness_policy(repository, head, base, protection, rules, error):
+    """Only the authorized repositories may defer ancestry to GitHub's integration policy."""
+    strict = False if protection is None else protection.get('requiresStrictStatusChecks')
+    complete = (type(strict) is bool and not rules.get('error')
+                and (error is None or error.get('kind') == 'feature_unavailable'))
+    queue = rules.get('merge_queue', False)
+    return dict(repository=repository, head_sha=head, base_ref=base,
+                required=bool((strict or rules.get('strict', False)) and not queue) if complete else None,
+                merge_queue=queue, source='live_branch_protection_and_rules')
 
 
 async def _threads(client: Any, variables: dict) -> list[dict]:
@@ -395,6 +414,8 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
     if not isinstance(base_name, str) or not base_name:
         raise EvidenceError("Missing base branch")
     from .closure import collect as collect_closure
+    from .policy import uses_repository_policy
+    freshness_rules = {} if uses_repository_policy(repository) else None
     initial_branch = await _branch_evidence(client, prefix, base_name, head)
     immutable_key=None;cached_files=None
     if isinstance(client,_BatchClient) and not initial_branch.get('branch_error'):
@@ -410,7 +431,7 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
         _rest_pages(client, f"{prefix}/commits/{head}/check-runs", {"filter": "all"}, "check_runs"),
         _rest_pages(client, f"{prefix}/commits/{head}/statuses"),
         _rest_pages(client, f"{prefix}/actions/runs", {"head_sha": head}, "workflow_runs"),
-        _rules_evidence(client, f"{prefix}/rules/branches/{quote(base_name, safe='')}"),
+        _rules_evidence(client, f"{prefix}/rules/branches/{quote(base_name, safe='')}", freshness_rules),
         branch_read(), collect_closure(client, repository, number))
     if not isinstance(raw.get("changed_files"), int) or len(files) != raw["changed_files"]:
         raise EvidenceError("Changed-file enumeration is incomplete (GitHub caps it at 3000)")
@@ -516,6 +537,8 @@ async def collect_with_client(client: Any, repository: str, number: int) -> dict
         "actor_login": actor_login, "collected_at": time.time(), "checks": checks,
         "expected_checks": sorted(set(expected)) if rule_error is None or rules_absent_on_plan else None,
         "known_expected_checks": sorted(set(expected)),
+        **({'freshness_policy': _repository_freshness_policy(repository, head, base_name, protection, freshness_rules, rule_error)}
+           if freshness_rules is not None else {}),
         **branch_evidence,
         **closure_evidence,
         "component_errors": {**({'rules': rule_error} if rule_error else {}),
@@ -576,7 +599,7 @@ BATCH_QUERY = '''query($owner:String!, $repo:String!, $number:Int!) {
  viewer { login }
  repository(owner:$owner,name:$repo) { defaultBranchRef { name }
   pullRequest(number:$number) {
-   headRefOid mergeStateStatus reviewDecision baseRefName state merged baseRef { branchProtectionRule { requiredStatusCheckContexts } }
+   headRefOid mergeStateStatus reviewDecision baseRefName state merged baseRef { branchProtectionRule { requiredStatusCheckContexts requiresStrictStatusChecks } }
    closingIssuesReferences(first:100) { nodes { number url state repository { nameWithOwner } } pageInfo { hasNextPage endCursor } }
    reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) { nodes {
     id databaseId fullDatabaseId body url createdAt updatedAt author { login }
@@ -621,6 +644,17 @@ async def collect_validation_with_client(client,repository,number):
     if not re.fullmatch(r'[a-fA-F0-9]{40}',str(head)) or not base or type(raw.get('merged')) is not bool or raw.get('state') not in {'open','closed'}:
         raise EvidenceError('Missing validation lifecycle/head/target evidence')
     receipt=await _branch_evidence(client,prefix,base,head)
+    from .policy import uses_repository_policy
+    if uses_repository_policy(repository) and raw['state'] == 'open':
+        rules = {}
+        summary, rule_evidence = await asyncio.gather(
+            client.graphql(SUMMARY_QUERY, dict(zip(('owner', 'repo', 'number'), (*repository.split('/'), number)))),
+            _rules_evidence(client, f"{prefix}/rules/branches/{quote(base, safe='')}", rules))
+        summary = _pull(summary)
+        if summary.get('headRefOid') != head or summary.get('baseRefName') != base:
+            raise EvidenceError('PR head or target changed during integration-policy collection')
+        protection = _mapping(summary.get('baseRef'), 'base branch reference')['branchProtectionRule']
+        receipt['freshness_policy'] = _repository_freshness_policy(repository, head, base, protection, rules, rule_evidence[1])
     after=_mapping(await client.get(path),'final validation PR')
     if any(raw.get(k)!=after.get(k) for k in ('state','merged','draft')):
         raise EvidenceError('PR lifecycle changed during validation preflight')
