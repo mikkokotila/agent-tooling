@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import subprocess
 
 from .limen_release import REPOSITORY, metadata
@@ -56,7 +57,15 @@ def retry(args, store, sid, repository, number, issue, endpoint, method, argv, r
                        if g['gate'] != 'MERGE_READY')):
             raise ValueError('Release recovery requires the exact independently approved and qualified merged PR')
         tag = read(f'repos/{REPOSITORY}/git/ref/tags/v5.46.2')
-        if tag.get('object', {}).get('sha') != MERGE or tag['object'].get('type') != 'commit':
+        target = tag.get('object', {})
+        if target.get('type') == 'tag':
+            if not re.fullmatch(r'[a-f0-9]{40}', str(target.get('sha'))):
+                raise ValueError('Annotated release tag identity is invalid')
+            annotation = read(f'repos/{REPOSITORY}/git/tags/{target["sha"]}')
+            if annotation.get('sha') != target['sha'] or annotation.get('tag') != 'v5.46.2':
+                raise ValueError('Annotated release tag identity differs')
+            target = annotation.get('object', {})
+        if target.get('sha') != MERGE or target.get('type') != 'commit':
             raise ValueError('Immutable release tag differs')
         qualified = read(f'repos/{REPOSITORY}/actions/runs/{QUALIFIED_RUN}')
         if (qualified.get('id') != QUALIFIED_RUN or qualified.get('head_sha') != QUALIFIED_HEAD
