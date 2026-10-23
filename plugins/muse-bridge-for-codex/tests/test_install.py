@@ -27,7 +27,8 @@ PROVIDER_SPEC.loader.exec_module(provider)
 
 class InstallTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='muse-installer-')
+        # Darwin's default /var/folders path leaves too little AF_UNIX path space.
+        self.directory = tempfile.TemporaryDirectory(prefix='muse-installer-', dir='/tmp')
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name)
         self.state = self.home / '.local/state/muse-control'
