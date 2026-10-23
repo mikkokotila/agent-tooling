@@ -1,5 +1,13 @@
 # Operational inventory
 
+## Withdraw an owned PR
+
+`caller-pr-gates github --session ROOT_SESSION --client codex --cwd PR_CHECKOUT --withdrawn-reason "The candidate is no longer required and remains uninstalled" -- pr close https://github.com/OWNER/REPO/pull/NUMBER` withdraws only that existing canonical owner's open, unmerged, same-repository PR. The actual native Codex requester must belong to the recorded root. Its per-PR registration and watch must retain the exact client and checkout; the root's latest global working directory may differ. The recorded checkout must be clean at the live PR head and its recorded origin.
+
+The route preserves the freshly observed conflicts, failed or pending checks and review findings as unresolved evidence, posts the reason publicly, and reports `completion_verified: false`. Withdrawal does not certify implementation, review handling, qualification or merge readiness. Normal closes and every merge keep their existing gates. Branches, issue state, scopes, validation plans, results and dispositions remain intact; verified unmerged closure retires only the PR's reminders and active registration receipts.
+
+An atomic, bounded per-PR lease excludes active monitor, recovery, scoped-delivery and validation work. The source, native requester, canonical owner and remote identity are rechecked before closing. Retirement and the withdrawal receipt require closed, unmerged readback at the same head/repository/refs and unchanged local ownership/source. GitHub close offers no expected-head compare-and-set: a concurrent remote update can leave the outcome unverified. One durable attempt per head prevents replay after failures or unknown outcomes; investigate the actual state read-only. No branch deletion, reopening, API payload or extra close flags are admitted.
+
 The v0.1.0 baseline was captured from the installed 1.7.0 package, not from the older scratch source named by its former release manifest.
 
 | Component | Versioned source | Live location |
