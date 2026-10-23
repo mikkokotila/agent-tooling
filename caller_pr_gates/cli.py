@@ -778,6 +778,9 @@ def gateway(args, store):
                 return _update_release_body(args, store, sid, argv, endpoint, *release.groups())
             if not args.target: raise ValueError('GitHub API writes need --target with the owned PR/document URL')
             repo, num, issue = reference(args.target)
+            if endpoint == 'repos/Vaquum/Origo/actions/runs/39931006450/rerun':
+                from .origo_deploy_retry import retry
+                return retry(args, store, sid, argv, github_run)
             from .limen_release import dispatch as dispatch_limen_release
             dispatched_release = dispatch_limen_release(args, store, sid, repo, num, issue,
                                                         endpoint, method, argv, github_run)
