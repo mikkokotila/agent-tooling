@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -159,15 +160,29 @@ class InstallTests(unittest.TestCase):
             def connect(self, _): pass
             def sendall(self, _): pass
             def makefile(self, _): return io.BytesIO(b'{"result":{"base_url":"http://127.0.0.1:1/test"}}\n')
-        with patch.object(Path, 'home', return_value=self.home), patch.dict(os.environ, self.env), \
+        env = dict(self.env, MUSE_GUARD_UPSTREAM=str(self.home / 'verified native'),
+                   MUSE_GUARD_BYPASS='1', MUSE_GUARD_STATE_DIR=str(self.home / 'other-state'),
+                   UNRELATED_INSTALL_ENV='not-a-service-setting')
+        with patch.object(Path, 'home', return_value=self.home), patch.dict(os.environ, env), \
                 patch.dict(sys.modules, {'bridge': fake}), patch.object(provider.subprocess, 'run', side_effect=run), \
                 patch.object(provider.socket, 'socket', return_value=Connection()):
             with installer.controller_lock():
                 service = provider.prepare_install(self.runtime)
                 self.assertEqual(['bootout'], events)
+                specification = plistlib.loads(service[1].read_bytes())
+                self.assertEqual({'MUSE_GUARD_UPSTREAM': env['MUSE_GUARD_UPSTREAM']},
+                                 specification['EnvironmentVariables'])
             provider.install(self.runtime, service)
         self.assertEqual(['bootout', 'bootstrap', 'ensure'], events)
         self.assertIn('web_search="disabled"', self.config.read_text())
+
+    def test_provider_without_explicit_native_pin_does_not_add_service_environment(self):
+        fake = types.SimpleNamespace(STATE=self.state)
+        with patch.object(Path, 'home', return_value=self.home), patch.dict(os.environ, {}, clear=True), \
+                patch.dict(sys.modules, {'bridge': fake}), patch.object(provider.subprocess, 'run'):
+            with installer.controller_lock():
+                _domain, agent = provider.prepare_install(self.runtime)
+        self.assertNotIn('EnvironmentVariables', plistlib.loads(agent.read_bytes()))
 
 
 if __name__ == '__main__':

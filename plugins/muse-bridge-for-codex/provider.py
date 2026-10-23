@@ -193,11 +193,13 @@ def prepare_install(root):
     domain = 'gui/' + str(os.getuid())
     subprocess.run(['launchctl', 'bootout', domain + '/' + label],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    atomic(agent, plistlib.dumps({'Label': label, 'ProgramArguments': [sys.executable, str(root / 'bridge.py'), 'daemon'],
-                                 'RunAtLoad': True, 'KeepAlive': True,
-                                 'WorkingDirectory': str(root),
-                                 'StandardOutPath': str(state / 'daemon.log'),
-                                 'StandardErrorPath': str(state / 'daemon.log')}))
+    service = {'Label': label, 'ProgramArguments': [sys.executable, str(root / 'bridge.py'), 'daemon'],
+               'RunAtLoad': True, 'KeepAlive': True, 'WorkingDirectory': str(root),
+               'StandardOutPath': str(state / 'daemon.log'), 'StandardErrorPath': str(state / 'daemon.log')}
+    upstream = os.environ.get('MUSE_GUARD_UPSTREAM')
+    if upstream:
+        service['EnvironmentVariables'] = {'MUSE_GUARD_UPSTREAM': upstream}
+    atomic(agent, plistlib.dumps(service))
     return domain, agent
 
 
